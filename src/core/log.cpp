@@ -1,6 +1,7 @@
 #include "core/log.h"
 
 #include <windows.h>
+#include <clocale>
 #include <cstdio>
 
 namespace swrots {
@@ -12,6 +13,9 @@ static LARGE_INTEGER g_Start, g_Freq;
 
 void LogInit(const wchar_t* path, bool console, bool append)
 {
+    // Text is written as UTF-8: with the C runtime's default locale, a path with other than English letters
+    // (a user name in Cyrillic, say) could not be converted, and the whole line came out empty.
+    setlocale(LC_CTYPE, ".UTF8");
     InitializeCriticalSection(&g_LogLock);
     QueryPerformanceFrequency(&g_Freq);
     QueryPerformanceCounter(&g_Start);
@@ -42,6 +46,8 @@ void LogWriteV(LogLevel level, const char* fmt, va_list args)
 
     int n = snprintf(line, sizeof(line), "[%9.4f][%05lu][%s] ", t, GetCurrentThreadId(), kLevel[int(level)]);
     int m = vsnprintf(line + n, sizeof(line) - n - 2, fmt, args);
+    if (m < 0) // still unconvertible: keep the message's format at least
+        m = snprintf(line + n, sizeof(line) - n - 2, "(unprintable text) %s", fmt);
     if (m < 0) m = 0;
     n += (m < int(sizeof(line)) - n - 2) ? m : int(sizeof(line)) - n - 3;
     line[n++] = '\r';
@@ -94,8 +100,12 @@ void Fatal(const char* fmt, ...)
 
     LogWrite(LogLevel::Error, "FATAL: %s", msg);
     LogFlush();
-    if (!GetEnvironmentVariableA("SWROTS_NO_DIALOGS", nullptr, 0))
-        MessageBoxA(nullptr, msg, "Star Wars: Episode III - Revenge of the Sith", MB_OK | MB_ICONERROR);
+    if (!GetEnvironmentVariableA("SWROTS_NO_DIALOGS", nullptr, 0)) {
+        wchar_t text[1024]; // the message is UTF-8 (see LogInit)
+        if (!MultiByteToWideChar(CP_UTF8, 0, msg, -1, text, 1024))
+            text[0] = 0;
+        MessageBoxW(nullptr, text, L"Star Wars: Episode III - Revenge of the Sith", MB_OK | MB_ICONERROR);
+    }
     TerminateProcess(GetCurrentProcess(), 1);
     __assume(0);
 }
