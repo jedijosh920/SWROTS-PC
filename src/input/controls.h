@@ -44,6 +44,12 @@ FreeCameraControls ReadFreeCameraControls();
 // Whether player 1's input is held back from the game (the free camera has it).
 void HoldPlayerInput(bool hold);
 
+// Co-op is running (game/coop.h): with one controller (or Input=1 in [Coop]) the keyboard alone is player 1
+// and the first controller player 2; with two, as without co-op.
+void SetCoopInput(bool active);
+// The controller player 2 has, if any (for co-op to know whether player 2 can play).
+bool Player2HasController();
+
 // The game rebooted in-process: its controller ports are closed again.
 void ResetPortsForReboot();
 

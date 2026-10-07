@@ -21,6 +21,11 @@ struct Settings {
     bool bloom = true;        // the game's full-screen bloom (soft glow around bright areas)
     // Game
     int fpsLimit = 30;        // 30 (original) or 60 (experimental)
+    // Co-op: a second player in the story and single-player missions (game/coop.h)
+    bool coop = false;        // on: player 2 plays the mission's companion, or a character beside player 1
+    int coopInput = 0;        // 0 auto, 1 keyboard is player 1 and the first controller player 2, 2 two controllers
+    int coopDeath = 0;        // when player 2 dies: 0 they come back beside player 1, 1 game over
+    bool coopStorySafety = true; // cutscenes and scripted moments give the companion back to the game
 };
 
 const Settings& GetSettings();

@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "core/log.h"
+#include "core/settings.h"
 #include "core/window.h"
 #include "debug/menu.h"
 #include "input/controls.h"
@@ -114,13 +115,44 @@ static std::vector<Source> Sources()
     return sources;
 }
 
+// Co-op (SetCoopInput): whether the keyboard alone is player 1, the host controllers then starting at port 1.
+static std::atomic<bool> g_CoopInput = false;
+
+static bool KeyboardAlone(size_t controllers)
+{
+    if (!g_CoopInput)
+        return false;
+    const int mode = GetSettings().coopInput;
+    return mode == 1 || (mode == 0 && controllers == 1);
+}
+
+// The host controller playing a port, or -1 (port 0's keyboard is read apart).
+static int ControllerOfPort(DWORD port, size_t controllers)
+{
+    const int index = KeyboardAlone(controllers) ? int(port) - 1 : int(port);
+    return index >= 0 && size_t(index) < controllers ? index : -1;
+}
+
+void SetCoopInput(bool active)
+{
+    if (g_CoopInput.exchange(active) != active)
+        LOG_INFO("Input: co-op %s (%s)", active ? "on" : "off",
+            active ? (KeyboardAlone(Sources().size()) ? "the keyboard is player 1, the first controller player 2"
+                                                      : "player 2 is the second controller") : "as before");
+}
+
+bool Player2HasController()
+{
+    return ControllerOfPort(1, Sources().size()) >= 0;
+}
+
 // Connected-port mask: port 0 always, others by host controller presence.
 static ULONG ConnectedMask()
 {
     ULONG mask = 1;
     const size_t count = Sources().size();
     for (DWORD i = 1; i < 4; ++i)
-        if (i < count)
+        if (ControllerOfPort(i, count) >= 0)
             mask |= 1u << i;
     return mask;
 }
@@ -181,12 +213,13 @@ static void ReadXInput(DWORD index, XGamepad& g)
 static void ReadHostPad(DWORD port, XGamepad& g)
 {
     const std::vector<Source> sources = Sources();
-    if (port >= sources.size())
+    const int index = ControllerOfPort(port, sources.size());
+    if (index < 0)
         return;
-    if (sources[port].playStation)
-        ReadPlayStation(sources[port].index, g);
+    if (sources[index].playStation)
+        ReadPlayStation(sources[index].index, g);
     else
-        ReadXInput(sources[port].index, g);
+        ReadXInput(sources[index].index, g);
 }
 
 // Keyboard and mouse (controls.ini) as player 1's controller.

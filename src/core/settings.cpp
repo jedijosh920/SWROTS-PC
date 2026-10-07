@@ -44,6 +44,10 @@ void LoadSettings(const std::wstring& path)
     s.anisotropy = ReadInt(L"Graphics", L"Anisotropy", d.anisotropy, 1, 16);
     s.bloom = ReadInt(L"Graphics", L"Bloom", d.bloom, 0, 1) != 0;
     s.fpsLimit = ReadInt(L"Game", L"FpsLimit", d.fpsLimit, 30, 60) >= 45 ? 60 : 30;
+    s.coop = ReadInt(L"Coop", L"Enabled", d.coop, 0, 1) != 0;
+    s.coopInput = ReadInt(L"Coop", L"Input", d.coopInput, 0, 2);
+    s.coopDeath = ReadInt(L"Coop", L"Player2Death", d.coopDeath, 0, 1);
+    s.coopStorySafety = ReadInt(L"Coop", L"StorySafety", d.coopStorySafety, 0, 1) != 0;
     SaveSettings(); // writes defaults for missing keys, normalizes values
     LOG_INFO("Settings: %dx%d%s%s%s, resolution scale %d%s, %s, %dx anisotropic, bloom %s, %d fps", s.width, s.height,
         s.fullscreen ? " fullscreen" : "", s.vsync ? " vsync" : "", s.stretch ? " stretched" : "", s.resolutionScale,
@@ -66,6 +70,10 @@ void SaveSettings()
     WriteInt(L"Graphics", L"Anisotropy", s.anisotropy);
     WriteInt(L"Graphics", L"Bloom", s.bloom);
     WriteInt(L"Game", L"FpsLimit", s.fpsLimit);
+    WriteInt(L"Coop", L"Enabled", s.coop);
+    WriteInt(L"Coop", L"Input", s.coopInput);
+    WriteInt(L"Coop", L"Player2Death", s.coopDeath);
+    WriteInt(L"Coop", L"StorySafety", s.coopStorySafety);
 }
 
 } // namespace swrots
