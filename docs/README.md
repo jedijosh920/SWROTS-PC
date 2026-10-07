@@ -40,3 +40,5 @@ Notes on the game's engine, from its own executable and from related games.
   animation bindings, with addresses
 - [The camera system](research/camera-system.md): from the master camera to the screen, camera effects,
   the free camera
+- [Two players in the story missions](research/coop.md): how the game does co-op, and a second player
+  for the campaign (work in progress)
