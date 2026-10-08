@@ -141,15 +141,53 @@ void SetCoopInput(bool active)
                                                       : "player 2 is the second controller") : "as before");
 }
 
+// Test switch SWROTS_TEST_PAD2=<seconds>[:run]: a scripted controller on port 1 (player 2), from that many
+// seconds on: its stick circles and it attacks, or with ":run" it runs straight ahead.
+// ":until<seconds>" unplugs it then. Seconds count from the first input read.
+struct TestPad2Script {
+    bool on = false, run = false;
+    double start = 0, until = 0;
+    ULONGLONG origin = 0;
+};
+
+static const TestPad2Script& TestPad2Spec()
+{
+    static const TestPad2Script spec = [] {
+        TestPad2Script s;
+        char v[64] = {};
+        if (!GetEnvironmentVariableA("SWROTS_TEST_PAD2", v, sizeof(v)))
+            return s;
+        s.on = true;
+        s.start = atof(v);
+        s.run = std::strstr(v, ":run") != nullptr;
+        if (const char* until = std::strstr(v, ":until"))
+            s.until = atof(until + 6);
+        s.origin = GetTickCount64();
+        return s;
+    }();
+    return spec;
+}
+
+static double TestPad2Seconds()
+{
+    return double(GetTickCount64() - TestPad2Spec().origin) / 1000.0;
+}
+
+static bool TestPad2()
+{
+    const TestPad2Script& s = TestPad2Spec();
+    return s.on && (s.until <= 0 || TestPad2Seconds() < s.until);
+}
+
 bool Player2HasController()
 {
-    return ControllerOfPort(1, Sources().size()) >= 0;
+    return TestPad2() || ControllerOfPort(1, Sources().size()) >= 0;
 }
 
 // Connected-port mask: port 0 always, others by host controller presence.
 static ULONG ConnectedMask()
 {
-    ULONG mask = 1;
+    ULONG mask = TestPad2() ? 3 : 1;
     const size_t count = Sources().size();
     for (DWORD i = 1; i < 4; ++i)
         if (ControllerOfPort(i, count) >= 0)
@@ -421,6 +459,18 @@ static DWORD __stdcall XbInputGetState(HANDLE device, XInputState* state)
         if (index == 0) {
             ReadKeyboard(g);
             ReadTestInput(g);
+        }
+        if (index == 1 && TestPad2()) { // the scripted player 2 (TestPad2)
+            const double t = TestPad2Seconds() - TestPad2Spec().start;
+            if (t >= 0 && TestPad2Spec().run) {
+                g.sThumbLY = 30000;
+            } else if (t >= 0) {
+                g.sThumbLX = SHORT(-std::cos(t * 0.9) * 30000.0);
+                g.sThumbLY = SHORT(std::sin(t * 0.9) * 30000.0);
+                const int step = int(t / 0.5);
+                if (t - step * 0.5 < 0.15)
+                    g.bAnalogButtons[(step % 2) ? 2 : 0] = 0xFF;
+            }
         }
     }
     if (std::memcmp(&g, &port->last, sizeof(g)) != 0) {

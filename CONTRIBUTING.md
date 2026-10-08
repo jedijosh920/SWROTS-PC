@@ -73,7 +73,9 @@ after the start, e.g. in a duel booted from `Default_Xbox.cfg`), `SWROTS_TEST_IN
 that many seconds after the start, player 1 plays by itself like a busy player: the left stick turning
 round and the face buttons, triggers and white and black buttons pressed in turn, never Start or Back;
 for testing what only happens while the player moves and fights; `<seconds>:run` only holds the stick
-forward), `SWROTS_COMMANDS="<seconds>:<command>;..."` (runs debug console
+forward), `SWROTS_TEST_PAD2=<seconds>` (a second controller playing by itself from that many seconds
+after the start, for co-op tests; `<seconds>:run` only holds its stick forward, `:until<seconds>` unplugs it
+then, e.g. `9:until30`), `SWROTS_COMMANDS="<seconds>:<command>;..."` (runs debug console
 commands that many seconds after the start, e.g. `"9:player IVader;12:spawn ICloneTrooper enemy;15:despawn"`;
 `screenshot <name>` among them saves what the game shows then to `screenshots\<name>.png`),
 `SWROTS_BACKGROUND=1` (starts the game minimised and silent without taking the focus, so a test run

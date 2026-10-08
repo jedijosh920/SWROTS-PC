@@ -1,8 +1,8 @@
 # Two players in the story missions (co-op)
 
 Research towards a second player in the campaign and in the single-player bonus missions: how the game
-does two players where it already has them, and what a story mission needs to get them. Work in progress;
-nothing here is a player feature yet. Addresses are the retail Xbox executable's (NTSC-U), as loaded.
+does two players where it already has them, and what a story mission needs to get them. The port's co-op (`[Coop]` in
+settings.ini) is built on it. Addresses are the retail Xbox executable's (NTSC-U), as loaded.
 
 ## Where the game already has two players
 
@@ -74,11 +74,47 @@ then resolving it, makes the camera widen and turn to keep both in view.
 ## Damage and death
 
 Story companions carry the "Invincible?" property (character +0x5D6, 1 on the first mission's Obi-Wan,
-0 on the player). Cleared, the second player takes damage in a fight like the first (1500 to 1440 health
-in a minute of the first mission). When the second player dies (+0x12C set, health 0) the story mission
-goes on: no game over, no restart; the HUD empties player 2's health bar. What a story mission does when
-player 2 dies is for the port to decide (a respawn beside player 1, or the game over player 1's death
-brings).
+0 on the player). Cleared, the second player takes damage in a fight like the first.
+
+Health is a float at +0x130 (maximum +0x134). Every change goes through ICharacter's health change
+(0x151500, thiscall (float change, a, b), vtable slot 0x384): it returns at once while "Invincible?" is
+set, else adds the change (a hit is scaled by the difficulty) and keeps it under the maximum. The Jedi
+classes' slot 0x384 is their hit (0x269C20): with the game's `god` it refills player 1 only, then calls
+0x151500 and, when health is at or below 0, starts the death. Most callers pass `(change, 0, 0)`.
+
+A death is a sequence: health reaches 0, the character falls, and some 4 seconds later its "Killed"
+handler (0x1507A0, slot 0x194) sets +0x12C ("dead"), removes it from the AI's view and, for player 1,
+calls the Jedi's slot 0x430 (0x267B30). Health given back during the fall does not stop it (dead with
+full health). Player 1's slot 0x430 has the game manager start the loss (0x27A9F0: in a story mission,
+the Game Over screen) and set its delay (0x27AB70). When the second player dies, nothing of that runs:
+the story mission goes on and the HUD empties player 2's bars.
+
+## Cutscenes
+
+0xA3720 is the engine's "a cutscene is playing" (the camera, the AI and the characters ask it): the
+letterbox is up (`[0x69226C]`, 0x12E190), a cinematic plays (`[0x695C88]`), or scripted cameras hold the
+view (`[0x68DA44]` > 0). It reads the letterbox without checking it, so it is only asked in a running
+level. While it is true the letterbox keeps player 1 alive (0x12E060). The direct start of the Cin
+Drallig bonus mission plays one from about 4 to 7.5 seconds; player 1's control mode stays 2 in it.
+
+## What the port does (game/coop.cpp)
+
+- **Joining.** In a story or single-player bonus mission (a player from the player spawn, a player count
+  of 1), 1.5 seconds after the start, when a controller is there for player 2: the companion (a living
+  Jedi with control mode 16 whose AI data's "Target Player" (+0x50) is clear: the scripted battle droids
+  of the first mission have mode 16 too, R2-D2 and allied clones are no Jedi) or, without one, a
+  character spawned beside player 1 as an ally. It gets control mode 2, controller 1 (0x150580), its
+  "Invincible?" cleared, its id in slot 2 with a player count of 2 (the second HUD), and an entry in
+  every focus list that holds player 1; lists resolved later (slot 5 is hooked) get one too.
+- **Leaving.** The controller goes, co-op is turned off, or a cutscene plays (with story safety): the
+  character is unbound (-1), gets its control mode and "Invincible?" back, slot 2 is cleared and the
+  count set back to 1, and its focus list entries are emptied and resolved away.
+- **Death.** 0x151500 is hooked. Under the respawn rule a change that leaves player 2 at or below 0
+  (and not yet dead) leaves 1 instead, so no death starts, and on the next frame player 2 is placed
+  beside player 1 (slot 0x1F4) with full health and 2 seconds of "Invincible?". A player 2 who dies
+  anyway (a fall) is given a new character 3 seconds later. Under the game over rule, once player 2's
+  death has played out (+0x12C, at most 6 s), the port calls 0x27A9F0 and 0x27AB70 as player 1's death
+  does: the Game Over screen, player 1 alive.
 
 ## The pause menu
 
@@ -90,9 +126,6 @@ action the port handles, and a text for it.
 
 ## Still open
 
-- Input: player 1 is the keyboard and the first controller together; a keyboard-only player 1 with the
-  first controller as player 2 needs a setting.
-- Story scripts that move a companion (cutscenes, doors) while it is a player.
-- The camera with the players far apart (tested over a short distance only).
-- Player 2's death: respawn or game over.
-- A pause menu action of the port's own, and its text.
+- Story scripts that move a companion outside cutscenes (doors, "wait for Obi-Wan" moments).
+- The camera with the players far apart.
+- A pause menu entry of the port's own, and its text.

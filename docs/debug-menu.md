@@ -32,6 +32,7 @@ Up/Down recall earlier commands.
 | `saber [red\|green\|blue\|purple\|<r> <g> <b>\|off]` | the player's saber colour, its own only, at once (see below) |
 | `spawn <class> [<costume>] [skin <set>] [mesh <mesh>] [ally\|enemy\|neutral\|riot] [scale <size>]` | a character in front of you, at once (see below) |
 | `infiniteforce [on\|off]` | your Force stays full |
+| `coop [on\|off \| input auto\|keyboard\|controllers \| death respawn\|gameover \| player2 <class>\|auto \| storysafety on\|off]` | co-op: what player 2 is doing, and its settings (saved to `settings.ini`, see [settings](settings.md#co-op)) |
 | `peek <hex offset> [count]` | research: your character's fields from that offset, as hex and as numbers, in the console and log |
 | `team [spawned] [<hex teams>]` | research: your (or the last spawned character's) teams and AI data |
 | `findrefs [spawned]` | research: where the game keeps pointers to your character (or the last spawned one), with the type of the object holding each, in the console and log |

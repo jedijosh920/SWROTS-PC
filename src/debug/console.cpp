@@ -17,7 +17,9 @@
 #include "d3d/recorder.h"
 #include "game/freecam.h"
 #include "game/game.h"
+#include "core/settings.h"
 #include "game/characters.h"
+#include "game/coop.h"
 #include "game/versus.h"
 #include "kernel/kernel.h"
 
@@ -247,6 +249,7 @@ void Help(uint8_t* console)
     Print(LineKind::Output, "                           [scale <size>]: a character in front of the player");
     Print(LineKind::Output, "  scale [<size>] [spawned]  your size (or the last spawned character's), 1 being its own");
     Print(LineKind::Output, "  infiniteforce [on|off]   your Force stays full");
+    Print(LineKind::Output, "  coop [on|off|input ..|death ..|player2 ..|storysafety ..]  two players in story missions");
     Print(LineKind::Output, "  memory                   the game's memory use, and the characters spawned");
     Print(LineKind::Output, "  despawn                  remove the characters you spawned");
     Print(LineKind::Output, "  restart                  restart the mission");
@@ -614,6 +617,49 @@ void InfiniteForceCommand(const std::vector<std::string>& words)
     Print(LineKind::Output, "  infinite Force: %s", game::InfiniteForce() ? "on" : "off");
 }
 
+// coop [on|off | input auto|keyboard|controllers | death respawn|gameover | player2 <class>|auto |
+// storysafety on|off]: co-op's settings (saved to settings.ini), and what it is doing.
+void Coop(const std::vector<std::string>& words)
+{
+    Settings& s = EditSettings();
+    auto is = [&](size_t i, const char* text) { return words.size() > i && _stricmp(words[i].c_str(), text) == 0; };
+    if (words.size() == 2 && (is(1, "on") || is(1, "off"))) {
+        s.coop = is(1, "on");
+    } else if (words.size() == 3 && is(1, "input") && (is(2, "auto") || is(2, "keyboard") || is(2, "controllers"))) {
+        s.coopInput = is(2, "auto") ? 0 : is(2, "keyboard") ? 1 : 2;
+    } else if (words.size() == 3 && is(1, "death") && (is(2, "respawn") || is(2, "gameover"))) {
+        s.coopDeath = is(2, "gameover") ? 1 : 0;
+    } else if (words.size() == 3 && is(1, "storysafety") && (is(2, "on") || is(2, "off"))) {
+        s.coopStorySafety = is(2, "on");
+    } else if (words.size() == 3 && is(1, "player2")) {
+        if (is(2, "auto")) {
+            s.coopPlayer2.clear();
+        } else if (const char* name = game::RegisteredClassName(words[2].c_str()); name && game::ClassHasBody(name)) {
+            s.coopPlayer2 = name;
+        } else {
+            Print(LineKind::Error, "%s: no such character class (see `characters`)", words[2].c_str());
+            return;
+        }
+    } else if (words.size() != 1) {
+        Print(LineKind::Error, "coop [on|off | input auto|keyboard|controllers | death respawn|gameover |");
+        Print(LineKind::Error, "      player2 <class>|auto | storysafety on|off]");
+        return;
+    }
+    if (words.size() > 1)
+        SaveSettings();
+    static const char* const kInputs[] = { "auto (keyboard alone with one controller)", "keyboard is player 1",
+        "two controllers" };
+    Print(LineKind::Output, "  co-op %s; input: %s; when player 2 dies: %s; story safety %s; player 2 without a "
+        "companion: %s", s.coop ? "on" : "off", kInputs[s.coopInput], s.coopDeath ? "game over" : "they come back",
+        s.coopStorySafety ? "on" : "off", s.coopPlayer2.empty() ? "automatic" : s.coopPlayer2.c_str());
+    const game::CoopState state = game::GetCoopState();
+    if (state.playing)
+        Print(LineKind::Output, "  player 2 plays %s %s (health %.0f / %.0f)", state.spawned ? "the spawned" : "the companion",
+            state.player2.c_str(), state.health, state.maxHealth);
+    else if (s.coop)
+        Print(LineKind::Output, "  player 2 is not playing: %s", state.reason.empty() ? "-" : state.reason.c_str());
+}
+
 void Memory()
 {
     const kernel::MemoryUsage m = kernel::QueryMemoryUsage();
@@ -936,7 +982,7 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         command != "freecam" && command != "saber" && command != "spawn" && command != "peek" &&
         command != "infiniteforce" && command != "memory" && command != "team" &&
         command != "findrefs" && command != "despawn" && command != "characters" && command != "scale" &&
-        command != "screenshot")
+        command != "screenshot" && command != "coop")
         return false;
     Print(LineKind::Output, "> %s", line.c_str());
     if (command == "duelist") {
@@ -971,6 +1017,8 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         Characters();
     } else if (command == "scale") {
         Scale(words);
+    } else if (command == "coop") {
+        Coop(words);
     } else if (command == "screenshot") {
         d3d::RequestScreenshot(words.size() > 1 ? words[1] : "");
         Print(LineKind::Output, "  saved at the next frame, without this menu, to the screenshots folder");
@@ -1065,7 +1113,7 @@ void RunQueuedConsoleCommands()
             // and gone while a level loads).
             const std::vector<std::string> words = Words(line);
             static const char* const kStandalone[] = { "player", "variants", "meshes", "restart", "autorestart",
-                "duelist", "freecam", "saber", "spawn", "peek", "infiniteforce", "memory", "team", "findrefs", "despawn", "characters", "scale", "screenshot", "clear", "cls" };
+                "duelist", "freecam", "saber", "spawn", "peek", "infiniteforce", "memory", "team", "findrefs", "despawn", "characters", "scale", "screenshot", "coop", "clear", "cls" };
             const bool standalone = !words.empty() && std::any_of(std::begin(kStandalone), std::end(kStandalone),
                 [&](const char* c) { return _stricmp(words[0].c_str(), c) == 0; });
             if (standalone) {

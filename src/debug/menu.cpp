@@ -15,6 +15,7 @@
 #include "core/log.h"
 #include "debug/console.h"
 #include "game/characters.h"
+#include "game/coop.h"
 #include "game/freecam.h"
 #include "game/game.h"
 #include "imgui.h"
@@ -934,6 +935,7 @@ void MenuAfterFrame()
 {
     RunQueuedConsoleCommands();
     game::PlayerFrame();
+    game::CoopFrame();
 }
 
 } // namespace swrots::debug
