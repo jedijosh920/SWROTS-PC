@@ -64,7 +64,10 @@ companion (Obi-Wan beside Anakin), or, in missions without one, a character of t
 player 1 (Obi-Wan, or Anakin when player 1 is Obi-Wan; `Player2` chooses another). Player 2 gets the
 game's own second HUD (portrait, health, Force), the camera keeps both players in view, and both take
 damage. When player 2's controller is unplugged, the character goes back to the game; plugged in again,
-player 2 takes it again. Versus and the bonus missions made for two players are left as they are.
+player 2 takes it again. The camera keeps both players in view while they stay fairly close; further apart
+it follows player 1 alone, and a player 2 left far behind for a few seconds is brought back beside player 1.
+In the bonus missions made for two players, player 2 plays the game's own second character (Cin Drallig
+beside Serra) when the game left it to the AI. Versus and the story duels are left as they are.
 
 - `Input`: with auto, one controller means the keyboard and mouse are player 1 and the controller is
   player 2; with two or more controllers, the first is player 1's (with the keyboard) and the second

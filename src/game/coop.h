@@ -9,9 +9,10 @@ namespace swrots::game {
 // on, player 2 plays the mission's companion (Obi-Wan beside Anakin), or a character spawned beside player
 // 1 in missions without one, as soon as a controller is there for them, and gives the character back to
 // the game's AI when the controller goes. Player 2 has the game's own second HUD (portrait, health, Force),
-// is kept in view by the camera and takes damage; when they would die they come back beside player 1 or,
-// with Player2Death=1, the mission is lost. Versus and the bonus missions made for two players are left
-// as they are. Applied anew at every level start.
+// is kept in view by the camera while near (a player 2 left far behind is brought back) and takes damage;
+// when they would die they come back beside player 1 or, with Player2Death=1, the mission is lost. In the
+// bonus missions made for two players, player 2 plays the game's own second character when the game left
+// it to the AI; Versus and the story duels are left as they are. Applied anew at every level start.
 
 // At every boot, after the image is loaded.
 void InstallCoop();
@@ -28,6 +29,7 @@ struct CoopState {
     std::string player2;       // that character's class, or the one waiting for player 2
     bool spawned = false;      // co-op spawned it (the mission has no companion)
     float health = 0, maxHealth = 0; // player 2's, while playing
+    float distance = 0;        // between the players, while playing
     std::string reason;        // why player 2 does not play, when not
 };
 CoopState GetCoopState();

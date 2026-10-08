@@ -654,8 +654,8 @@ void Coop(const std::vector<std::string>& words)
         s.coopStorySafety ? "on" : "off", s.coopPlayer2.empty() ? "automatic" : s.coopPlayer2.c_str());
     const game::CoopState state = game::GetCoopState();
     if (state.playing)
-        Print(LineKind::Output, "  player 2 plays %s %s (health %.0f / %.0f)", state.spawned ? "the spawned" : "the companion",
-            state.player2.c_str(), state.health, state.maxHealth);
+        Print(LineKind::Output, "  player 2 plays %s %s (health %.0f / %.0f, %.0f from player 1)",
+            state.spawned ? "the spawned" : "the companion", state.player2.c_str(), state.health, state.maxHealth, state.distance);
     else if (s.coop)
         Print(LineKind::Output, "  player 2 is not playing: %s", state.reason.empty() ? "-" : state.reason.c_str());
 }

@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <iterator>
 #include <set>
@@ -38,6 +39,13 @@ constexpr int kControlCompanion = 16;
 constexpr uint32_t kTypeNameSlot = 3;            // vfunc: the class's name
 constexpr uint32_t kPlaceSlot = 0x1F4 / 4;       // vfunc, thiscall (const float m[16])
 constexpr uint32_t kBindController = 0x00150580; // thiscall (int controller; -1 none)
+constexpr uint32_t kCharacterController = 0x43C; // the controller bound to it, -1 none
+// The input manager: per controller port (+0x1D8, 4 of them) an entry whose +0x7C is the character it drives.
+// 0x150580 with -1 writes -1 to the character before the manager's unbind (0x8ADD0) reads it, so the port
+// keeps driving the character: the port's entry is cleared here.
+constexpr uint32_t kInputManager = 0x0068D4F4;
+constexpr uint32_t kInputPorts = 0x1D8;
+constexpr uint32_t kPortCharacter = 0x7C;
 constexpr uint32_t kObjectById = 0x000A31F0;     // cdecl (id) -> object or null
 
 // The game manager's players: their number and an instance id per slot (see coop.md).
@@ -70,6 +78,15 @@ constexpr ULONGLONG kShieldMs = 2000;       // a player 2 who came back cannot b
 constexpr ULONGLONG kAfterCutsceneMs = 1000; // player 2 takes the companion again this long after a cutscene
 constexpr ULONGLONG kDeathPlaysMs = 6000;    // a death's fall, at most (about 4 s)
 constexpr float kBesideDistance = 80.0f;    // where player 2 comes back: beside player 1
+// The leash: the camera keeps both players in view only while they are this close (beyond, it frames player 1
+// alone, as without co-op: framing both far apart pulls it far out), and a player 2 left far behind (or gone
+// ahead, or fallen) is brought back beside player 1.
+constexpr float kCameraDropDistance = 600.0f;
+constexpr float kCameraTakeDistance = 450.0f;
+constexpr float kLeashDistance = 900.0f;
+constexpr ULONGLONG kLeashMs = 3000;
+constexpr float kFarDistance = 1500.0f;
+constexpr ULONGLONG kFarMs = 1000;
 
 using ChangeHealthFn = void(__fastcall*)(uint8_t*, void*, float, uint32_t, uint32_t);
 using ResolveFn = void(__fastcall*)(uint8_t*, void*, uint32_t);
@@ -89,6 +106,10 @@ struct State {
     int savedControl = 0;
     uint8_t savedInvincible = 0;
     int savedCount = 1;
+    uint32_t savedSlotId = 0;     // the mission's own player 2 (a co-op bonus mission), or 0
+    bool cameraDropped = false;    // player 2 is out of the camera's lists (too far)
+    ULONGLONG farSince = 0;        // player 2 beyond the leash since then
+    int controlsLost = 0;         // times player 2's controls were found changed and given back
     bool respawnPending = false;   // the health hook caught a fatal hit
     ULONGLONG shieldUntil = 0;
     ULONGLONG respawnAt = 0;       // a new character for player 2 from then (0: not waiting)
@@ -143,6 +164,38 @@ bool StillThere()
 void BindController(uint8_t* character, int controller)
 {
     reinterpret_cast<void(__fastcall*)(uint8_t*, void*, int)>(uintptr_t(kBindController))(character, nullptr, controller);
+}
+
+// The input manager's entry for a controller port, or null.
+uint8_t* PortEntry(int port)
+{
+    uint8_t* manager = *reinterpret_cast<uint8_t**>(uintptr_t(kInputManager));
+    if (!manager || !(Field<uint32_t>(manager, 0xC) & 0x40000))
+        return nullptr;
+    return Field<uint8_t*>(manager, kInputPorts + port * 4);
+}
+
+void UnbindController(uint8_t* character)
+{
+    if (uint8_t* entry = PortEntry(kPlayer2Port); entry && Field<uint8_t*>(entry, kPortCharacter) == character)
+        Field<uint8_t*>(entry, kPortCharacter) = nullptr;
+    BindController(character, -1);
+}
+
+// Player 2's controls as Register set them: something else (a cutscene's end, a script) may have changed them.
+bool ControlsIntact(uint8_t* character)
+{
+    const uint8_t* entry = PortEntry(kPlayer2Port);
+    return Field<int>(character, kCharacterControl) == kControlPlayer &&
+           Field<int>(character, kCharacterController) == kPlayer2Port && entry &&
+           Field<uint8_t*>(const_cast<uint8_t*>(entry), kPortCharacter) == character;
+}
+
+float Distance(uint8_t* a, uint8_t* b)
+{
+    const float* p = &Field<float>(a, kCharacterTransform + 48);
+    const float* q = &Field<float>(b, kCharacterTransform + 48);
+    return std::sqrt((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]));
 }
 
 // --- The camera ---
@@ -233,8 +286,65 @@ std::vector<uint8_t*> FindFocusLists()
 void __fastcall ResolveHook(uint8_t* list, void*, uint32_t owner)
 {
     g_OriginalResolve(list, nullptr, owner);
-    if (!g_InResolve && g_State.playing && StillThere())
+    if (!g_InResolve && g_State.playing && !g_State.cameraDropped && StillThere())
         AddToFocusList(list);
+}
+
+// --- Player 2's HUD ---
+
+// Player 2's vitals (the HUD's "EnemyVitals" group, whose item names slot 2: +0x84 = 1) fade in while
+// slot 2 has a living character (0x25CD10, vtable 0x5A80A0: +4 the item, +0x10 the fade's time; the item's
+// alpha is its +0xB) and are never faded out again; the portrait (HudVitals, 0x5A82B0) is picked once
+// (+0xC gave up, +0xD picked). When player 2 leaves, the group is hidden and the portrait is to be picked
+// again (the group is also the duel opponent's, in missions co-op leaves alone).
+constexpr uint32_t kVitalsFadeVtable = 0x005A80A0;
+constexpr uint32_t kHudVitalsVtable = 0x005A82B0;
+constexpr uint32_t kVitalsItemSlot = 0x84;
+
+size_t ScanForVtables(uintptr_t base, size_t size, uint8_t** found, size_t room)
+{
+    size_t n = 0;
+    __try {
+        const uint32_t* words = reinterpret_cast<const uint32_t*>(base);
+        for (size_t i = 0; i + 8 <= size / 4 && n < room; ++i)
+            if (words[i] == kVitalsFadeVtable || words[i] == kHudVitalsVtable)
+                found[n++] = reinterpret_cast<uint8_t*>(base + i * 4);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return n;
+}
+
+// A word that only looks like a handler's vtable can be followed by anything: its group must be in the
+// game's memory.
+bool IsPlayer2Vitals(uint8_t* handler, const std::vector<std::pair<uintptr_t, size_t>>& regions)
+{
+    const uintptr_t group = uintptr_t(Field<uint8_t*>(handler, 8));
+    for (const auto& [base, size] : regions)
+        if (group >= base && group + kVitalsItemSlot + 4 <= base + size)
+            return *reinterpret_cast<const int*>(group + kVitalsItemSlot) == 1;
+    return false;
+}
+
+void ResetPlayer2Hud(bool hide)
+{
+    uint8_t* found[64];
+    const std::vector<std::pair<uintptr_t, size_t>> regions = kernel::GameMemoryRegions();
+    for (const auto& [base, size] : regions) {
+        const size_t n = ScanForVtables(base, size, found, std::size(found));
+        for (size_t i = 0; i < n; ++i) {
+            uint8_t* handler = found[i];
+            if (uintptr_t(handler) + 0x14 > base + size || !IsPlayer2Vitals(handler, regions))
+                continue;
+            if (Field<uint32_t>(handler, 0) == kHudVitalsVtable) {
+                Field<uint8_t>(handler, 0xC) = 0;
+                Field<uint8_t>(handler, 0xD) = 0;
+            } else if (hide) {
+                if (uint8_t* item = Field<uint8_t*>(handler, 4))
+                    Field<uint8_t>(item, 0xB) = 0;
+                Field<float>(handler, 0x10) = 0;
+            }
+        }
+    }
 }
 
 // --- Damage ---
@@ -284,14 +394,19 @@ void Register()
     g_State.savedControl = Field<int>(c, kCharacterControl);
     g_State.savedInvincible = Field<uint8_t>(c, kCharacterInvincible);
     g_State.savedCount = Field<int>(manager, kManagerPlayerCount);
+    g_State.savedSlotId = Field<uint32_t>(manager, kManagerPlayerIds + 4);
     Field<int>(c, kCharacterControl) = kControlPlayer;
     BindController(c, kPlayer2Port);
     Field<uint8_t>(c, kCharacterInvincible) = 0;
     // The second HUD (the third HudVitals, which names slot 2) shows whoever is in slot 2 while there are two.
     Field<uint32_t>(manager, kManagerPlayerIds + 4) = g_State.p2Id;
     Field<int>(manager, kManagerPlayerCount) = 2;
+    ResetPlayer2Hud(false); // the portrait is picked for this character
     g_State.playing = true;
+    g_State.controlsLost = 0;
     const ULONGLONG started = GetTickCount64();
+    g_State.cameraDropped = false;
+    g_State.farSince = 0;
     for (uint8_t* list : FindFocusLists())
         AddToFocusList(list);
     LOG_INFO("Co-op: player 2 plays %s %s (control was %d); %zu camera list(s), %llu ms", g_State.spawned ? "the spawned" : "the companion",
@@ -306,13 +421,15 @@ void Unregister(const char* why)
     g_State.playing = false;
     g_State.respawnPending = false;
     if (uint8_t* manager = Manager()) {
-        if (Field<uint32_t>(manager, kManagerPlayerIds + 4) == g_State.p2Id)
-            Field<uint32_t>(manager, kManagerPlayerIds + 4) = 0;
-        Field<int>(manager, kManagerPlayerCount) = std::min(g_State.savedCount, 1);
+        // As the mission had them: a co-op bonus mission's own player 2 stays in its slot.
+        Field<uint32_t>(manager, kManagerPlayerIds + 4) = g_State.savedSlotId;
+        Field<int>(manager, kManagerPlayerCount) = g_State.savedCount;
     }
+    if (!g_State.savedSlotId)
+        ResetPlayer2Hud(true);
     if (StillThere()) {
         RemoveFromFocusLists();
-        BindController(g_State.p2, -1);
+        UnbindController(g_State.p2);
         Field<int>(g_State.p2, kCharacterControl) = g_State.savedControl;
         Field<uint8_t>(g_State.p2, kCharacterInvincible) = g_State.savedInvincible;
     } else {
@@ -394,8 +511,8 @@ bool PickCharacter(uint8_t* player)
     return true;
 }
 
-// Player 2 back on their feet beside player 1, with full health and a moment's shield.
-void Respawn(uint8_t* player)
+// Player 2 placed beside player 1.
+void PlaceBeside(uint8_t* player)
 {
     float m[16];
     std::memcpy(m, &Field<float>(player, kCharacterTransform), sizeof(m));
@@ -403,6 +520,37 @@ void Respawn(uint8_t* player)
         m[12 + i] += m[i] * kBesideDistance; // to player 1's right
     reinterpret_cast<void(__fastcall*)(uint8_t*, void*, const float*)>(VirtualFunction(g_State.p2, kPlaceSlot))(
         g_State.p2, nullptr, m);
+}
+
+// The camera keeps player 2 in view while the players are close enough; the leash brings them back.
+void Leash(uint8_t* player, ULONGLONG now)
+{
+    const float distance = Distance(player, g_State.p2);
+    if (!g_State.cameraDropped && distance > kCameraDropDistance) {
+        RemoveFromFocusLists();
+        g_State.cameraDropped = true;
+    } else if (g_State.cameraDropped && distance < kCameraTakeDistance) {
+        g_State.cameraDropped = false;
+        for (uint8_t* list : FindFocusLists())
+            AddToFocusList(list);
+    }
+    if (distance <= kLeashDistance) {
+        g_State.farSince = 0;
+        return;
+    }
+    if (!g_State.farSince)
+        g_State.farSince = now;
+    if (now - g_State.farSince >= kLeashMs || (distance > kFarDistance && now - g_State.farSince >= kFarMs)) {
+        PlaceBeside(player);
+        g_State.farSince = 0;
+        LOG_INFO("Co-op: player 2 was %.0f away and came back beside player 1", distance);
+    }
+}
+
+// Player 2 back on their feet beside player 1, with full health and a moment's shield.
+void Respawn(uint8_t* player)
+{
+    PlaceBeside(player);
     Field<float>(g_State.p2, kCharacterHealth) = Field<float>(g_State.p2, kCharacterMaxHealth);
     Field<uint8_t>(g_State.p2, kCharacterInvincible) = 1;
     g_State.shieldUntil = GetTickCount64() + kShieldMs;
@@ -473,18 +621,25 @@ void CoopFrame()
         return;
     }
     if (!g_State.decided) {
-        // A mission with two players of its own (the co-op bonus missions, from their menu) is left alone.
+        // A mission whose slot 2 is taken: a co-op bonus mission's player 2 left to the AI (Cin Drallig
+        // beside Serra, without a second controller) is a companion like any other; a story duel's
+        // opponent (slot 2 shows the opponent's health) or a player 2 already playing is left alone.
         uint8_t* manager = Manager();
-        g_State.nativeTwoPlayers = manager && Field<int>(manager, kManagerPlayerCount) >= 2;
         g_State.decided = true;
-        if (g_State.nativeTwoPlayers)
-            LOG_INFO("Co-op: this mission has two players of its own");
+        if (manager && Field<int>(manager, kManagerPlayerCount) >= 2) {
+            uint8_t* other = ObjectById(Field<uint32_t>(manager, kManagerPlayerIds + 4));
+            const bool companion = other && other != player && Alive(other) &&
+                Field<int>(other, kCharacterControl) == kControlCompanion && !TargetsPlayer(other) && IsJedi(other);
+            g_State.nativeTwoPlayers = !companion;
+            LOG_INFO("Co-op: this mission has a player 2 of its own (%s)%s", other ? TypeName(other) : "none",
+                companion ? ", left to the AI: co-op plays it" : ": left alone");
+        }
     }
     if (g_State.gameOverSent) // the mission is lost: nothing more until it starts again
         return;
     if (g_State.nativeTwoPlayers) {
         input::SetCoopInput(false);
-        g_State.reason = "this mission has two players of its own";
+        g_State.reason = "this mission has a player 2 of its own";
         return;
     }
     input::SetCoopInput(settings.coop);
@@ -530,6 +685,17 @@ void CoopFrame()
             g_State.p2 = nullptr;
             g_State.respawnAt = now + kRespawnDelayMs;
         }
+        if (g_State.playing && StillThere() && Alive(g_State.p2) && !ControlsIntact(g_State.p2)) {
+            const uint8_t* entry = PortEntry(kPlayer2Port);
+            LOG_INFO("Co-op: player 2's controls were changed (control %d, controller %d, port 1 drives %p); given back",
+                Field<int>(g_State.p2, kCharacterControl), Field<int>(g_State.p2, kCharacterController),
+                entry ? Field<uint8_t*>(const_cast<uint8_t*>(entry), kPortCharacter) : nullptr);
+            Field<int>(g_State.p2, kCharacterControl) = kControlPlayer;
+            BindController(g_State.p2, kPlayer2Port);
+            ++g_State.controlsLost;
+        }
+        if (g_State.playing && StillThere() && Alive(g_State.p2))
+            Leash(player, now);
         if (g_State.shieldUntil && now >= g_State.shieldUntil && StillThere()) {
             g_State.shieldUntil = 0;
             Field<uint8_t>(g_State.p2, kCharacterInvincible) = 0;
@@ -583,6 +749,8 @@ CoopState GetCoopState()
     if (g_State.playing && StillThere()) {
         s.health = Field<float>(g_State.p2, kCharacterHealth);
         s.maxHealth = Field<float>(g_State.p2, kCharacterMaxHealth);
+        if (uint8_t* player = PlayerObject())
+            s.distance = Distance(player, g_State.p2);
     }
     s.reason = g_State.reason;
     return s;

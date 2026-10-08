@@ -45,7 +45,8 @@ Things the Xbox release never had:
 - **Two-player co-op in the story missions.** Turn it on in `settings.ini` (`[Coop]`, `Enabled=1`) and a
   second player with a controller joins by themselves: they play the mission's companion (Obi-Wan beside
   Anakin) or a character of their own beside you, with the game's own second HUD and a camera that keeps
-  you both in view, and come back beside you when they fall. One controller is enough: the keyboard and
+  you both in view, and come back beside you when they fall or wander off. Also in the bonus missions made
+  for two players, with one controller. One controller is enough: the keyboard and
   mouse are then player 1. See [co-op settings](docs/settings.md#co-op).
 - **Unlock everything** with the developers' own cheat, `unlockprofile` (debug console).
 - **Free camera.** Fly the view anywhere with `freecam` (debug console): keyboard and mouse or a

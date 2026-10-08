@@ -107,8 +107,28 @@ Drallig bonus mission plays one from about 4 to 7.5 seconds; player 1's control 
   "Invincible?" cleared, its id in slot 2 with a player count of 2 (the second HUD), and an entry in
   every focus list that holds player 1; lists resolved later (slot 5 is hooked) get one too.
 - **Leaving.** The controller goes, co-op is turned off, or a cutscene plays (with story safety): the
-  character is unbound (-1), gets its control mode and "Invincible?" back, slot 2 is cleared and the
-  count set back to 1, and its focus list entries are emptied and resolved away.
+  character is unbound, gets its control mode and "Invincible?" back, slot 2 and the count get their
+  mission's values back, its focus list entries are emptied and resolved away, and player 2's HUD is
+  hidden. Unbinding needs the port's own help: 0x150580 with -1 writes -1 to the character's controller
+  (+0x43C) before the input manager's unbind (0x8ADD0) reads it there, so the port's entry
+  (`[0x68D4F4]` +0x1D8 + port*4, its +0x7C the character it drives) kept driving the companion (it stood
+  still with an idle controller). The port clears that entry itself.
+- **Kept.** While player 2 plays, their control mode, controller (+0x43C) and the port's entry are checked
+  every frame and set again when something changed them (seen after a cutscene in the first mission).
+- **HUD.** Player 2's vitals are the HUD's `EnemyVitals` group (`interfc\hud.xbl_xml`; the story duels show
+  the opponent there, from slot 2). Its handlers (vtable 0x5A80A0, update 0x25CD10: +4 the item, +8 the
+  group whose +0x84 is the slot, +0x10 the fade time) fade the item in (alpha at item +0xB) while slot 2
+  has a living character and never fade it out; the portrait (HudVitals 0x5A82B0) is picked once (+0xC
+  gave up, +0xD picked). The port sets the alpha and fade time to 0 when player 2 leaves, and has the
+  portrait picked again when they join.
+- **Camera and leash.** Beyond 600 units apart (a character is about 70 tall) player 2 leaves the focus
+  lists, and comes back into them within 450: framing two players far apart pulls the camera far out,
+  in the first mission's open hangar into space. Beyond 900 for 3 seconds (1500 for 1), player 2 is
+  placed beside player 1.
+- **Missions with a player 2 of their own.** The co-op bonus missions started without a second
+  controller leave their player 2 (Cin Drallig) to the AI with control mode 16 in slot 2 (count 2); the
+  port plays it like a companion and gives it back to the AI as it was. The story duels count their
+  opponent in slot 2 (for its health on the HUD): left alone, as is Versus (no player from the spawn).
 - **Death.** 0x151500 is hooked. Under the respawn rule a change that leaves player 2 at or below 0
   (and not yet dead) leaves 1 instead, so no death starts, and on the next frame player 2 is placed
   beside player 1 (slot 0x1F4) with full health and 2 seconds of "Invincible?". A player 2 who dies
@@ -127,5 +147,4 @@ action the port handles, and a text for it.
 ## Still open
 
 - Story scripts that move a companion outside cutscenes (doors, "wait for Obi-Wan" moments).
-- The camera with the players far apart.
 - A pause menu entry of the port's own, and its text.
