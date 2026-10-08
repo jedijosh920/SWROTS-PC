@@ -16,6 +16,7 @@
 
 #include "core/log.h"
 #include "core/patch.h"
+#include "game/coop.h"
 #include "game/game.h"
 #include "game/resources.h"
 #include "kernel/kernel.h"
@@ -1783,14 +1784,18 @@ int SpawnedCount()
     return g_SpawnedInLevel;
 }
 
-int RemoveSpawned()
+// Removes spawned characters (those of `which` still there; all with null), as the game removes its own.
+int RemoveSpawnedCharacters(const uint8_t* which)
 {
     std::vector<uint8_t*> live;
     for (const SpawnedCharacter& spawned : g_SpawnedCharacters) {
         // Still there: the object manager finds it by its id (ObjectById).
-        if (reinterpret_cast<uint8_t*(__cdecl*)(uint32_t)>(uintptr_t(kObjectById))(spawned.id) == spawned.object)
+        if ((!which || spawned.object == which) &&
+            reinterpret_cast<uint8_t*(__cdecl*)(uint32_t)>(uintptr_t(kObjectById))(spawned.id) == spawned.object)
             live.push_back(spawned.object);
     }
+    for (uint8_t* object : live)
+        CoopCharacterRemoving(object); // player 2 lets go of theirs first
     if (!live.empty()) {
         // Nothing keeps aiming at them, and no bolt in the air involves them.
         std::vector<uint8_t*> others;
@@ -1809,11 +1814,29 @@ int RemoveSpawned()
         DestroyObject(object);
         ++removed;
     }
-    g_SpawnedCharacters.clear();
-    g_SpawnedInLevel = 0;
-    g_LastSpawned = nullptr;
+    if (which) {
+        g_SpawnedCharacters.erase(std::remove_if(g_SpawnedCharacters.begin(), g_SpawnedCharacters.end(),
+            [&](const SpawnedCharacter& c) { return c.object == which; }), g_SpawnedCharacters.end());
+        g_SpawnedInLevel = std::max(0, g_SpawnedInLevel - removed);
+        if (g_LastSpawned == which)
+            g_LastSpawned = nullptr;
+    } else {
+        g_SpawnedCharacters.clear();
+        g_SpawnedInLevel = 0;
+        g_LastSpawned = nullptr;
+    }
     LOG_INFO("Characters: %d spawned character(s) removed", removed);
     return removed;
+}
+
+int RemoveSpawned()
+{
+    return RemoveSpawnedCharacters(nullptr);
+}
+
+bool RemoveSpawnedCharacter(uint8_t* character)
+{
+    return character && RemoveSpawnedCharacters(character) > 0;
 }
 
 void SetPlayerSaberColor(const float* rgb)

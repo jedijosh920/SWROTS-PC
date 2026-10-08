@@ -30,6 +30,8 @@ constexpr uint32_t kCharacterDead = 0x12C;       // byte: set when its death has
 constexpr uint32_t kCharacterHealth = 0x130;     // float
 constexpr uint32_t kCharacterMaxHealth = 0x134;  // float
 constexpr uint32_t kCharacterTransform = 0x150;  // rows right, up, forward, position
+constexpr uint32_t kCharacterPower = 0xA40;      // float: the Force (Jedi-like characters)
+constexpr uint32_t kCharacterMaxPower = 0xA44;   // float
 constexpr uint32_t kCharacterControl = 0x390;    // 2: a player's; 16: a story companion's
 constexpr uint32_t kCharacterInvincible = 0x5D6; // byte: "Invincible?" (story companions have it)
 constexpr uint32_t kCharacterAIData = 0xA00;
@@ -79,14 +81,15 @@ constexpr ULONGLONG kAfterCutsceneMs = 1000; // player 2 takes the companion aga
 constexpr ULONGLONG kDeathPlaysMs = 6000;    // a death's fall, at most (about 4 s)
 constexpr float kBesideDistance = 80.0f;    // where player 2 comes back: beside player 1
 // The leash: the camera keeps both players in view only while they are this close (beyond, it frames player 1
-// alone, as without co-op: framing both far apart pulls it far out), and a player 2 left far behind (or gone
-// ahead, or fallen) is brought back beside player 1.
-constexpr float kCameraDropDistance = 600.0f;
-constexpr float kCameraTakeDistance = 450.0f;
-constexpr float kLeashDistance = 900.0f;
-constexpr ULONGLONG kLeashMs = 3000;
-constexpr float kFarDistance = 1500.0f;
-constexpr ULONGLONG kFarMs = 1000;
+// alone, as without co-op: in open places such as the first mission's hangar, framing two players a few
+// hundred units apart pulls it far out into space), and a player 2 left behind (or gone ahead, or fallen)
+// is brought back beside player 1. A character is about 70 units tall.
+constexpr float kCameraDropDistance = 300.0f;
+constexpr float kCameraTakeDistance = 220.0f;
+constexpr float kLeashDistance = 500.0f;
+constexpr ULONGLONG kLeashMs = 2000;
+constexpr float kFarDistance = 900.0f;
+constexpr ULONGLONG kFarMs = 500;
 
 using ChangeHealthFn = void(__fastcall*)(uint8_t*, void*, float, uint32_t, uint32_t);
 using ResolveFn = void(__fastcall*)(uint8_t*, void*, uint32_t);
@@ -109,6 +112,7 @@ struct State {
     uint32_t savedSlotId = 0;     // the mission's own player 2 (a co-op bonus mission), or 0
     bool cameraDropped = false;    // player 2 is out of the camera's lists (too far)
     ULONGLONG farSince = 0;        // player 2 beyond the leash since then
+    float savedMaxHealth = 0, savedMaxPower = 0; // the character's own (given back when player 2 leaves)
     int controlsLost = 0;         // times player 2's controls were found changed and given back
     bool respawnPending = false;   // the health hook caught a fatal hit
     ULONGLONG shieldUntil = 0;
@@ -383,7 +387,42 @@ bool InCutscene()
            *reinterpret_cast<const int*>(uintptr_t(kScriptedCameras)) > 0;
 }
 
+// Jedi-like characters (IJedi and those built on it): IsA (vfunc +4) with the type's function as its key.
+bool IsJedi(uint8_t* character)
+{
+    constexpr uint32_t kJediType = 0x00249950;
+    return reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint32_t)>(VirtualFunction(character, 1))(
+        character, nullptr, kJediType);
+}
+
+// The player's enemies have their AI data's "Target Player" set (the scripted ones, such as the first
+// mission's battle droids, have control mode 16 too).
+bool TargetsPlayer(uint8_t* character)
+{
+    const uint8_t* ai = Field<uint8_t*>(character, kCharacterAIData);
+    return !ai || ai[kAITargetPlayer] != 0;
+}
+
 // --- Player 2 ---
+
+// A maximum changed to `max`, the current value kept in proportion.
+void SetMaximum(uint8_t* character, uint32_t current, uint32_t maximum, float max)
+{
+    float& value = Field<float>(character, current);
+    float& old = Field<float>(character, maximum);
+    if (max <= 0 || old == max)
+        return;
+    value = old > 0 ? value / old * max : max;
+    old = max;
+}
+
+// Player 2 as strong as player 1: the same maximum health and Force.
+void MatchPlayer1(uint8_t* player)
+{
+    SetMaximum(g_State.p2, kCharacterHealth, kCharacterMaxHealth, Field<float>(player, kCharacterMaxHealth));
+    if (IsJedi(player) && IsJedi(g_State.p2))
+        SetMaximum(g_State.p2, kCharacterPower, kCharacterMaxPower, Field<float>(player, kCharacterMaxPower));
+}
 
 void Register()
 {
@@ -395,6 +434,10 @@ void Register()
     g_State.savedInvincible = Field<uint8_t>(c, kCharacterInvincible);
     g_State.savedCount = Field<int>(manager, kManagerPlayerCount);
     g_State.savedSlotId = Field<uint32_t>(manager, kManagerPlayerIds + 4);
+    g_State.savedMaxHealth = Field<float>(c, kCharacterMaxHealth);
+    g_State.savedMaxPower = Field<float>(c, kCharacterMaxPower);
+    if (uint8_t* player = PlayerObject())
+        MatchPlayer1(player);
     Field<int>(c, kCharacterControl) = kControlPlayer;
     BindController(c, kPlayer2Port);
     Field<uint8_t>(c, kCharacterInvincible) = 0;
@@ -432,27 +475,17 @@ void Unregister(const char* why)
         UnbindController(g_State.p2);
         Field<int>(g_State.p2, kCharacterControl) = g_State.savedControl;
         Field<uint8_t>(g_State.p2, kCharacterInvincible) = g_State.savedInvincible;
+        if (!g_State.spawned) { // a companion is as strong as the story made it again
+            SetMaximum(g_State.p2, kCharacterHealth, kCharacterMaxHealth, g_State.savedMaxHealth);
+            if (IsJedi(g_State.p2))
+                SetMaximum(g_State.p2, kCharacterPower, kCharacterMaxPower, g_State.savedMaxPower);
+        }
     } else {
-        g_FocusLists.clear();
+        RemoveFromFocusLists(); // the entries still name the character (by pointer only)
     }
     LOG_INFO("Co-op: player 2 left %s (%s)", g_State.p2Class.c_str(), why);
 }
 
-// Jedi-like characters (IJedi and those built on it): IsA (vfunc +4) with the type's function as its key.
-bool IsJedi(uint8_t* character)
-{
-    constexpr uint32_t kJediType = 0x00249950;
-    return reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint32_t)>(VirtualFunction(character, 1))(
-        character, nullptr, kJediType);
-}
-
-// The player's enemies have their AI data's "Target Player" set (the scripted ones, such as the first
-// mission's battle droids, have control mode 16 too).
-bool TargetsPlayer(uint8_t* character)
-{
-    const uint8_t* ai = Field<uint8_t*>(character, kCharacterAIData);
-    return !ai || ai[kAITargetPlayer] != 0;
-}
 
 // The mission's companion: a living Jedi beside the player whom the story moves (control mode 16) and
 // who is not the player's enemy (Obi-Wan beside Anakin, Cin Drallig beside Serra), the nearest to player
@@ -529,10 +562,12 @@ void Leash(uint8_t* player, ULONGLONG now)
     if (!g_State.cameraDropped && distance > kCameraDropDistance) {
         RemoveFromFocusLists();
         g_State.cameraDropped = true;
+        LOG_INFO("Co-op: %.0f apart: the camera follows player 1 alone", distance);
     } else if (g_State.cameraDropped && distance < kCameraTakeDistance) {
         g_State.cameraDropped = false;
         for (uint8_t* list : FindFocusLists())
             AddToFocusList(list);
+        LOG_INFO("Co-op: %.0f apart: the camera keeps both players in view", distance);
     }
     if (distance <= kLeashDistance) {
         g_State.farSince = 0;
@@ -645,6 +680,15 @@ void CoopFrame()
     input::SetCoopInput(settings.coop);
     if (!settings.coop) {
         Unregister("co-op was turned off");
+        if (g_State.spawned && StillThere()) { // co-op's own character goes with it
+            RemoveSpawnedCharacter(g_State.p2);
+            LOG_INFO("Co-op: the character spawned for player 2 was removed");
+        }
+        if (g_State.spawned) {
+            g_State.p2 = nullptr;
+            g_State.spawned = false;
+            g_State.p2Class.clear();
+        }
         g_State.reason = "co-op is off";
         return;
     }
@@ -694,8 +738,10 @@ void CoopFrame()
             BindController(g_State.p2, kPlayer2Port);
             ++g_State.controlsLost;
         }
-        if (g_State.playing && StillThere() && Alive(g_State.p2))
+        if (g_State.playing && StillThere() && Alive(g_State.p2)) {
             Leash(player, now);
+            MatchPlayer1(player); // player 1's maximums can grow (upgrades)
+        }
         if (g_State.shieldUntil && now >= g_State.shieldUntil && StillThere()) {
             g_State.shieldUntil = 0;
             Field<uint8_t>(g_State.p2, kCharacterInvincible) = 0;
@@ -729,6 +775,15 @@ void CoopFrame()
     g_State.respawnAt = 0;
     g_State.reason.clear();
     Register();
+}
+
+void CoopCharacterRemoving(uint8_t* character)
+{
+    if (!character || character != g_State.p2)
+        return;
+    Unregister("the character is removed");
+    g_State.p2 = nullptr;
+    g_State.respawnAt = GetTickCount64() + kRespawnDelayMs;
 }
 
 uint8_t* CoopPlayer2()

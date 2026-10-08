@@ -121,10 +121,17 @@ Drallig bonus mission plays one from about 4 to 7.5 seconds; player 1's control 
   has a living character and never fade it out; the portrait (HudVitals 0x5A82B0) is picked once (+0xC
   gave up, +0xD picked). The port sets the alpha and fade time to 0 when player 2 leaves, and has the
   portrait picked again when they join.
-- **Camera and leash.** Beyond 600 units apart (a character is about 70 tall) player 2 leaves the focus
-  lists, and comes back into them within 450: framing two players far apart pulls the camera far out,
-  in the first mission's open hangar into space. Beyond 900 for 3 seconds (1500 for 1), player 2 is
-  placed beside player 1.
+- **Camera and leash.** Beyond 300 units apart (a character is about 70 tall) player 2 leaves the focus
+  lists, and comes back into them within 220: in open places (the first mission's hangar) the camera
+  pulls far back to frame two players a few hundred units apart, out into space; in tight ones it cannot,
+  so 500 apart looked fine there. Beyond 500 for 2 seconds (900 for half a second), player 2 is placed
+  beside player 1. The focus lists' own settings are MaximumPitch, MaximumYaw and KeepPositionFixed.
+- **As strong as player 1.** Player 2's maximum health and Force are player 1's (current values kept in
+  proportion, kept up while playing); a companion gets its own back when player 2 leaves. Its moves stay
+  its class's.
+- **Removal.** Turning co-op off removes the character it spawned. A character removed while it is player
+  2's (the port's `despawn`) is let go of first: its focus list entries would otherwise point at a freed
+  object, and the game's next resolve (0xC4688, its vfunc +0x5C) crashed.
 - **Missions with a player 2 of their own.** The co-op bonus missions started without a second
   controller leave their player 2 (Cin Drallig) to the AI with control mode 16 in slot 2 (count 2); the
   port plays it like a companion and gives it back to the AI as it was. The story duels count their

@@ -37,4 +37,8 @@ CoopState GetCoopState();
 // The character player 2 plays, or null (for research tools such as `peek`).
 uint8_t* CoopPlayer2();
 
+// A character is about to be removed from the level (the port's despawn): when it is player 2's, player 2
+// lets go of it first (the camera must not keep it).
+void CoopCharacterRemoving(uint8_t* character);
+
 } // namespace swrots::game

@@ -110,6 +110,8 @@ int SpawnedCount();
 // Removes the characters spawned in the running level (those still there), as the game removes its own
 // objects. The number removed.
 int RemoveSpawned();
+// Removes one spawned character (still there), as RemoveSpawned does. False when it is not one.
+bool RemoveSpawnedCharacter(uint8_t* character);
 
 // Changes the running level's player at once, where it stands, to the current choice (class, costume,
 // texture set, body; the player's own class when none is chosen): a new character takes over the
