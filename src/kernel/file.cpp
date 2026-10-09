@@ -89,8 +89,14 @@ void CreateSymbolicLink(const std::string& link, const std::string& target)
 void ResetLinkHandlesForReboot();
 
 // Reboot: back to the links the kernel creates before starting a title.
+// The game's error loop (QuietFileLog, below), per boot.
+static bool g_GameErrorLoop = false;
+static int g_MessageLogOpens = 0; // this boot's (a few at boot: it starts the file)
+
 void ResetFileSystemForReboot()
 {
+    g_GameErrorLoop = false;
+    g_MessageLogOpens = 0;
     {
         std::lock_guard<std::mutex> lock(g_LinkLock);
         g_Links.clear();
@@ -350,7 +356,6 @@ static void TraceOpenCallers(const std::string& xpath, void* stackTop)
 // handler can fail and start over without end (a fault it cannot handle),
 // rewriting the file thousands of times a second: that is said once, and the file layer's debug lines
 // stop (they filled a log with 70 MB).
-static bool g_GameErrorLoop = false;
 
 static bool QuietFileLog(const std::string& xpath)
 {
@@ -358,8 +363,7 @@ static bool QuietFileLog(const std::string& xpath)
         return true;
     if (xpath.size() < 11 || _stricmp(xpath.c_str() + xpath.size() - 11, "Message.log") != 0)
         return false;
-    static int opens = 0; // a few at boot (it starts the file)
-    if (++opens == 200) {
+    if (++g_MessageLogOpens == 200) {
         g_GameErrorLoop = true;
         LOG_ERROR("The game is stuck in its own error handler (it keeps rewriting logs\\Message.log); the game has "
                   "stopped. The lines above say what went wrong.");

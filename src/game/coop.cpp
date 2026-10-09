@@ -152,6 +152,8 @@ struct State {
     std::string spawnError;
 };
 State g_State;
+bool g_CloneShooting = false;      // player 2's clone has its shooting layer on
+uint8_t* g_CloneShooter = nullptr; // the character it was on
 
 uint8_t* ObjectById(uint32_t id)
 {
@@ -277,8 +279,12 @@ void ResetPlayer2Hud(bool hide)
                 Field<uint8_t>(handler, 0xC) = 0;
                 Field<uint8_t>(handler, 0xD) = 0;
             } else if (hide) {
-                if (uint8_t* item = Field<uint8_t*>(handler, 4))
-                    Field<uint8_t>(item, 0xB) = 0;
+                const uintptr_t item = uintptr_t(Field<uint8_t*>(handler, 4));
+                for (const auto& [itemBase, itemSize] : regions)
+                    if (item >= itemBase && item + 0xC <= itemBase + itemSize) {
+                        *reinterpret_cast<uint8_t*>(item + 0xB) = 0;
+                        break;
+                    }
                 Field<float>(handler, 0x10) = 0;
             }
         }
@@ -732,6 +738,8 @@ void Unregister(const char* why, bool removing = false)
     if (!g_State.playing)
         return;
     g_State.playing = false;
+    g_CloneShooting = false; // the computer's own combat runs the layer again
+    g_CloneShooter = nullptr;
     SetFriendlyFire(nullptr, nullptr);
     g_State.respawnPending = false;
     if (g_State.boss) {
@@ -1058,14 +1066,12 @@ constexpr char kCloneShootingLoop[] = "ctroop_atk_shooting_loop";
 constexpr ULONGLONG kShotIntervalMs = 300;
 using StateManagerFn = void(__fastcall*)(uint8_t*, void*, uint32_t, uint32_t);
 StateManagerFn g_OriginalCloneStateManager = nullptr;
-bool g_CloneShooting = false;     // player 2's clone has its shooting layer on
 ULONGLONG g_CloneLastShot = 0;
 
 void ClonePlayer2Shooting(uint8_t* script, uint8_t* instance)
 {
-    static uint8_t* shooter = nullptr; // a new character for player 2 starts with no layer on
-    if (shooter != g_State.p2) {
-        shooter = g_State.p2;
+    if (g_CloneShooter != g_State.p2) { // a new character for player 2 starts with no layer on
+        g_CloneShooter = g_State.p2;
         g_CloneShooting = false;
     }
     const bool held = input::Player2Shooting();
@@ -1154,7 +1160,10 @@ void __stdcall DismemberNotifyHook(uint8_t* character, uint32_t kind, uint32_t v
 void InstallCoop()
 {
     g_State = State{};
+    g_CloneShooting = false;
+    g_CloneShooter = nullptr;
     SetFriendlyFire(nullptr, nullptr);
+    input::SetPlayer2ShootButton(false);
     g_Trail.clear();
     g_LastTrailTick = g_LastCameraTick = 0;
     g_CameraShift[0] = g_CameraShift[1] = g_CameraShift[2] = 0;
@@ -1214,6 +1223,7 @@ void CoopFrame()
     uint8_t* player = PlayerObject();
     if (!player) { // menus, Versus, or between levels
         input::SetCoopInput(false);
+        input::SetPlayer2ShootButton(false);
         g_State.reason = "no story mission is running";
         return;
     }
@@ -1244,8 +1254,9 @@ void CoopFrame()
                 g_State.bossObject = other;
                 g_State.bossId = Field<uint32_t>(other, kInstanceId);
             }
-            LOG_INFO("Co-op: this mission has a player 2 of its own (%s)%s", other ? TypeName(other) : "none",
-                companion ? ", left to the AI: co-op plays it" : boss ? ", the boss" : ": left alone");
+            if (settings.coop)
+                LOG_INFO("Co-op: this mission has a player 2 of its own (%s)%s", other ? TypeName(other) : "none",
+                    companion ? ", left to the AI: co-op plays it" : boss ? ", the boss" : ": left alone");
         }
     }
     if (g_State.gameOverSent) // the mission is lost: nothing more until it starts again
@@ -1286,6 +1297,7 @@ void CoopFrame()
     }
     input::SetCoopInput(settings.coop);
     if (!settings.coop) {
+        input::SetPlayer2ShootButton(false);
         Unregister("co-op was turned off");
         if (g_State.spawned && StillThere()) { // co-op's own character goes with it
             RemoveSpawnedCharacter(g_State.p2);

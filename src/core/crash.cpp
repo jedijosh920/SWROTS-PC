@@ -110,16 +110,19 @@ static void DumpThread(kernel::XboxThread* t, void*)
     HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, t->threadId);
     if (!h)
         return;
+    // While the thread is suspended only its registers and stack are copied: it may hold the log's or
+    // the heap's lock, which describing and logging take. Both are done once it runs again.
     if (SuspendThread(h) != DWORD(-1)) {
         CONTEXT c = {};
         c.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
-        if (GetThreadContext(h, &c)) {
-            char where[160];
-            DescribeAddress(c.Eip, where, sizeof(where));
-            LOG_INFO("Thread %lu at %s  eax=%08lX ecx=%08lX edx=%08lX esp=%08lX", t->threadId, where, c.Eax, c.Ecx,
-                c.Edx, c.Esp);
+        struct Found {
+            int at;
+            uint32_t value;
+        } found[10];
+        int shown = 0;
+        const bool have = GetThreadContext(h, &c) != FALSE;
+        if (have) {
             const uint32_t* sp = reinterpret_cast<const uint32_t*>(uintptr_t(c.Esp));
-            int shown = 0;
             for (int i = 0; i < 2048 && shown < 10; ++i) {
                 uint32_t v;
                 __try {
@@ -127,15 +130,22 @@ static void DumpThread(kernel::XboxThread* t, void*)
                 } __except (EXCEPTION_EXECUTE_HANDLER) {
                     break;
                 }
-                if (v >= game::kImageBase + 0x1000 && v < game::kImageEnd) {
-                    char d[160];
-                    DescribeAddress(v, d, sizeof(d));
-                    LOG_INFO("    [esp+%04X] %s", i * 4, d);
-                    ++shown;
-                }
+                if (v >= game::kImageBase + 0x1000 && v < game::kImageEnd)
+                    found[shown++] = { i * 4, v };
             }
         }
         ResumeThread(h);
+        if (have) {
+            char where[160];
+            DescribeAddress(c.Eip, where, sizeof(where));
+            LOG_INFO("Thread %lu at %s  eax=%08lX ecx=%08lX edx=%08lX esp=%08lX", t->threadId, where, c.Eax, c.Ecx,
+                c.Edx, c.Esp);
+            for (int i = 0; i < shown; ++i) {
+                char d[160];
+                DescribeAddress(found[i].value, d, sizeof(d));
+                LOG_INFO("    [esp+%04X] %s", found[i].at, d);
+            }
+        }
     }
     CloseHandle(h);
 }
@@ -223,15 +233,23 @@ void NoteFrame()
     InterlockedIncrement(&g_Frames);
 }
 
+// Milliseconds the PC has been awake: time asleep (a laptop's lid closed) is no stall.
+static ULONGLONG AwakeMs()
+{
+    ULONGLONG t = 0;
+    QueryUnbiasedInterruptTime(&t); // 100 ns units, sleep left out
+    return t / 10000;
+}
+
 static DWORD __stdcall Watchdog(void*)
 {
     LONG seen = g_Frames;
-    ULONGLONG lastChange = GetTickCount64();
+    ULONGLONG lastChange = AwakeMs();
     bool reported = false;
     for (;;) {
         Sleep(kWatchEveryMs);
         const LONG now = g_Frames;
-        const ULONGLONG tick = GetTickCount64();
+        const ULONGLONG tick = AwakeMs();
         if (now != seen) {
             if (reported)
                 LOG_WARN("Watchdog: frames again after %.0f s", double(tick - lastChange) / 1000.0);
