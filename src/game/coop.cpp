@@ -777,32 +777,34 @@ uint8_t* FindCompanion(uint8_t* player)
 }
 
 // Player 1 is on the Sith side when the level's clone troopers are their allies (Anakin in the Jedi Temple);
-// on the Jedi side the clones, if any, are their enemies (Order 66 on Utapau).
-bool SithSide(uint8_t* player)
+// on the Jedi side the clones, if any, are their enemies (Order 66 on Utapau). The level's clone when they
+// are allies (player 2 dresses as it), else null.
+uint8_t* SithSideClone(uint8_t* player)
 {
     for (uint8_t* c : LevelCharacters())
-        if (c != player && Alive(c) && _strnicmp(TypeName(c), "IClone", 6) == 0)
-            return !TargetsPlayer(c);
-    return false;
+        if (c != player && c != g_State.p2 && Alive(c) && _strnicmp(TypeName(c), "IClone", 6) == 0)
+            return TargetsPlayer(c) ? nullptr : c;
+    return nullptr;
 }
 
 // A character for player 2 where the mission has no companion: the chosen one ([Coop] Player2), else one
 // for player 1's side: a 501st clone trooper beside a Sith, else Obi-Wan (or, beside Obi-Wan, a Jedi Knight).
 struct SpawnChoice {
     std::string className;
-    std::string skin;
+    std::string costume, skin; // numbers; empty for the class's usual ones
 };
 
 SpawnChoice ChooseSpawn(uint8_t* player)
 {
     if (!g_State.p2Class.empty() && g_State.spawned)
-        return { g_State.p2Class, g_State.skin }; // the same again after a death
+        return { g_State.p2Class, g_State.costume, g_State.skin }; // the same again after a death
     const std::string& chosen = GetSettings().coopPlayer2;
     if (!chosen.empty())
-        return { chosen, "" };
-    if (SithSide(player))
-        return { "ICloneTrooper", "1" }; // texture set _var01: the 501st's blue
-    return { _stricmp(TypeName(player), "IObiwan") == 0 ? "IJediKnight" : "IObiwan", "" };
+        return { chosen, "", "" };
+    if (uint8_t* clone = SithSideClone(player)) // dressed as the level's own (the temple's 501st)
+        return { TypeName(clone), std::to_string(Field<int>(clone, kCharacterCostume)),
+            std::to_string(Field<int>(clone, kCharacterSkin)) };
+    return { _stricmp(TypeName(player), "IObiwan") == 0 ? "IJediKnight" : "IObiwan", "", "" };
 }
 
 // Picks player 2's character: the companion, or a new one beside player 1.
@@ -813,9 +815,8 @@ bool PickCharacter(uint8_t* player)
         g_State.spawned = false;
     } else {
         const SpawnChoice choice = ChooseSpawn(player);
-        const std::string costume = g_State.spawned ? g_State.costume : "";
         std::string error;
-        if (!SpawnCharacter(choice.className.c_str(), costume, choice.skin, "", SpawnSide::Ally, error) || !LastSpawnedObject()) {
+        if (!SpawnCharacter(choice.className.c_str(), choice.costume, choice.skin, "", SpawnSide::Ally, error) || !LastSpawnedObject()) {
             if (error != g_State.spawnError)
                 LOG_WARN("Co-op: no character for player 2: %s", error.c_str());
             g_State.spawnError = error;

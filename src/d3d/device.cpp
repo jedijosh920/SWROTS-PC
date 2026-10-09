@@ -15,6 +15,7 @@
 #include "d3d/recorder.h"
 #include "kernel/kernel.h"
 #include "kernel/mm.h"
+#include "kernel/reboot.h"
 #include "xapi/xapi.h"
 
 namespace swrots::d3d {
@@ -418,7 +419,9 @@ static const double kRefreshHz = 60.0;
 // The emulated display's vertical blank: a fixed 60 Hz clock. Several threads wait on it
 // (the swap, and the Sofdec movie player's vsync threads, which resume its decoder thread
 // each vblank), so a wait only reads the clock: it sleeps until the next tick after now.
-// The last moment is waited out by yielding, not spinning: game threads share one CPU core.
+// The last moment is waited out by yielding, not spinning: game threads share one CPU core. The waits end
+// the thread when a reboot starts (the movie player's vblank threads wait here; a reboot during a movie
+// could not stop them and restarted the process).
 static void WaitForVBlank()
 {
     static LARGE_INTEGER freq;
@@ -433,10 +436,12 @@ static void WaitForVBlank()
     const LONGLONG next = epoch + ((now.QuadPart - epoch) / period + 1) * period;
     while (now.QuadPart < next) {
         const LONGLONG remainingMs = (next - now.QuadPart) * 1000 / freq.QuadPart;
-        if (remainingMs >= 2)
-            Sleep(DWORD(remainingMs - 1));
-        else
+        if (remainingMs >= 2) {
+            kernel::GameWait(0, nullptr, FALSE, DWORD(remainingMs - 1), FALSE);
+        } else {
+            kernel::GameWait(0, nullptr, FALSE, 0, FALSE);
             SwitchToThread();
+        }
         QueryPerformanceCounter(&now);
     }
 }
