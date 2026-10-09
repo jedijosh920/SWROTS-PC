@@ -9,6 +9,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <intrin.h>
+#include <iterator>
 #include <list>
 #include <string>
 #include <unordered_map>
@@ -692,9 +694,23 @@ Side SideOf(const uint8_t* character, uint32_t teams)
     return ai && ai[0x50] ? Side::Enemies : Side::Player;
 }
 
+// Friendly fire between two characters (co-op's players): to the characters' own hit and reaction code
+// they are enemies, so their blows hurt each other; the AI (who it attacks), lock-on and the rest still
+// see allies. The callers asking for a hit (return addresses): ICharacter's reaction to a hit (0x159E20),
+// "is it friendly" (0x14FE30) and the Jedi's and characters' hit checks.
+const uint8_t* g_FriendlyFireA = nullptr;
+const uint8_t* g_FriendlyFireB = nullptr;
+constexpr uintptr_t kHitCallers[] = { 0x0015A396, 0x0014FE50, 0x00156142, 0x0015673E, 0x002675F3 };
+
 bool __fastcall IsEnemyHook(uint8_t* brain, void* edx, uint8_t* other, int flag)
 {
     const uint8_t* self = brain ? *reinterpret_cast<uint8_t* const*>(brain + 0x10) : nullptr;
+    if (g_FriendlyFireA && self && other &&
+        ((self == g_FriendlyFireA && other == g_FriendlyFireB) || (self == g_FriendlyFireB && other == g_FriendlyFireA))) {
+        const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
+        if (std::find(std::begin(kHitCallers), std::end(kHitCallers), caller) != std::end(kHitCallers))
+            return true;
+    }
     if (self && other && self != other) {
         constexpr uint32_t kPortSides = kPortPlayerTeam | kPortEnemyTeam | kPortNeutralTeam | kPortRiotTeam;
         const uint32_t mine = self == g_Player ? 0 : TeamsOf(self), theirs = other == g_Player ? 0 : TeamsOf(other);
@@ -708,6 +724,12 @@ bool __fastcall IsEnemyHook(uint8_t* brain, void* edx, uint8_t* other, int flag)
         }
     }
     return g_OriginalIsEnemy(brain, edx, other, flag);
+}
+
+void SetFriendlyFire(const uint8_t* a, const uint8_t* b)
+{
+    g_FriendlyFireA = a && b ? a : nullptr;
+    g_FriendlyFireB = a && b ? b : nullptr;
 }
 
 // Neutral spawns and the health they had: one that loses health was attacked, and riots.

@@ -168,11 +168,22 @@ Drallig bonus mission plays one from about 4 to 7.5 seconds; player 1's control 
 
 ## The pause menu
 
-`interfc\pausescreen.xbl_xml` (in each level PAK) is a menu file in the format of the versus select screen
-the port already patches as it loads (`RegisterResourcePatch`): screen items with a text id
-(`IDS_PAUSE_RESUME_GAME`), their up and down neighbours, and an action (`Resume`, `Restart`, `Quit`, or
-`Navigation` to a sub-screen such as `pause_settings`). A co-op entry needs an item in that chain and an
-action the port handles, and a text for it.
+`interfc\pausescreen.xbl_xml` (in each level PAK; asked for as `interfc\pausescreen.xml`) is a compiled
+menu: a u32, the screen's name and its first item's (length-prefixed strings), a u32 count of top-level
+items (39), then the items. An item: the string `screenItem` and its name, a u32, its position (x, y as
+floats; the rows are 24 apart, x 154), scale, colour, a text id (`IDS_PAUSE_QUIT_MISSION`), its down and
+up neighbours, a target screen for `Navigation`, its action (`Resume`, `Restart`, `Quit`, `Navigation`)
+and its children (each row has one, its highlight bar). The panel has two empty rows (`darktwobars`)
+under Quit Mission.
+
+The actions are menu handlers registered by name: the HUD's setup (IVaderHUD 0x2A8600) appends
+`{name, prototype}` pairs to its list at +0x268 (0x157300); a prototype's vtable slot 10 makes the item's
+copy, slot 4 takes events (thiscall (event, value)): 0x23 is "chosen". Continue's (0x2B2550, vtable
+0x5CFCE8, events 0x2B3D10) first asks the Navigation handler's (0x2B3CA0), then continues the game and
+keeps the button press from reaching it.
+
+The port adds a row "Cooperative" (the game's `IDS_COOPERATIVE`) under Quit Mission with its own action
+`CoopToggle`: a Continue handler with its own vtable that turns co-op on or off before continuing.
 
 ## Still open
 

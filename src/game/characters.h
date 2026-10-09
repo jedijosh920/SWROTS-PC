@@ -105,6 +105,10 @@ void PlayerFrame();
 // Gives the running level's player its maximum health back.
 void RefillPlayerHealth();
 
+// Friendly fire between two characters (co-op's players): their blows hurt each other while they stay allies
+// (no one else changes sides). Nulls end it.
+void SetFriendlyFire(const uint8_t* a, const uint8_t* b);
+
 // The characters spawned in the running level.
 int SpawnedCount();
 // Removes the characters spawned in the running level (those still there), as the game removes its own

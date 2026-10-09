@@ -5,6 +5,7 @@
 - [Installing](install.md): setup from your disc image, the folder layout, reinstalling
 - [Linux, Steam Deck and handhelds](linux.md): playing through Proton
 - [Settings](settings.md): `settings.ini`: window, graphics, frame rate, developer options
+- [Co-op](coop.md): two players in the story missions: turning it on, controllers, known issues
 - [Controls](controls.md): keyboard, mouse and controllers, `controls.ini`
 - [Debug menu](debug-menu.md): the game's own console, variables and debug displays, and playing
   as any character (class, costume, texture set, body)

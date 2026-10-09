@@ -27,6 +27,7 @@ Input=0             ; 0 auto, 1 the keyboard is player 1 and the first controlle
 Player2Death=0      ; when player 2 dies: 0 they come back beside player 1, 1 the mission is lost
 StorySafety=1       ; 1: in cutscenes co-op leaves the characters and camera to the game
 Camera=0            ; 0: a shared camera keeps both players in the picture; 1: it follows player 1 alone
+FriendlyFire=0      ; 1: the two players' blows hurt each other (they stay allies)
 Player2=            ; player 2's character where the mission has no companion (e.g. IAnakin); empty: automatic
 ```
 
@@ -59,33 +60,23 @@ Notes:
 
 ## Co-op
 
-With `Enabled=1`, a second player joins the story missions and the single-player bonus missions by
-themselves, without a button: as soon as a controller is there for them, player 2 plays the mission's
-companion (Obi-Wan beside Anakin), or, in missions without one, a character of their own placed beside
-player 1 (Obi-Wan, or Anakin when player 1 is Obi-Wan; `Player2` chooses another). Player 2 gets the
-game's own second HUD (portrait, health, Force) and player 1's maximum health and Force, and both take
-damage. Turning co-op off removes a character it placed for player 2
-(a companion goes back to the story). When player 2's controller is unplugged, the character goes back to the game; plugged in again,
-player 2 takes it again. The camera follows player 1 as without co-op and moves back and aside to keep player 2
-in the picture too, as far as it can; a player 2 out of the picture for half a second (or far away) is
-brought back to a spot player 1 just walked over. Falls into the void and other instant deaths do not
-kill player 2 (the story's companion stays the one the mission's scripts know): they are brought back too.
-In the bonus missions made for two players, player 2 plays the game's own second character (Cin Drallig
-beside Serra) when the game left it to the AI. Versus and the story duels are left as they are.
+Two players in the story missions: see the [co-op guide](coop.md) for how it works. The pause menu's
+**Cooperative** entry turns it on and off as `Enabled` does.
 
 - `Input`: with auto, one controller means the keyboard and mouse are player 1 and the controller is
   player 2; with two or more controllers, the first is player 1's (with the keyboard) and the second
-  player 2's, as without co-op. `1` always makes the keyboard player 1 and the first controller player 2;
-  `2` always gives player 2 the second controller.
+  player 2's. `1` always makes the keyboard player 1 and the first controller player 2; `2` always gives
+  player 2 the second controller.
 - `Player2Death`: with `0`, a hit that would kill player 2 sends them back beside player 1 with full
-  health (and a moment in which they cannot be hurt); with `1`, the mission is lost when player 2 dies,
-  as when player 1 does.
+  health; with `1`, the mission is lost when player 2 dies, as when player 1 does.
 - `Camera`: `1` leaves the camera to follow player 1 alone, as without co-op (player 2 is still brought
   back when out of the picture).
+- `FriendlyFire`: `1` lets the players hurt each other; enemies and allies stay as they are.
 - `StorySafety`: with `1` (recommended), while a cutscene plays and a moment after, player 2 is not
-  brought back to player 1, the camera is the game's own, and player 2 does not join. Player 2 keeps
-  the character: the cutscene plays it all the same.
-- The debug menu's console has `coop` to see what co-op is doing and change these settings while playing.
+  brought back to player 1, the camera is the game's own, and player 2 does not join.
+- `Player2`: a character class (e.g. `IVader`, `ICloneTrooper`) for player 2 where the mission has no
+  companion; empty chooses one for player 1's side.
+- The debug console's `coop` shows what co-op is doing and changes these settings while playing.
 
 ## Developer options
 

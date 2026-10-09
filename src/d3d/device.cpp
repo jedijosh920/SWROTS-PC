@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 
+#include "core/crash.h"
 #include "core/log.h"
 #include "core/settings.h"
 #include "debug/menu.h"
@@ -617,6 +618,7 @@ static DWORD __stdcall XbSwap(DWORD flags)
     PresentFrame();
     ApplyFpsLimit();
     debug::MenuAfterFrame();
+    NoteFrame();
 
     DWORD interval = XboxRenderStates()[RS_PRESENTATIONINTERVAL];
     if (interval == 0)

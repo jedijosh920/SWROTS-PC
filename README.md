@@ -42,12 +42,12 @@ Things the Xbox release never had:
   button), on your side or against you, loaded from other levels if need be, remove them again
   (`despawn`), and give **your saber its own colour**
   (`saber red`, any colour), which power-ups no longer change.
-- **Two-player co-op in the story missions.** Turn it on in `settings.ini` (`[Coop]`, `Enabled=1`) and a
+- **Two-player co-op in the story missions.** Turn it on from the pause menu (**Cooperative**) and a
   second player with a controller joins by themselves: they play the mission's companion (Obi-Wan beside
   Anakin) or a character of their own beside you, with the game's own second HUD, and come back beside you
   when they fall or wander out of the picture. Also in the bonus missions made
   for two players, with one controller. One controller is enough: the keyboard and
-  mouse are then player 1. See [co-op settings](docs/settings.md#co-op).
+  mouse are then player 1. See the [co-op guide](docs/coop.md).
 - **Unlock everything** with the developers' own cheat, `unlockprofile` (debug console).
 - **Free camera.** Fly the view anywhere with `freecam` (debug console): keyboard and mouse or a
   controller, without the game's camera shake and zoom. With `set timeScale 0` and `set hud 0`, a

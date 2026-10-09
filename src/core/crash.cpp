@@ -214,10 +214,44 @@ static LONG __stdcall FirstChance(EXCEPTION_POINTERS* info)
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+static volatile LONG g_Frames = 0;
+constexpr DWORD kStallMs = 20000;    // no frame for this long: the game stopped (a level loads in a few seconds)
+constexpr DWORD kWatchEveryMs = 2000;
+
+void NoteFrame()
+{
+    InterlockedIncrement(&g_Frames);
+}
+
+static DWORD __stdcall Watchdog(void*)
+{
+    LONG seen = g_Frames;
+    ULONGLONG lastChange = GetTickCount64();
+    bool reported = false;
+    for (;;) {
+        Sleep(kWatchEveryMs);
+        const LONG now = g_Frames;
+        const ULONGLONG tick = GetTickCount64();
+        if (now != seen) {
+            if (reported)
+                LOG_WARN("Watchdog: frames again after %.0f s", double(tick - lastChange) / 1000.0);
+            seen = now;
+            lastChange = tick;
+            reported = false;
+        } else if (now > 0 && !reported && tick - lastChange >= kStallMs) {
+            reported = true;
+            LOG_WARN("Watchdog: no frame for %.0f s; the game seems to have stopped", double(tick - lastChange) / 1000.0);
+            DumpAllThreads("watchdog");
+        }
+    }
+}
+
 void InstallCrashHandler()
 {
     AddVectoredExceptionHandler(1, FirstChance);
     SetUnhandledExceptionFilter(TopLevelFilter);
+    if (HANDLE thread = CreateThread(nullptr, 0, Watchdog, nullptr, 0, nullptr))
+        CloseHandle(thread);
 }
 
 } // namespace swrots

@@ -17,6 +17,7 @@
 #include "core/settings.h"
 #include "game/characters.h"
 #include "game/freecam.h"
+#include "game/resources.h"
 #include "input/controls.h"
 #include "kernel/kernel.h"
 
@@ -278,6 +279,165 @@ void ResetPlayer2Hud(bool hide)
     }
 }
 
+// --- The pause menu ---
+
+// The pause screen (interfc\pausescreen.xbl_xml in each level's PAK, asked for as interfc\pausescreen.xml)
+// gets a row "Cooperative" under Quit Mission, in the panel's first empty row: a copy of Quit Mission's
+// item (an item: the strings screenItem and its name, a u32, the position x and y as floats, ...; its text
+// id, its down and up neighbours, its action) with its child (the highlight bar), renamed "coop", one row
+// lower, with the game's own "Cooperative" text and the port's action "CoopToggle"; Quit Mission's down
+// and Continue's up lead to it, and the screen's item count (a u32 after the screen's two names) grows by
+// one. Selecting it turns co-op on or off and continues the game, as Continue does.
+constexpr char kPauseScreen[] = "interfc\\pausescreen.xml";
+constexpr float kPauseRowStep = 24.0f;
+
+std::vector<uint8_t> MenuString(const std::string& text)
+{
+    std::vector<uint8_t> out(4 + text.size());
+    const uint32_t length = uint32_t(text.size());
+    std::memcpy(out.data(), &length, 4);
+    std::memcpy(out.data() + 4, text.data(), text.size());
+    return out;
+}
+
+size_t FindIn(const std::vector<uint8_t>& data, const std::vector<uint8_t>& what, size_t from, size_t to)
+{
+    if (to > data.size())
+        to = data.size();
+    for (size_t i = from; i + what.size() <= to; ++i)
+        if (std::memcmp(data.data() + i, what.data(), what.size()) == 0)
+            return i;
+    return std::string::npos;
+}
+
+// Replaces the first `from` string (with its length) in [begin, end) by `to`; the end moves along.
+bool ReplaceString(std::vector<uint8_t>& data, size_t begin, size_t& end, const std::string& from, const std::string& to)
+{
+    const std::vector<uint8_t> a = MenuString(from), b = MenuString(to);
+    const size_t at = FindIn(data, a, begin, end);
+    if (at == std::string::npos)
+        return false;
+    data.erase(data.begin() + at, data.begin() + at + a.size());
+    data.insert(data.begin() + at, b.begin(), b.end());
+    end = end - a.size() + b.size();
+    return true;
+}
+
+void PatchPauseScreen(std::vector<uint8_t>& data)
+{
+    const std::vector<uint8_t> item = MenuString("screenItem");
+    auto itemNamed = [&](const std::string& name) {
+        std::vector<uint8_t> what = item;
+        const std::vector<uint8_t> n = MenuString(name);
+        what.insert(what.end(), n.begin(), n.end());
+        return FindIn(data, what, 0, data.size());
+    };
+    const size_t quit = itemNamed("quit"), resume = itemNamed("resume");
+    if (quit == std::string::npos || resume == std::string::npos || itemNamed("coop") != std::string::npos ||
+        data.size() < 0x21) {
+        LOG_WARN("Co-op: the pause screen is not as expected; no Cooperative entry");
+        return;
+    }
+    // Quit Mission's item and its child: up to the item after them.
+    const size_t child = FindIn(data, item, quit + 1, data.size());
+    const size_t next = child == std::string::npos ? std::string::npos : FindIn(data, item, child + 1, data.size());
+    if (next == std::string::npos) {
+        LOG_WARN("Co-op: the pause screen's Quit Mission entry is not as expected; no Cooperative entry");
+        return;
+    }
+    std::vector<uint8_t> row(data.begin() + quit, data.begin() + next);
+    // The name ("quit" and "coop" are as long), then a u32 and the position.
+    const size_t nameAt = item.size();
+    std::memcpy(row.data() + nameAt + 4, "coop", 4);
+    float y;
+    std::memcpy(&y, row.data() + nameAt + 8 + 8, 4);
+    y += kPauseRowStep;
+    std::memcpy(row.data() + nameAt + 8 + 8, &y, 4);
+    size_t rowEnd = row.size();
+    if (!ReplaceString(row, nameAt + 8, rowEnd, "IDS_PAUSE_QUIT_MISSION", "IDS_COOPERATIVE") ||
+        !ReplaceString(row, nameAt + 8, rowEnd, "restart", "quit") ||
+        !ReplaceString(row, nameAt + 8, rowEnd, "Quit", "CoopToggle")) {
+        LOG_WARN("Co-op: the pause screen's Quit Mission entry is not as expected; no Cooperative entry");
+        return;
+    }
+    // Links into the new row, then the row itself after Quit Mission's (the later edits first: they move
+    // nothing before them).
+    size_t quitEnd = next;
+    if (!ReplaceString(data, quit + item.size() + 8, quitEnd, "resume", "coop")) {
+        LOG_WARN("Co-op: the pause screen's links are not as expected; no Cooperative entry");
+        return;
+    }
+    data.insert(data.begin() + quitEnd, row.begin(), row.end());
+    size_t resumeEnd = FindIn(data, item, resume + 1, data.size());
+    if (resumeEnd == std::string::npos || !ReplaceString(data, resume + item.size() + 10, resumeEnd, "quit", "coop")) {
+        LOG_WARN("Co-op: the pause screen's links are not as expected; no Cooperative entry");
+        return;
+    }
+    uint32_t count;
+    std::memcpy(&count, data.data() + 0x1D, 4);
+    ++count;
+    std::memcpy(data.data() + 0x1D, &count, 4);
+    LOG_INFO("Co-op: the pause screen has a Cooperative entry");
+}
+
+// The pause screen's actions are menu handlers registered by name with a prototype (the HUD's setup,
+// IVaderHUD vfunc 0x2A8600, appends {name, prototype} to the HUD's list at +0x268 with 0x157300). The
+// port's "CoopToggle" is a Continue handler (made by 0x2B2550, vtable 0x5CFCE8) with a vtable of its own:
+// slot 4 (thiscall (event, value), ret 8) turns co-op on or off when the entry is chosen (event 0x23 that
+// the Navigation part, 0x2B3CA0, leaves alone), then lets Continue's own (0x2B3D10) continue the game;
+// slot 10 makes another one (the menu's copy for its item).
+constexpr uint32_t kHudSetup = 0x002A8600;
+constexpr uint8_t kHudSetupBytes[] = { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8, 0x83, 0xEC, 0x0C };
+constexpr uint32_t kHudHandlers = 0x268;
+constexpr uint32_t kAddHandler = 0x00157300;     // thiscall (const {name, prototype}*)
+constexpr uint32_t kMakeContinue = 0x002B2550;   // cdecl () -> handler
+constexpr uint32_t kContinueVtable = 0x005CFCE8;
+constexpr uint32_t kNavigationEvent = 0x002B3CA0; // thiscall (event, value) -> handled
+constexpr uint32_t kContinueEvent = 0x002B3D10;
+constexpr int kHandlerSlots = 27;
+constexpr int kChosen = 0x23;
+using HudSetupFn = void(__fastcall*)(uint8_t*, void*);
+using EventFn = char(__fastcall*)(uint8_t*, void*, int, int);
+HudSetupFn g_OriginalHudSetup = nullptr;
+uint32_t g_CoopToggleVtable[kHandlerSlots];
+
+char __fastcall CoopToggleEvent(uint8_t* handler, void*, int event, int value)
+{
+    if (event == kChosen &&
+        reinterpret_cast<EventFn>(uintptr_t(kNavigationEvent))(handler, nullptr, event, value) != 1) {
+        Settings& settings = EditSettings();
+        settings.coop = !settings.coop;
+        SaveSettings();
+        LOG_INFO("Co-op: turned %s from the pause screen", settings.coop ? "on" : "off");
+    }
+    return reinterpret_cast<EventFn>(uintptr_t(kContinueEvent))(handler, nullptr, event, value);
+}
+
+uint8_t* MakeCoopToggle()
+{
+    uint8_t* handler = reinterpret_cast<uint8_t*(__cdecl*)()>(uintptr_t(kMakeContinue))();
+    if (handler)
+        *reinterpret_cast<uint32_t**>(handler) = g_CoopToggleVtable;
+    return handler;
+}
+
+uint8_t* __fastcall MakeCoopToggleSlot(uint8_t*, void*)
+{
+    return MakeCoopToggle();
+}
+
+void __fastcall HudSetupHook(uint8_t* hud, void*)
+{
+    g_OriginalHudSetup(hud, nullptr);
+    struct {
+        const char* name;
+        uint8_t* prototype;
+    } entry = { "CoopToggle", MakeCoopToggle() };
+    if (entry.prototype)
+        reinterpret_cast<void(__fastcall*)(uint8_t*, void*, const void*)>(uintptr_t(kAddHandler))(hud + kHudHandlers, nullptr,
+            &entry);
+}
+
 // --- Damage ---
 
 // Player 2 does not die under the respawn rule: a hit that would kill them leaves them with a little
@@ -412,6 +572,7 @@ void Unregister(const char* why)
     if (!g_State.playing)
         return;
     g_State.playing = false;
+    SetFriendlyFire(nullptr, nullptr);
     g_State.respawnPending = false;
     if (uint8_t* manager = Manager()) {
         // As the mission had them: a co-op bonus mission's own player 2 stays in its slot.
@@ -457,14 +618,33 @@ uint8_t* FindCompanion(uint8_t* player)
     return best;
 }
 
-std::string SpawnClass(uint8_t* player)
+// Player 1 is on the Sith side when the level's clone troopers are their allies (Anakin in the Jedi Temple);
+// on the Jedi side the clones, if any, are their enemies (Order 66 on Utapau).
+bool SithSide(uint8_t* player)
+{
+    for (uint8_t* c : LevelCharacters())
+        if (c != player && Alive(c) && _strnicmp(TypeName(c), "IClone", 6) == 0)
+            return !TargetsPlayer(c);
+    return false;
+}
+
+// A character for player 2 where the mission has no companion: the chosen one ([Coop] Player2), else one
+// for player 1's side: a 501st clone trooper beside a Sith, else Obi-Wan (or, beside Obi-Wan, a Jedi Knight).
+struct SpawnChoice {
+    std::string className;
+    std::string skin;
+};
+
+SpawnChoice ChooseSpawn(uint8_t* player)
 {
     if (!g_State.p2Class.empty() && g_State.spawned)
-        return g_State.p2Class; // the same again after a death
+        return { g_State.p2Class, g_State.skin }; // the same again after a death
     const std::string& chosen = GetSettings().coopPlayer2;
     if (!chosen.empty())
-        return chosen;
-    return _stricmp(TypeName(player), "IObiwan") == 0 ? "IAnakin" : "IObiwan";
+        return { chosen, "" };
+    if (SithSide(player))
+        return { "ICloneTrooper", "1" }; // texture set _var01: the 501st's blue
+    return { _stricmp(TypeName(player), "IObiwan") == 0 ? "IJediKnight" : "IObiwan", "" };
 }
 
 // Picks player 2's character: the companion, or a new one beside player 1.
@@ -474,9 +654,10 @@ bool PickCharacter(uint8_t* player)
         g_State.p2 = companion;
         g_State.spawned = false;
     } else {
-        const std::string name = SpawnClass(player);
+        const SpawnChoice choice = ChooseSpawn(player);
+        const std::string costume = g_State.spawned ? g_State.costume : "";
         std::string error;
-        if (!SpawnCharacter(name.c_str(), g_State.costume, g_State.skin, "", SpawnSide::Ally, error) || !LastSpawnedObject()) {
+        if (!SpawnCharacter(choice.className.c_str(), costume, choice.skin, "", SpawnSide::Ally, error) || !LastSpawnedObject()) {
             if (error != g_State.spawnError)
                 LOG_WARN("Co-op: no character for player 2: %s", error.c_str());
             g_State.spawnError = error;
@@ -672,6 +853,7 @@ void GameOver()
 void InstallCoop()
 {
     g_State = State{};
+    SetFriendlyFire(nullptr, nullptr);
     g_Trail.clear();
     g_LastTrailTick = g_LastCameraTick = 0;
     g_CameraShift[0] = g_CameraShift[1] = g_CameraShift[2] = 0;
@@ -695,6 +877,18 @@ void InstallCoop()
     g_OriginalChangeHealth = reinterpret_cast<ChangeHealthFn>(changeHealthStub);
     g_OriginalInstantKill = reinterpret_cast<InstantKillFn>(instantKillStub);
     PatchJump(kChangeHealth, reinterpret_cast<const void*>(&ChangeHealthHook));
+    // The pause screen's Cooperative entry.
+    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kHudSetup)), kHudSetupBytes, sizeof(kHudSetupBytes)) == 0) {
+        static uint8_t* hudSetupStub = trampoline(kHudSetup, kHudSetupBytes, sizeof(kHudSetupBytes));
+        g_OriginalHudSetup = reinterpret_cast<HudSetupFn>(hudSetupStub);
+        std::memcpy(g_CoopToggleVtable, reinterpret_cast<const void*>(uintptr_t(kContinueVtable)), sizeof(g_CoopToggleVtable));
+        g_CoopToggleVtable[4] = uint32_t(reinterpret_cast<uintptr_t>(&CoopToggleEvent));
+        g_CoopToggleVtable[10] = uint32_t(reinterpret_cast<uintptr_t>(&MakeCoopToggleSlot));
+        PatchJump(kHudSetup, reinterpret_cast<const void*>(&HudSetupHook));
+        RegisterResourcePatch(kPauseScreen, &PatchPauseScreen);
+    } else {
+        LOG_WARN("Co-op: unexpected code at the HUD's setup; no pause screen entry");
+    }
     PatchJump(kInstantKill, reinterpret_cast<const void*>(&InstantKillHook));
     SetCameraAdjuster(&SharedCamera);
 }
@@ -808,6 +1002,11 @@ void CoopFrame()
             BindController(g_State.p2, kPlayer2Port);
             ++g_State.controlsLost;
         }
+        // Friendly fire: the two players' blows hurt each other while they stay allies (characters.cpp).
+        if (settings.coopFriendlyFire && g_State.playing && StillThere())
+            SetFriendlyFire(player, g_State.p2);
+        else
+            SetFriendlyFire(nullptr, nullptr);
         if (g_State.playing && StillThere() && Alive(g_State.p2) && !cutscene) {
             Leash(player, now);
             MatchPlayer1(player); // player 1's maximums can grow (upgrades)
