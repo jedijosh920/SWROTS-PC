@@ -121,7 +121,18 @@ Drallig bonus mission plays one from about 4 to 7.5 seconds; player 1's control 
   has a living character and never fade it out; the portrait (HudVitals 0x5A82B0) is picked once (+0xC
   gave up, +0xD picked). The port sets the alpha and fade time to 0 when player 2 leaves, and has the
   portrait picked again when they join.
-- **Camera and leash.** By default (`Camera=0`) player 2 is in no focus list: in the first mission's open
+- **Shared camera.** The free camera's hook on the master camera's placement (0x129990) lets co-op move it:
+  the game's camera (aimed at player 1) is moved along its right and up axes towards the players' middle
+  (at most 300) and back along its view until both players' middles are within 80% of the picture (at
+  most 450), eased at 3 per second. The game takes the moved placement for the render, and its own camera
+  keeps working from its own state (no drift seen). `Camera=1` turns it off.
+- **Instant deaths.** Falls into the void and kill zones go through ICharacter's instant kill (0x152D30,
+  slot 0xC8; the Jedi's 0x280C30 ends in it): health 0 and Killed, past the health change; an "Invincible?"
+  character is spared. Hooked: player 2 is spared and placed on a spot player 1 walked over (positions
+  recorded while player 1 is not falling), so the story's companion is never replaced by a new character
+  (the mission's scripts know the original). A new character, when one is needed, wears the costume and
+  texture set of the one before.
+- **Camera and leash (before the shared camera).** Player 2 is in no focus list: in the first mission's open
   hangar, any list holding two targets makes the camera cut to a far, wide shot of the whole hangar,
   whatever the players' distance (confirmed live: co-op off, the usual camera; on, the wide one). Player 2
   is then kept in the picture: the game camera's placement (the master camera, 0x129990: rows right, up,

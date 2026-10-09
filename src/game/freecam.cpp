@@ -109,6 +109,10 @@ std::atomic<bool> g_Wanted = false; // the console's choice
 bool g_Flying = false;              // taken over from the game's camera
 bool g_HaveGameView = false;
 Matrix g_GameView = {};             // the master camera's latest placement from the game
+Matrix g_ShownView = {};            // the same as shown (adjusted, see SetCameraAdjuster)
+CameraAdjuster g_Adjuster = nullptr;
+float g_GameFov = 0.0f;             // the field of view the game gave the renderer (below)
+bool g_HaveGameFov = false;
 Matrix g_FlownView = {};            // this frame's flown placement
 Vec3 g_Position = {};
 float g_Yaw = 0.0f, g_Pitch = 0.0f;
@@ -182,6 +186,12 @@ void __fastcall SetTransformHook(void* camera, void* edx, const Matrix* transfor
         LOG_INFO("Free camera: off");
     }
     if (!g_Flying) {
+        if (transform)
+            g_ShownView = *transform;
+        if (transform && g_Adjuster && g_Adjuster(&g_ShownView.m[0][0], g_HaveGameFov ? g_GameFov : 0.0f)) {
+            g_OriginalSetTransform(camera, edx, &g_ShownView);
+            return;
+        }
         g_OriginalSetTransform(camera, edx, transform);
         return;
     }
@@ -243,9 +253,6 @@ constexpr uint32_t kRenderFov = 0x00211C30;
 constexpr uint8_t kRenderFovPrologue[] = { 0xA1, 0xF4, 0x93, 0x61, 0x00, 0x85, 0xC0 }; // mov eax, [0x6193F4]; test eax, eax
 using RenderFovFn = char(__fastcall*)(void* renderer, void* edx, float fov);
 RenderFovFn g_OriginalRenderFov = nullptr;
-float g_GameFov = 0.0f;
-bool g_HaveGameFov = false;
-
 char __fastcall RenderFovHook(void* renderer, void* edx, float fov)
 {
     if (g_FovPass++ != 0) // one a frame; any other call is left as it is
@@ -264,9 +271,14 @@ bool GameCameraPlacement(float rows[16], float& fov)
 {
     if (!g_HaveGameView)
         return false;
-    std::memcpy(rows, g_GameView.m, sizeof(g_GameView.m));
+    std::memcpy(rows, g_ShownView.m, sizeof(g_ShownView.m));
     fov = g_HaveGameFov ? g_GameFov : 0.0f;
     return true;
+}
+
+void SetCameraAdjuster(CameraAdjuster adjuster)
+{
+    g_Adjuster = adjuster;
 }
 
 void InstallFreeCamera()

@@ -9,7 +9,6 @@
 #include <cmath>
 #include <cstring>
 #include <iterator>
-#include <set>
 #include <string>
 #include <vector>
 
@@ -33,6 +32,8 @@ constexpr uint32_t kCharacterMaxHealth = 0x134;  // float
 constexpr uint32_t kCharacterTransform = 0x150;  // rows right, up, forward, position
 constexpr uint32_t kCharacterPower = 0xA40;      // float: the Force (Jedi-like characters)
 constexpr uint32_t kCharacterMaxPower = 0xA44;   // float
+constexpr uint32_t kCharacterCostume = 0x1E8;    // int: the costume (variant)
+constexpr uint32_t kCharacterSkin = 0x1EC;       // int: the texture set (0 the plain textures)
 constexpr uint32_t kCharacterControl = 0x390;    // 2: a player's; 16: a story companion's
 constexpr uint32_t kCharacterInvincible = 0x5D6; // byte: "Invincible?" (story companions have it)
 constexpr uint32_t kCharacterAIData = 0xA00;
@@ -64,46 +65,55 @@ constexpr uint32_t kManagerLossDelay = 0x0027AB70;   // thiscall ()
 constexpr uint32_t kChangeHealth = 0x00151500;
 constexpr uint8_t kChangeHealthBytes[] = { 0x56, 0x8B, 0xF1, 0x8A, 0x86, 0xD6, 0x05, 0x00, 0x00 };
 
-// The camera's focus lists (TCamComPrimaryFocusList): the targets it keeps in view, an array at +0x18
-// (capacity), +0x1C (count), +0x20 (entries, 0x70 bytes: +0 "the player", +4 the target, +8 its node);
-// grown with 0xC4C10 (thiscall on the array: count, const entry* fill), resolved with vtable slot 5
-// (0xC4650, thiscall (owner), the owner kept at +4), which drops entries without a target.
-constexpr uint32_t kFocusListVtable = 0x0056CB0C;
-constexpr uint32_t kFocusListResolve = 0x000C4650;
-constexpr uint8_t kFocusListResolveBytes[] = { 0x8B, 0x44, 0x24, 0x04, 0x55 };
-constexpr uint32_t kFocusArrayGrow = 0x000C4C10;
-constexpr uint32_t kFocusCapacity = 0x18, kFocusCount = 0x1C, kFocusEntries = 0x20;
-constexpr uint32_t kFocusEntrySize = 0x70;
-
 constexpr ULONGLONG kSettleMs = 1500;      // after a level start, before player 2 joins
 constexpr ULONGLONG kRespawnDelayMs = 3000; // a player 2 that died anyway (a fall): a new one after this
 constexpr ULONGLONG kShieldMs = 2000;       // a player 2 who came back cannot be hurt for this long
 constexpr ULONGLONG kAfterCutsceneMs = 1000; // player 2 takes the companion again this long after a cutscene
 constexpr ULONGLONG kDeathPlaysMs = 6000;    // a death's fall, at most (about 4 s)
 constexpr float kBesideDistance = 80.0f;    // where player 2 comes back: beside player 1
-// The camera: by default ([Coop] Camera=0) it follows player 1 alone, as without co-op: the story levels'
-// cameras were not made for two targets (with player 2 in their focus lists the first mission's open hangar
-// went to a far, wide shot whatever the players' distance). With Camera=1 it keeps both in view while they
-// are close.
-// The leash: with Camera=1 the camera keeps both players in view only while they are this close (beyond, it frames player 1
-// alone, as without co-op: in open places such as the first mission's hangar, framing two players a few
-// hundred units apart pulls it far out into space), and a player 2 left behind (or gone ahead, or fallen)
-// is brought back beside player 1. A character is about 70 units tall.
-constexpr float kCameraDropDistance = 300.0f;
-constexpr float kCameraTakeDistance = 220.0f;
-// Player 2 is brought back after a second out of the camera's picture or beyond kLeashDistance, half a
-// second beyond kFarDistance.
-constexpr float kLeashDistance = 450.0f;
-constexpr ULONGLONG kLeashMs = 1000;
-constexpr float kFarDistance = 700.0f;
-constexpr ULONGLONG kFarMs = 500;
+// The camera: by default ([Coop] Camera=0) a shared camera (below); Camera=1 follows player 1 alone. The
+// levels' own cameras are not given player 2 as a target: with player 2 in their focus lists, the first
+// mission's open hangar cut to a far, wide shot whatever the players' distance. A character is about 70
+// units tall.
+// Player 2 is brought back after half a second out of the camera's picture or beyond kLeashDistance, at
+// once beyond kFarDistance.
+constexpr float kLeashDistance = 600.0f;
+constexpr ULONGLONG kLeashMs = 500;
+constexpr float kFarDistance = 900.0f;
+constexpr ULONGLONG kFarMs = 0;
+// The shared camera (Camera=0): the game's camera, aimed at player 1, moved towards the players' middle and
+// pulled back until both are in the picture, at most this far, easing at this rate (per second).
+constexpr float kMaxPullBack = 450.0f;
+constexpr float kMaxShift = 300.0f;
+constexpr float kCameraEase = 3.0f;
+// Where player 2 is brought back: a spot player 1 stood on a moment ago (on the ground), this far behind.
+constexpr float kTrailSpacing = 40.0f;
+constexpr int kTrailLength = 32;
+constexpr float kBehindDistance = 70.0f;
+constexpr float kTrailReach = 400.0f;      // no further from player 1 than this
+constexpr float kFallingSpeed = 250.0f;     // units a second downwards: player 1 is in the air
+constexpr float kFrameMargin = 0.8f;        // the shared camera keeps both within this much of the picture
 constexpr float kOnScreenMargin = 0.9f;   // of the picture's half-size
 constexpr float kCharacterMiddle = 40.0f; // above the character's feet
 
+// ICharacter's instant kill (0x152D30, thiscall (a), slot 0xC8; the Jedi's 0x280C30 calls it): falls into
+// the void and kill zones. It sets health 0 and calls Killed, past the health change; it does nothing to an
+// "Invincible?" character. Its first 9 bytes are moved to a stub.
+constexpr uint32_t kInstantKill = 0x00152D30;
+constexpr uint8_t kInstantKillBytes[] = { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0x83, 0xEC, 0x58 };
+using InstantKillFn = void(__fastcall*)(uint8_t*, void*, uint32_t);
+InstantKillFn g_OriginalInstantKill = nullptr;
+
+// Player 1's recent footing (positions while not falling), newest last.
+struct TrailPoint { float x, y, z; };
+std::vector<TrailPoint> g_Trail;
+float g_LastPlayerY = 0;
+ULONGLONG g_LastTrailTick = 0;
+float g_CameraShift[3] = {}; // the shared camera's current offset (eased)
+ULONGLONG g_LastCameraTick = 0;
+
 using ChangeHealthFn = void(__fastcall*)(uint8_t*, void*, float, uint32_t, uint32_t);
-using ResolveFn = void(__fastcall*)(uint8_t*, void*, uint32_t);
 ChangeHealthFn g_OriginalChangeHealth = nullptr;
-ResolveFn g_OriginalResolve = nullptr;
 
 // This boot's (the running level's) state.
 struct State {
@@ -114,12 +124,13 @@ struct State {
     uint32_t p2Id = 0;
     bool spawned = false;          // co-op spawned it
     std::string p2Class;
+    std::string costume, skin;     // its costume and texture set (numbers): a new one wears them too
     bool playing = false;          // registered as player 2
     int savedControl = 0;
     uint8_t savedInvincible = 0;
     int savedCount = 1;
     uint32_t savedSlotId = 0;     // the mission's own player 2 (a co-op bonus mission), or 0
-    bool cameraDropped = false;    // player 2 is out of the camera's lists (too far)
+    bool rescuePending = false;    // a fall or kill zone would have killed player 2
     ULONGLONG farSince = 0;        // player 2 beyond the leash since then
     float savedMaxHealth = 0, savedMaxPower = 0; // the character's own (given back when player 2 leaves)
     int controlsLost = 0;         // times player 2's controls were found changed and given back
@@ -133,8 +144,6 @@ struct State {
     std::string spawnError;
 };
 State g_State;
-std::set<uint8_t*> g_FocusLists; // the lists player 2 was added to
-bool g_InResolve = false;
 
 uint8_t* ObjectById(uint32_t id)
 {
@@ -211,98 +220,6 @@ float Distance(uint8_t* a, uint8_t* b)
     return std::sqrt((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]));
 }
 
-// --- The camera ---
-
-bool ReadsAsFocusList(uint8_t* object)
-{
-    __try {
-        return *reinterpret_cast<uint32_t*>(object) == kFocusListVtable;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-// Adds player 2 to a focus list that keeps player 1 in view (its first entry is "the player").
-void AddToFocusList(uint8_t* list)
-{
-    const int count = Field<int>(list, kFocusCount);
-    uint8_t* entries = Field<uint8_t*>(list, kFocusEntries);
-    if (count < 1 || !entries || entries[0] != 1)
-        return;
-    for (int i = 0; i < count; ++i)
-        if (Field<uint8_t*>(entries + i * kFocusEntrySize, 4) == g_State.p2)
-            return;
-    alignas(16) uint8_t fill[kFocusEntrySize];
-    std::memcpy(fill, entries, sizeof(fill)); // player 1's entry, as the template
-    fill[0] = 0;
-    Field<uint8_t*>(fill, 4) = g_State.p2;
-    Field<uint32_t>(fill, 8) = 0;
-    reinterpret_cast<void(__fastcall*)(uint8_t*, void*, int, const uint8_t*)>(uintptr_t(kFocusArrayGrow))(
-        list + kFocusCapacity, nullptr, count + 1, fill);
-    g_InResolve = true;
-    g_OriginalResolve(list, nullptr, Field<uint32_t>(list, 4));
-    g_InResolve = false;
-    g_FocusLists.insert(list);
-}
-
-void RemoveFromFocusLists()
-{
-    for (uint8_t* list : g_FocusLists) {
-        if (!ReadsAsFocusList(list))
-            continue;
-        const int count = Field<int>(list, kFocusCount);
-        uint8_t* entries = Field<uint8_t*>(list, kFocusEntries);
-        bool found = false;
-        for (int i = 0; entries && i < count; ++i) {
-            uint8_t* entry = entries + i * kFocusEntrySize;
-            if (Field<uint8_t*>(entry, 4) == g_State.p2) {
-                entry[0] = 0;
-                Field<uint8_t*>(entry, 4) = nullptr;
-                Field<uint32_t>(entry, 8) = 0; // resolving drops it
-                found = true;
-            }
-        }
-        if (found) {
-            g_InResolve = true;
-            g_OriginalResolve(list, nullptr, Field<uint32_t>(list, 4));
-            g_InResolve = false;
-        }
-    }
-    g_FocusLists.clear();
-}
-
-// The focus lists in a block of the game's memory, found by their vtable; the number found (at most `room`).
-size_t ScanForFocusLists(uintptr_t base, size_t size, uint8_t** found, size_t room)
-{
-    size_t n = 0;
-    __try {
-        const uint32_t* words = reinterpret_cast<const uint32_t*>(base);
-        for (size_t i = 0; i + 16 <= size / 4 && n < room; ++i)
-            if (words[i] == kFocusListVtable)
-                found[n++] = reinterpret_cast<uint8_t*>(base + i * 4);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
-    return n;
-}
-
-// The focus lists there already.
-std::vector<uint8_t*> FindFocusLists()
-{
-    std::vector<uint8_t*> lists;
-    uint8_t* found[256];
-    for (const auto& [base, size] : kernel::GameMemoryRegions())
-        lists.insert(lists.end(), found, found + ScanForFocusLists(base, size, found, std::size(found)));
-    return lists;
-}
-
-// Lists resolved later (a new camera after a cutscene) get player 2 too.
-void __fastcall ResolveHook(uint8_t* list, void*, uint32_t owner)
-{
-    g_OriginalResolve(list, nullptr, owner);
-    if (!g_InResolve && g_State.playing && !g_State.cameraDropped && StillThere())
-        AddToFocusList(list);
-}
-
 // --- Player 2's HUD ---
 
 // Player 2's vitals (the HUD's "EnemyVitals" group, whose item names slot 2: +0x84 = 1) fade in while
@@ -374,6 +291,17 @@ void __fastcall ChangeHealthHook(uint8_t* character, void*, float change, uint32
         health = 1.0f;
         g_State.respawnPending = true;
     }
+}
+
+// A fall into the void or a kill zone would kill player 2 (the story's companion with them, which the
+// mission's scripts still need): they are brought back to player 1 instead.
+void __fastcall InstantKillHook(uint8_t* character, void*, uint32_t a)
+{
+    if (character == g_State.p2 && g_State.playing) {
+        g_State.rescuePending = true;
+        return;
+    }
+    g_OriginalInstantKill(character, nullptr, a);
 }
 
 // --- Cutscenes ---
@@ -456,14 +384,9 @@ void Register()
     ResetPlayer2Hud(false); // the portrait is picked for this character
     g_State.playing = true;
     g_State.controlsLost = 0;
-    const ULONGLONG started = GetTickCount64();
-    g_State.cameraDropped = GetSettings().coopCamera != 1; // see Leash
     g_State.farSince = 0;
-    if (!g_State.cameraDropped)
-        for (uint8_t* list : FindFocusLists())
-            AddToFocusList(list);
-    LOG_INFO("Co-op: player 2 plays %s %s (control was %d); %zu camera list(s), %llu ms", g_State.spawned ? "the spawned" : "the companion",
-        g_State.p2Class.c_str(), g_State.savedControl, g_FocusLists.size(), GetTickCount64() - started);
+    LOG_INFO("Co-op: player 2 plays %s %s (control was %d)", g_State.spawned ? "the spawned" : "the companion",
+        g_State.p2Class.c_str(), g_State.savedControl);
 }
 
 // Player 2 stops playing: the character goes back to the game (its AI, its own invincibility).
@@ -481,7 +404,6 @@ void Unregister(const char* why)
     if (!g_State.savedSlotId)
         ResetPlayer2Hud(true);
     if (StillThere()) {
-        RemoveFromFocusLists();
         UnbindController(g_State.p2);
         Field<int>(g_State.p2, kCharacterControl) = g_State.savedControl;
         Field<uint8_t>(g_State.p2, kCharacterInvincible) = g_State.savedInvincible;
@@ -490,8 +412,6 @@ void Unregister(const char* why)
             if (IsJedi(g_State.p2))
                 SetMaximum(g_State.p2, kCharacterPower, kCharacterMaxPower, g_State.savedMaxPower);
         }
-    } else {
-        RemoveFromFocusLists(); // the entries still name the character (by pointer only)
     }
     LOG_INFO("Co-op: player 2 left %s (%s)", g_State.p2Class.c_str(), why);
 }
@@ -539,7 +459,7 @@ bool PickCharacter(uint8_t* player)
     } else {
         const std::string name = SpawnClass(player);
         std::string error;
-        if (!SpawnCharacter(name.c_str(), "", "", "", SpawnSide::Ally, error) || !LastSpawnedObject()) {
+        if (!SpawnCharacter(name.c_str(), g_State.costume, g_State.skin, "", SpawnSide::Ally, error) || !LastSpawnedObject()) {
             if (error != g_State.spawnError)
                 LOG_WARN("Co-op: no character for player 2: %s", error.c_str());
             g_State.spawnError = error;
@@ -551,21 +471,55 @@ bool PickCharacter(uint8_t* player)
     }
     g_State.p2Id = Field<uint32_t>(g_State.p2, kInstanceId);
     g_State.p2Class = TypeName(g_State.p2);
+    g_State.costume = std::to_string(Field<int>(g_State.p2, kCharacterCostume));
+    g_State.skin = std::to_string(Field<int>(g_State.p2, kCharacterSkin));
     return true;
 }
 
-// Player 2 placed beside player 1.
-void PlaceBeside(uint8_t* player)
+// Player 1's footing: where they stood a moment ago, while not falling (a spot to put player 2 on).
+void FollowPlayer1(uint8_t* player, ULONGLONG now)
+{
+    const float* p = &Field<float>(player, kCharacterTransform + 48);
+    const float dt = g_LastTrailTick ? float(now - g_LastTrailTick) / 1000.0f : 0.0f;
+    const bool falling = dt > 0 && (g_LastPlayerY - p[1]) / dt > kFallingSpeed;
+    g_LastTrailTick = now;
+    g_LastPlayerY = p[1];
+    if (falling)
+        return;
+    if (!g_Trail.empty()) {
+        const TrailPoint& last = g_Trail.back();
+        const float dx = p[0] - last.x, dy = p[1] - last.y, dz = p[2] - last.z;
+        if (dx * dx + dy * dy + dz * dz < kTrailSpacing * kTrailSpacing)
+            return;
+    }
+    g_Trail.push_back({ p[0], p[1], p[2] });
+    if (int(g_Trail.size()) > kTrailLength)
+        g_Trail.erase(g_Trail.begin());
+}
+
+// Player 2 placed where player 1 stood a moment ago (a little behind them, on ground they walked on), facing
+// as player 1 does; just behind player 1 when they have not moved yet.
+void PlaceSafely(uint8_t* player)
 {
     float m[16];
     std::memcpy(m, &Field<float>(player, kCharacterTransform), sizeof(m));
-    for (int i = 0; i < 3; ++i)
-        m[12 + i] += m[i] * kBesideDistance; // to player 1's right
+    const float px = m[12], py = m[13], pz = m[14];
+    m[12] -= m[8] * kBehindDistance;
+    m[14] -= m[10] * kBehindDistance;
+    for (auto it = g_Trail.rbegin(); it != g_Trail.rend(); ++it) {
+        const float dx = it->x - px, dy = it->y - py, dz = it->z - pz;
+        const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (d >= kBehindDistance && d <= kTrailReach) {
+            m[12] = it->x;
+            m[13] = it->y;
+            m[14] = it->z;
+            break;
+        }
+    }
     reinterpret_cast<void(__fastcall*)(uint8_t*, void*, const float*)>(VirtualFunction(g_State.p2, kPlaceSlot))(
         g_State.p2, nullptr, m);
 }
 
-// The camera keeps player 2 in view while the players are close enough; the leash brings them back.
 // Whether player 2 is in the game camera's picture (their middle, with a small margin), from the camera's
 // placement and field of view (radians, up and down; degrees taken as such). Unknown counts as in view.
 bool OnScreen(uint8_t* character)
@@ -590,30 +544,13 @@ bool OnScreen(uint8_t* character)
     return z > 0 && std::fabs(x) < z * tanSide && std::fabs(y) < z * tanUp;
 }
 
-// The camera (see kCameraDropDistance) and the leash: a player 2 out of the picture for a moment, or too far
-// away, is brought back beside player 1.
+// The leash: a player 2 out of the picture (the shared camera could not fit both) for a moment, or too far
+// away, is brought back to player 1.
 void Leash(uint8_t* player, ULONGLONG now)
 {
     const float distance = Distance(player, g_State.p2);
-    const bool both = GetSettings().coopCamera == 1;
-    if (!both) {
-        if (!g_State.cameraDropped) { // the camera follows player 1 alone
-            RemoveFromFocusLists();
-            g_State.cameraDropped = true;
-        }
-    } else if (!g_State.cameraDropped && distance > kCameraDropDistance) {
-        RemoveFromFocusLists();
-        g_State.cameraDropped = true;
-        LOG_INFO("Co-op: %.0f apart: the camera follows player 1 alone", distance);
-    } else if (g_State.cameraDropped && distance < kCameraTakeDistance) {
-        g_State.cameraDropped = false;
-        for (uint8_t* list : FindFocusLists())
-            AddToFocusList(list);
-        LOG_INFO("Co-op: %.0f apart: the camera keeps both players in view", distance);
-    }
     const bool onScreen = OnScreen(g_State.p2);
-    const bool away = !onScreen || distance > kLeashDistance;
-    if (!away) {
+    if (onScreen && distance <= kLeashDistance) {
         g_State.farSince = 0;
         return;
     }
@@ -621,17 +558,78 @@ void Leash(uint8_t* player, ULONGLONG now)
         g_State.farSince = now;
     const ULONGLONG wait = distance > kFarDistance ? kFarMs : kLeashMs;
     if (now - g_State.farSince >= wait) {
-        PlaceBeside(player);
+        PlaceSafely(player);
         g_State.farSince = 0;
-        LOG_INFO("Co-op: player 2 was %.0f away%s and came back beside player 1", distance,
-            onScreen ? "" : ", out of the picture");
+        LOG_INFO("Co-op: player 2 was %.0f away%s and came back to player 1", distance, onScreen ? "" : ", out of the picture");
     }
 }
 
-// Player 2 back on their feet beside player 1, with full health and a moment's shield.
+// The shared camera: the game's camera (which follows player 1) moved towards the players' middle and pulled
+// back along its view until both players' middles are well inside the picture, within limits, eased. The
+// view's direction stays the game's. Off (eased back to the game's) with Camera=1, in cutscenes, without a
+// player 2.
+bool SharedCamera(float m[16], float fov)
+{
+    const ULONGLONG now = GetTickCount64();
+    const float dt = g_LastCameraTick ? std::min(float(now - g_LastCameraTick) / 1000.0f, 0.1f) : 0.0f;
+    g_LastCameraTick = now;
+    float target[3] = {};
+    uint8_t* player = PlayerObject();
+    if (GetSettings().coopCamera == 0 && player && g_State.playing && StillThere() && Alive(g_State.p2) && fov > 0 &&
+        !InCutscene()) {
+        if (fov > 3.2f)
+            fov *= 3.14159265f / 180.0f;
+        const float* r = m;
+        const float* u = m + 4;
+        const float* f = m + 8;
+        const float* c = m + 12;
+        const float* a0 = &Field<float>(player, kCharacterTransform + 48);
+        const float* b0 = &Field<float>(g_State.p2, kCharacterTransform + 48);
+        const float a[3] = { a0[0], a0[1] + kCharacterMiddle, a0[2] };
+        const float b[3] = { b0[0], b0[1] + kCharacterMiddle, b0[2] };
+        // Sideways and up or down towards the middle (along the view's right and up), at most kMaxShift.
+        const float half[3] = { (b[0] - a[0]) * 0.5f, (b[1] - a[1]) * 0.5f, (b[2] - a[2]) * 0.5f };
+        const float sr = half[0] * r[0] + half[1] * r[1] + half[2] * r[2];
+        const float su = half[0] * u[0] + half[1] * u[1] + half[2] * u[2];
+        float shift[3] = { r[0] * sr + u[0] * su, r[1] * sr + u[1] * su, r[2] * sr + u[2] * su };
+        const float length = std::sqrt(shift[0] * shift[0] + shift[1] * shift[1] + shift[2] * shift[2]);
+        if (length > kMaxShift)
+            for (float& v : shift)
+                v *= kMaxShift / length;
+        // Back along the view until both fit.
+        const float tanUp = std::tan(fov * 0.5f) * kFrameMargin;
+        const float tanSide = tanUp * (GetSettings().widescreen ? 16.0f / 9.0f : 4.0f / 3.0f);
+        float back = 0;
+        for (const float* q : { a, b }) {
+            const float d[3] = { q[0] - c[0] - shift[0], q[1] - c[1] - shift[1], q[2] - c[2] - shift[2] };
+            const float x = d[0] * r[0] + d[1] * r[1] + d[2] * r[2];
+            const float y = d[0] * u[0] + d[1] * u[1] + d[2] * u[2];
+            const float z = d[0] * f[0] + d[1] * f[1] + d[2] * f[2];
+            back = std::max({ back, std::fabs(x) / tanSide - z, std::fabs(y) / tanUp - z });
+        }
+        back = std::min(back, kMaxPullBack);
+        for (int i = 0; i < 3; ++i)
+            target[i] = shift[i] - f[i] * back;
+    }
+    const float ease = std::min(1.0f, dt * kCameraEase);
+    bool moved = false;
+    for (int i = 0; i < 3; ++i) {
+        g_CameraShift[i] += (target[i] - g_CameraShift[i]) * ease;
+        moved |= std::fabs(g_CameraShift[i]) > 0.5f;
+    }
+    if (!moved) {
+        g_CameraShift[0] = g_CameraShift[1] = g_CameraShift[2] = 0;
+        return false;
+    }
+    for (int i = 0; i < 3; ++i)
+        m[12 + i] += g_CameraShift[i];
+    return true;
+}
+
+// Player 2 back on their feet by player 1, with full health and a moment's shield.
 void Respawn(uint8_t* player)
 {
-    PlaceBeside(player);
+    PlaceSafely(player);
     Field<float>(g_State.p2, kCharacterHealth) = Field<float>(g_State.p2, kCharacterMaxHealth);
     Field<uint8_t>(g_State.p2, kCharacterInvincible) = 1;
     g_State.shieldUntil = GetTickCount64() + kShieldMs;
@@ -657,14 +655,14 @@ void GameOver()
 void InstallCoop()
 {
     g_State = State{};
-    g_FocusLists.clear();
-    g_InResolve = false;
+    g_Trail.clear();
+    g_LastTrailTick = g_LastCameraTick = 0;
+    g_CameraShift[0] = g_CameraShift[1] = g_CameraShift[2] = 0;
     input::SetCoopInput(false);
     // The stubs live in the port's memory and survive reboots; the jumps are patched into every new image.
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kChangeHealth)), kChangeHealthBytes, sizeof(kChangeHealthBytes)) != 0 ||
-        std::memcmp(reinterpret_cast<const void*>(uintptr_t(kFocusListResolve)), kFocusListResolveBytes,
-            sizeof(kFocusListResolveBytes)) != 0) {
-        LOG_WARN("Co-op: unexpected code at the health change or the camera list; co-op is off");
+        std::memcmp(reinterpret_cast<const void*>(uintptr_t(kInstantKill)), kInstantKillBytes, sizeof(kInstantKillBytes)) != 0) {
+        LOG_WARN("Co-op: unexpected code at the health change or the instant kill; co-op is off");
         return;
     }
     auto trampoline = [](uint32_t address, const uint8_t* bytes, uint32_t length) {
@@ -676,11 +674,12 @@ void InstallCoop()
         return stub;
     };
     static uint8_t* changeHealthStub = trampoline(kChangeHealth, kChangeHealthBytes, sizeof(kChangeHealthBytes));
-    static uint8_t* resolveStub = trampoline(kFocusListResolve, kFocusListResolveBytes, sizeof(kFocusListResolveBytes));
+    static uint8_t* instantKillStub = trampoline(kInstantKill, kInstantKillBytes, sizeof(kInstantKillBytes));
     g_OriginalChangeHealth = reinterpret_cast<ChangeHealthFn>(changeHealthStub);
-    g_OriginalResolve = reinterpret_cast<ResolveFn>(resolveStub);
+    g_OriginalInstantKill = reinterpret_cast<InstantKillFn>(instantKillStub);
     PatchJump(kChangeHealth, reinterpret_cast<const void*>(&ChangeHealthHook));
-    PatchJump(kFocusListResolve, reinterpret_cast<const void*>(&ResolveHook));
+    PatchJump(kInstantKill, reinterpret_cast<const void*>(&InstantKillHook));
+    SetCameraAdjuster(&SharedCamera);
 }
 
 void CoopFrame()
@@ -695,6 +694,7 @@ void CoopFrame()
         return;
     }
     const ULONGLONG now = GetTickCount64();
+    FollowPlayer1(player, now);
     if (!g_State.levelSeen)
         g_State.levelSeen = now;
     if (now - g_State.levelSeen < kSettleMs) {
@@ -761,6 +761,12 @@ void CoopFrame()
         } else if (g_State.respawnPending) {
             g_State.respawnPending = false;
             Respawn(player);
+        } else if (g_State.rescuePending) {
+            g_State.rescuePending = false;
+            PlaceSafely(player);
+            Field<uint8_t>(g_State.p2, kCharacterInvincible) = 1;
+            g_State.shieldUntil = now + kShieldMs;
+            LOG_INFO("Co-op: player 2 would have fallen to their death: brought back to player 1");
         } else if (!Alive(g_State.p2)) {
             // Died all the same (a fall, a scripted death), or under the game over rule.
             // The game over comes once their death has played out (as player 1's does).

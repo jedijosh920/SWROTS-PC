@@ -11,7 +11,13 @@ void InstallFreeCamera();
 void SetFreeCamera(bool on);
 bool FreeCameraOn();
 // The game camera's latest placement (rows right, up, forward, position; up is +Y) and the field of view it
-// gave the renderer (0 when not seen yet). False before the game has placed it.
+// gave the renderer (0 when not seen yet), as shown (with any adjustment below). False before the game has
+// placed it.
 bool GameCameraPlacement(float rows[16], float& fov);
+
+// An adjustment of the game camera's placement outside a flight (co-op's shared camera): called once a frame
+// with the game's placement and the field of view; true when it changed `rows`. Null for none.
+using CameraAdjuster = bool (*)(float rows[16], float fov);
+void SetCameraAdjuster(CameraAdjuster adjuster);
 
 } // namespace swrots::game
