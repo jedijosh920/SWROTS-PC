@@ -260,6 +260,15 @@ char __fastcall RenderFovHook(void* renderer, void* edx, float fov)
 
 } // namespace
 
+bool GameCameraPlacement(float rows[16], float& fov)
+{
+    if (!g_HaveGameView)
+        return false;
+    std::memcpy(rows, g_GameView.m, sizeof(g_GameView.m));
+    fov = g_HaveGameFov ? g_GameFov : 0.0f;
+    return true;
+}
+
 void InstallFreeCamera()
 {
     // Every level change or restart reboots the game: the free camera is off again. Development aid:

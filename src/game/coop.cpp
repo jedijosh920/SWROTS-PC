@@ -17,6 +17,7 @@
 #include "core/patch.h"
 #include "core/settings.h"
 #include "game/characters.h"
+#include "game/freecam.h"
 #include "input/controls.h"
 #include "kernel/kernel.h"
 
@@ -80,16 +81,24 @@ constexpr ULONGLONG kShieldMs = 2000;       // a player 2 who came back cannot b
 constexpr ULONGLONG kAfterCutsceneMs = 1000; // player 2 takes the companion again this long after a cutscene
 constexpr ULONGLONG kDeathPlaysMs = 6000;    // a death's fall, at most (about 4 s)
 constexpr float kBesideDistance = 80.0f;    // where player 2 comes back: beside player 1
-// The leash: the camera keeps both players in view only while they are this close (beyond, it frames player 1
+// The camera: by default ([Coop] Camera=0) it follows player 1 alone, as without co-op: the story levels'
+// cameras were not made for two targets (with player 2 in their focus lists the first mission's open hangar
+// went to a far, wide shot whatever the players' distance). With Camera=1 it keeps both in view while they
+// are close.
+// The leash: with Camera=1 the camera keeps both players in view only while they are this close (beyond, it frames player 1
 // alone, as without co-op: in open places such as the first mission's hangar, framing two players a few
 // hundred units apart pulls it far out into space), and a player 2 left behind (or gone ahead, or fallen)
 // is brought back beside player 1. A character is about 70 units tall.
 constexpr float kCameraDropDistance = 300.0f;
 constexpr float kCameraTakeDistance = 220.0f;
-constexpr float kLeashDistance = 500.0f;
-constexpr ULONGLONG kLeashMs = 2000;
-constexpr float kFarDistance = 900.0f;
+// Player 2 is brought back after a second out of the camera's picture or beyond kLeashDistance, half a
+// second beyond kFarDistance.
+constexpr float kLeashDistance = 450.0f;
+constexpr ULONGLONG kLeashMs = 1000;
+constexpr float kFarDistance = 700.0f;
 constexpr ULONGLONG kFarMs = 500;
+constexpr float kOnScreenMargin = 0.9f;   // of the picture's half-size
+constexpr float kCharacterMiddle = 40.0f; // above the character's feet
 
 using ChangeHealthFn = void(__fastcall*)(uint8_t*, void*, float, uint32_t, uint32_t);
 using ResolveFn = void(__fastcall*)(uint8_t*, void*, uint32_t);
@@ -448,10 +457,11 @@ void Register()
     g_State.playing = true;
     g_State.controlsLost = 0;
     const ULONGLONG started = GetTickCount64();
-    g_State.cameraDropped = false;
+    g_State.cameraDropped = GetSettings().coopCamera != 1; // see Leash
     g_State.farSince = 0;
-    for (uint8_t* list : FindFocusLists())
-        AddToFocusList(list);
+    if (!g_State.cameraDropped)
+        for (uint8_t* list : FindFocusLists())
+            AddToFocusList(list);
     LOG_INFO("Co-op: player 2 plays %s %s (control was %d); %zu camera list(s), %llu ms", g_State.spawned ? "the spawned" : "the companion",
         g_State.p2Class.c_str(), g_State.savedControl, g_FocusLists.size(), GetTickCount64() - started);
 }
@@ -556,10 +566,42 @@ void PlaceBeside(uint8_t* player)
 }
 
 // The camera keeps player 2 in view while the players are close enough; the leash brings them back.
+// Whether player 2 is in the game camera's picture (their middle, with a small margin), from the camera's
+// placement and field of view (radians, up and down; degrees taken as such). Unknown counts as in view.
+bool OnScreen(uint8_t* character)
+{
+    float m[16], fov = 0;
+    if (!GameCameraPlacement(m, fov) || fov <= 0)
+        return true;
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        LOG_INFO("Co-op: the game camera's field of view is %.3f", fov);
+    }
+    if (fov > 3.2f)
+        fov *= 3.14159265f / 180.0f;
+    const float* p = &Field<float>(character, kCharacterTransform + 48);
+    const float d[3] = { p[0] - m[12], p[1] + kCharacterMiddle - m[13], p[2] - m[14] };
+    const float x = d[0] * m[0] + d[1] * m[1] + d[2] * m[2];
+    const float y = d[0] * m[4] + d[1] * m[5] + d[2] * m[6];
+    const float z = d[0] * m[8] + d[1] * m[9] + d[2] * m[10];
+    const float tanUp = std::tan(fov * 0.5f) * kOnScreenMargin;
+    const float tanSide = tanUp * (GetSettings().widescreen ? 16.0f / 9.0f : 4.0f / 3.0f);
+    return z > 0 && std::fabs(x) < z * tanSide && std::fabs(y) < z * tanUp;
+}
+
+// The camera (see kCameraDropDistance) and the leash: a player 2 out of the picture for a moment, or too far
+// away, is brought back beside player 1.
 void Leash(uint8_t* player, ULONGLONG now)
 {
     const float distance = Distance(player, g_State.p2);
-    if (!g_State.cameraDropped && distance > kCameraDropDistance) {
+    const bool both = GetSettings().coopCamera == 1;
+    if (!both) {
+        if (!g_State.cameraDropped) { // the camera follows player 1 alone
+            RemoveFromFocusLists();
+            g_State.cameraDropped = true;
+        }
+    } else if (!g_State.cameraDropped && distance > kCameraDropDistance) {
         RemoveFromFocusLists();
         g_State.cameraDropped = true;
         LOG_INFO("Co-op: %.0f apart: the camera follows player 1 alone", distance);
@@ -569,16 +611,20 @@ void Leash(uint8_t* player, ULONGLONG now)
             AddToFocusList(list);
         LOG_INFO("Co-op: %.0f apart: the camera keeps both players in view", distance);
     }
-    if (distance <= kLeashDistance) {
+    const bool onScreen = OnScreen(g_State.p2);
+    const bool away = !onScreen || distance > kLeashDistance;
+    if (!away) {
         g_State.farSince = 0;
         return;
     }
     if (!g_State.farSince)
         g_State.farSince = now;
-    if (now - g_State.farSince >= kLeashMs || (distance > kFarDistance && now - g_State.farSince >= kFarMs)) {
+    const ULONGLONG wait = distance > kFarDistance ? kFarMs : kLeashMs;
+    if (now - g_State.farSince >= wait) {
         PlaceBeside(player);
         g_State.farSince = 0;
-        LOG_INFO("Co-op: player 2 was %.0f away and came back beside player 1", distance);
+        LOG_INFO("Co-op: player 2 was %.0f away%s and came back beside player 1", distance,
+            onScreen ? "" : ", out of the picture");
     }
 }
 

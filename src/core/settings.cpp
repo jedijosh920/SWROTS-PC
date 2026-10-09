@@ -66,6 +66,7 @@ void LoadSettings(const std::wstring& path)
     s.coopInput = ReadInt(L"Coop", L"Input", d.coopInput, 0, 2);
     s.coopDeath = ReadInt(L"Coop", L"Player2Death", d.coopDeath, 0, 1);
     s.coopStorySafety = ReadInt(L"Coop", L"StorySafety", d.coopStorySafety, 0, 1) != 0;
+    s.coopCamera = ReadInt(L"Coop", L"Camera", d.coopCamera, 0, 1);
     s.coopPlayer2 = ReadText(L"Coop", L"Player2", d.coopPlayer2);
     SaveSettings(); // writes defaults for missing keys, normalizes values
     LOG_INFO("Settings: %dx%d%s%s%s, resolution scale %d%s, %s, %dx anisotropic, bloom %s, %d fps", s.width, s.height,
@@ -93,6 +94,7 @@ void SaveSettings()
     WriteInt(L"Coop", L"Input", s.coopInput);
     WriteInt(L"Coop", L"Player2Death", s.coopDeath);
     WriteInt(L"Coop", L"StorySafety", s.coopStorySafety);
+    WriteInt(L"Coop", L"Camera", s.coopCamera);
     WriteText(L"Coop", L"Player2", s.coopPlayer2);
 }
 

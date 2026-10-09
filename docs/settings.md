@@ -26,6 +26,7 @@ Enabled=0           ; 1: a second player in the story and single-player missions
 Input=0             ; 0 auto, 1 the keyboard is player 1 and the first controller player 2, 2 two controllers
 Player2Death=0      ; when player 2 dies: 0 they come back beside player 1, 1 the mission is lost
 StorySafety=1       ; 1: cutscenes give player 2's character back to the game until they end
+Camera=0            ; 0: the camera follows player 1 (player 2 is kept in the picture); 1: it frames both (experimental)
 Player2=            ; player 2's character where the mission has no companion (e.g. IAnakin); empty: automatic
 ```
 
@@ -62,12 +63,11 @@ With `Enabled=1`, a second player joins the story missions and the single-player
 themselves, without a button: as soon as a controller is there for them, player 2 plays the mission's
 companion (Obi-Wan beside Anakin), or, in missions without one, a character of their own placed beside
 player 1 (Obi-Wan, or Anakin when player 1 is Obi-Wan; `Player2` chooses another). Player 2 gets the
-game's own second HUD (portrait, health, Force) and player 1's maximum health and Force, the camera keeps
-both players in view, and both take damage. Turning co-op off removes a character it placed for player 2
+game's own second HUD (portrait, health, Force) and player 1's maximum health and Force, and both take
+damage. Turning co-op off removes a character it placed for player 2
 (a companion goes back to the story). When player 2's controller is unplugged, the character goes back to the game; plugged in again,
-player 2 takes it again. The camera keeps both players in view while they stay close (about four body heights);
-further apart it follows player 1 alone, and a player 2 left behind for two seconds is brought back beside
-player 1.
+player 2 takes it again. The camera follows player 1 as without co-op, and a player 2 out of the picture for a
+second (or a few body heights away) is brought back beside player 1.
 In the bonus missions made for two players, player 2 plays the game's own second character (Cin Drallig
 beside Serra) when the game left it to the AI. Versus and the story duels are left as they are.
 
@@ -78,6 +78,9 @@ beside Serra) when the game left it to the AI. Versus and the story duels are le
 - `Player2Death`: with `0`, a hit that would kill player 2 sends them back beside player 1 with full
   health (and a moment in which they cannot be hurt); with `1`, the mission is lost when player 2 dies,
   as when player 1 does.
+- `Camera`: the levels' cameras were made for one player; framing two, some of them (the first mission's
+  open hangar) cut to a far, wide shot. `1` lets the camera keep both players in view while they are close,
+  for trying out.
 - `StorySafety`: the story moves its companion in cutscenes; with `1` (recommended) player 2 lets go of
   it while a cutscene plays and takes it again just after.
 - The debug menu's console has `coop` to see what co-op is doing and change these settings while playing.

@@ -629,6 +629,8 @@ void Coop(const std::vector<std::string>& words)
         s.coopInput = is(2, "auto") ? 0 : is(2, "keyboard") ? 1 : 2;
     } else if (words.size() == 3 && is(1, "death") && (is(2, "respawn") || is(2, "gameover"))) {
         s.coopDeath = is(2, "gameover") ? 1 : 0;
+    } else if (words.size() == 3 && is(1, "camera") && (is(2, "player1") || is(2, "both"))) {
+        s.coopCamera = is(2, "both") ? 1 : 0;
     } else if (words.size() == 3 && is(1, "storysafety") && (is(2, "on") || is(2, "off"))) {
         s.coopStorySafety = is(2, "on");
     } else if (words.size() == 3 && is(1, "player2")) {
@@ -641,7 +643,7 @@ void Coop(const std::vector<std::string>& words)
             return;
         }
     } else if (words.size() != 1) {
-        Print(LineKind::Error, "coop [on|off | input auto|keyboard|controllers | death respawn|gameover |");
+        Print(LineKind::Error, "coop [on|off | input auto|keyboard|controllers | death respawn|gameover | camera player1|both |");
         Print(LineKind::Error, "      player2 <class>|auto | storysafety on|off]");
         return;
     }
@@ -649,8 +651,9 @@ void Coop(const std::vector<std::string>& words)
         SaveSettings();
     static const char* const kInputs[] = { "auto (keyboard alone with one controller)", "keyboard is player 1",
         "two controllers" };
-    Print(LineKind::Output, "  co-op %s; input: %s; when player 2 dies: %s; story safety %s; player 2 without a "
-        "companion: %s", s.coop ? "on" : "off", kInputs[s.coopInput], s.coopDeath ? "game over" : "they come back",
+    Print(LineKind::Output, "  co-op %s; input: %s; when player 2 dies: %s; camera: %s; story safety %s; player 2 "
+        "without a companion: %s", s.coop ? "on" : "off", kInputs[s.coopInput], s.coopDeath ? "game over" : "they come back",
+        s.coopCamera ? "both players" : "player 1",
         s.coopStorySafety ? "on" : "off", s.coopPlayer2.empty() ? "automatic" : s.coopPlayer2.c_str());
     const game::CoopState state = game::GetCoopState();
     if (state.playing)
