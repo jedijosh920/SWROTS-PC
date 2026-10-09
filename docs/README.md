@@ -18,6 +18,7 @@
 - [Replacing textures](modding/replacing-textures.md)
 - [Swapping characters](modding/swapping-characters.md): a worked example
 - [Replacing weapons](modding/replacing-weapons.md): lightsaber hilts, worked through with Anakin's Episode III hilt
+- [Replacing music](modding/replacing-music.md): music tracks, their fixed lengths, and a level's own track
 - [Adding versus fighters](modding/adding-versus-fighters.md): a select-screen slot of its own, as Yoda has
 - [How loading works](modding/how-loading-works.md): level archives and what the port changes
 - [File formats](modding/file-formats.md): PAK, STX, MSH and more

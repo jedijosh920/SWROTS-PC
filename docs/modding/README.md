@@ -10,6 +10,8 @@ No PAK rebuilding or disc image editing is needed.
   (to just play as another character or body, see the [debug menu](../debug-menu.md#playing-as-another-character))
 - [Replacing weapons](replacing-weapons.md): a lightsaber hilt replaced, the story and versus sabers, and the
   weapon tools in `tools/weapons/`
+- [Replacing music](replacing-music.md): the music tracks, fitting a replacement to a track's length and rate,
+  giving a level its own track, and `tools/audio/hwx.py`
 - [Adding versus fighters](adding-versus-fighters.md): giving a character its own versus select-screen slot
 - [How loading works](how-loading-works.md): level PAKs, load order and what the port does to allow overrides
 - [File formats](file-formats.md): what is known about the PAK, STX, MSH formats and the character table
