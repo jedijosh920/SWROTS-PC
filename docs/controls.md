@@ -8,7 +8,8 @@ Bluetooth, including rumble: Cross = A, Circle = B, Square = X, Triangle = Y, L1
 R1 = Black, L2/R2 = triggers, Options = Start, Share/Create or a touchpad click = Back.
 Controllers can be connected at any time. Up to four players: player 1 is the keyboard plus the
 first controller, then Xbox-style controllers, then PlayStation controllers. Other pads (e.g.
-Switch) need Steam Input or a similar XInput translator.
+Switch) need Steam Input or a similar XInput translator. In [co-op](coop.md#controllers) with one
+controller, the keyboard and mouse are player 1 and the controller is player 2.
 
 ## Keyboard and mouse
 

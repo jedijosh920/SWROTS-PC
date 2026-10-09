@@ -47,7 +47,8 @@ Things the Xbox release never had:
   Anakin) or a character of their own beside you, with the game's own second HUD, and come back beside you
   when they fall or wander out of the picture. Also in the bonus missions made
   for two players, with one controller. One controller is enough: the keyboard and
-  mouse are then player 1. In the boss fights player 2 plays the boss, as in Versus. See the
+  mouse are then player 1. In the boss fights player 2 plays the boss, as in Versus, or fights it beside
+  you. A clone trooper player 2 shoots as the computer's clones do. See the
   [co-op guide](docs/coop.md).
 - **Unlock everything** with the developers' own cheat, `unlockprofile` (debug console).
 - **Free camera.** Fly the view anywhere with `freecam` (debug console): keyboard and mouse or a
@@ -101,6 +102,7 @@ and controller layouts: [controls](docs/controls.md).
 | [Linux and Steam Deck](docs/linux.md) | Playing through Proton (community guide) |
 | [Settings](docs/settings.md) | Window, graphics, frame rate, developer options |
 | [Controls](docs/controls.md) | Keyboard, mouse and controllers |
+| [Co-op](docs/coop.md) | Two players in the story missions: how to play, settings, known issues |
 | [Debug menu](docs/debug-menu.md) | The game's console, variables and debug displays |
 | [Modding](docs/modding/README.md) | Loose-file mods, dumping assets, textures, character swaps |
 | [How it works](docs/architecture.md) | The port's design, for the curious and for contributors |
@@ -111,7 +113,11 @@ and controller layouts: [controls](docs/controls.md).
 
 - On-screen button prompts and some messages still refer to the Xbox and its controller.
 - 60 fps (`FpsLimit=60`) is experimental: some of the game's logic is timed for 30 fps.
-- The keyboard and the first controller are both player 1; two-player modes need two controllers.
+- Outside co-op the keyboard and the first controller are both player 1, so Versus and the bonus
+  missions made for two need two controllers. In co-op one controller is enough: the keyboard is then
+  player 1.
+- Co-op has known issues of its own (health pickups are player 1's, scripted moments that wait for the
+  computer's companion): see the [co-op guide](docs/coop.md#known-issues).
 - Controllers other than Xbox (XInput) and PlayStation ones need Steam Input or a similar translator.
 - Some modding limits: animations stored in a level's memory image (most `.bnm`) cannot be replaced
   by loose files yet, and loose text resources in folders the disc also has (e.g. `gameinfo\`) fail
@@ -141,7 +147,8 @@ files ([modding](docs/modding/README.md)).
 
 ## Roadmap
 
-- Co-op: an entry in the game's pause menu, and a playthrough of every mission with two players.
+- Co-op: a playthrough of every mission with two players, player 2's character and controllers in the
+  Cooperative Mod screen, health pickups for player 2.
 - PC button prompts and wording (keyboard, mouse and PlayStation icons).
 - Proper 60 fps and higher (the engine has fixed-step simulation to build on).
 - An in-game settings menu, keyboard as its own player for versus modes, more controllers.

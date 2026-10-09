@@ -62,8 +62,15 @@ Notes:
 ## Co-op
 
 Two players in the story missions: see the [co-op guide](coop.md) for how it works. The pause menu's
-**Cooperative Mod** screen changes `Enabled`, `Boss`, `FriendlyFire`, `Player2Death` and `Camera` while
-playing.
+**Cooperative Mod** screen changes these while playing:
+
+| Pause screen row | Key |
+|---|---|
+| Co-op | `Enabled` |
+| Player 2 As Boss | `Boss` |
+| Friendly Fire | `FriendlyFire` |
+| Respawn Player 2 | `Player2Death` (on is `0`) |
+| Shared Camera | `Camera` (on is `0`) |
 
 - `Input`: with auto, one controller means the keyboard and mouse are player 1 and the controller is
   player 2; with two or more controllers, the first is player 1's (with the keyboard) and the second

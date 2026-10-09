@@ -3,6 +3,17 @@
 Two players in the story missions and the single-player bonus missions, on one PC. Player 2 joins by
 themselves as soon as a controller is there for them: there is no button to press.
 
+## Quick start
+
+1. Connect a controller for player 2 (Xbox or PlayStation). With one controller, player 1 plays on the
+   keyboard and mouse; with two, player 1 has the first controller (see [Controllers](#controllers)).
+2. Start or continue a story mission.
+3. Pause (Escape, or Start), choose **Cooperative Mod**, set **Co-op** to **On**, and go back to the game.
+4. Player 2 is there at once: the mission's companion (Obi-Wan beside Anakin) or a character of their own
+   beside player 1, with their own health bar. The choice is remembered for the next missions.
+
+Turn **Co-op** off the same way at any time: the game goes on as a one-player game.
+
 ## Turning it on
 
 - **In the game:** pause, then choose **Cooperative Mod** (under Quit Mission). Its screen has:
@@ -15,7 +26,8 @@ themselves as soon as a controller is there for them: there is no button to pres
 
   Changes apply at once and are remembered (in `settings.ini`).
 - **In `settings.ini`:** `Enabled=1` under `[Coop]` (see [settings](settings.md#co-op) for every key).
-- **In the debug console:** `coop on` / `coop off`; `coop` alone says what co-op is doing.
+- **In the debug console** (with the [debug menu](debug-menu.md) enabled): `coop on` / `coop off`; `coop`
+  alone says what co-op is doing.
 
 Co-op is off by default. When it is off the game plays exactly as without it.
 
@@ -30,13 +42,17 @@ Co-op is off by default. When it is off the game plays exactly as without it.
 player 2 the second controller. Unplug player 2's controller and their character goes back to the game;
 plug it in again and player 2 takes it again.
 
+Player 2 has the game's own controller layout ([controls](controls.md)): move, attack, jump, block and the
+Force powers as player 1 has them on a controller. A clone trooper player 2 has its own (below).
+
 ## Who player 2 plays
 
 - **The mission's companion**, where there is one: Obi-Wan beside Anakin, Anakin beside Obi-Wan.
 - **A character of their own**, placed beside player 1, where there is none: a Jedi when player 1 fights
   for the Jedi (Obi-Wan, or a Jedi Knight beside Obi-Wan), a clone trooper dressed as the level's own
-  when player 1 fights with the clones (a 501st beside Anakin in the Jedi Temple). `Player2=` in `settings.ini` (or `coop player2 IVader`)
-  chooses another; the debug menu's Characters tab lists the classes. Turning co-op off removes it.
+  when player 1 fights with the clones (a 501st beside Anakin in the Jedi Temple). Never a character the
+  story would not put there. `Player2=` in `settings.ini` (or `coop player2 IVader`) chooses another; the
+  debug menu's Characters tab lists the classes. Turning co-op off removes it.
 - **The bonus missions made for two players**: with one controller the game leaves its second
   character (Cin Drallig beside Serra) to the computer; co-op gives it to player 2.
 
@@ -105,8 +121,8 @@ after) the camera is the game's own and player 2 is not brought back to player 1
 - **A clone trooper player 2's shots go to the enemy it is fighting**, as the computer's clones' do, not
   where it faces.
 - **Some settings are only in `settings.ini`** for now: `Input`, `Player2` and `StorySafety`.
-- **Missions not tested from start to end in co-op**: the first mission has been; others may have
-  moments like the above.
+- **Not every mission has been played from start to end in co-op**: the first mission, the Jedi Temple
+  and the boss fights have been; others may have moments like the above.
 
 ## Reporting a problem
 

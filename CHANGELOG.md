@@ -10,32 +10,35 @@ Two-player co-op in the story missions.
 ### Added
 
 - **Co-op.** A second player joins the story missions and the single-player bonus missions as soon as a
-  controller is there for them, no button needed: they play the mission's companion (Obi-Wan beside
-  Anakin), or a character of their own for player 1's side where there is none, with the game's own
+  controller is there for them, no button needed. They play the mission's companion (Obi-Wan beside
+  Anakin), or a character of their own on player 1's side where there is none, with the game's own
   second HUD and player 1's health and Force. One controller is enough: the keyboard and mouse are then
-  player 1. A shared camera keeps both in the picture; a player 2 left out of it, or falling into the void,
-  is brought back to player 1, and a fatal hit brings them back instead of ending the mission (or, with
-  `Player2Death=1`, ends it as player 1's death does). Turn it on and change it in the pause menu's new
-  **Cooperative Mod** screen; more in `settings.ini` (`[Coop]`) and the debug console's `coop`. In the boss fights
-  (Dooku, Grievous, the Mustafar duels...) player 2 plays the boss, as in Versus. Versus is unchanged. See the [co-op guide](https://github.com/jedijosh920/SWROTS-PC/blob/main/docs/coop.md),
-  with its known issues.
-- **Boss fights for two**: player 2 plays the mission's boss, or with **Player 2 As Boss** off fights it
-  beside player 1 (a Jedi or a 501st clone trooper, by the boss's side).
-- **A clone trooper player 2 shoots**: holding heavy attack fires the blaster while walking or standing,
-  as the computer's clones do (attack stays the rifle butt), and player 2 keeps their limbs (a clone used
-  to live on armless).
-- **Friendly fire** for co-op (`FriendlyFire=1`): the players' blows hurt each other; they stay allies.
-- **A hang watchdog**: if the game stops responding for 20 seconds, the log says where it is stuck; a
+  player 1. Turn it on in the pause menu's new **Cooperative Mod** screen; more in `settings.ini`
+  (`[Coop]`) and the debug console's `coop`. Co-op is off by default, and the game is unchanged with it
+  off. See the [co-op guide](https://github.com/jedijosh920/SWROTS-PC/blob/main/docs/coop.md), with its
+  known issues.
+  - **A shared camera** keeps both players in the picture (or follows player 1 alone, `Camera=1`).
+  - **Staying together:** a player 2 left out of the picture, far behind or falling into the void is
+    brought back beside player 1.
+  - **Dying:** a fatal hit brings player 2 back beside player 1, or with **Respawn Player 2** off
+    (`Player2Death=1`) ends the mission as player 1's death does.
+  - **Boss fights** (Dooku, Grievous, Mace Windu, the Mustafar duels...): player 2 plays the boss, as in
+    Versus, or with **Player 2 As Boss** off fights it beside player 1 (a Jedi or a 501st clone trooper,
+    by the boss's side).
+  - **A clone trooper player 2** shoots as the computer's clones do while heavy attack is held (attack is
+    the rifle butt), and player 2 never loses a limb to a saber.
+  - **Friendly fire** (`FriendlyFire=1`): the players' blows hurt each other; they stay allies.
+  - Versus and the bonus missions made for two players are unchanged.
+- **A hang watchdog**: if the game stops responding for 20 seconds, the log says where it is stuck, and a
   game caught in its own error handler is named once instead of filling the log.
 
 ### Fixed
 
 - **The game restarted in a new window** when a mission ended right as a movie began (after the Mace
-  Windu and Mustafar duels): returning to the menu could not stop the movie player, and the game restarted
-  its process instead.
+  Windu and Mustafar duels): returning to the menu could not stop the movie player, and the game
+  restarted its process instead.
 - **`despawn` in the debug console could crash the game** a moment later: clearing what pointed at the
   removed characters also cleared their own weapons' link back to them.
-
 - **Log lines with folder names in other alphabets** (Cyrillic, for example) came out empty.
 
 ## [v0.3.1](https://github.com/jedijosh920/SWROTS-PC/releases/tag/v0.3.1) - 2026-10-05
