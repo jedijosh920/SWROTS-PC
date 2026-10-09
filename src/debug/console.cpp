@@ -629,6 +629,8 @@ void Coop(const std::vector<std::string>& words)
         s.coopInput = is(2, "auto") ? 0 : is(2, "keyboard") ? 1 : 2;
     } else if (words.size() == 3 && is(1, "death") && (is(2, "respawn") || is(2, "gameover"))) {
         s.coopDeath = is(2, "gameover") ? 1 : 0;
+    } else if (words.size() == 3 && is(1, "boss") && (is(2, "on") || is(2, "off"))) {
+        s.coopBoss = is(2, "on");
     } else if (words.size() == 3 && is(1, "friendlyfire") && (is(2, "on") || is(2, "off"))) {
         s.coopFriendlyFire = is(2, "on");
     } else if (words.size() == 3 && is(1, "camera") && (is(2, "player1") || is(2, "shared"))) {
@@ -645,7 +647,7 @@ void Coop(const std::vector<std::string>& words)
             return;
         }
     } else if (words.size() != 1) {
-        Print(LineKind::Error, "coop [on|off | input auto|keyboard|controllers | death respawn|gameover | camera shared|player1 | friendlyfire on|off |");
+        Print(LineKind::Error, "coop [on|off | input auto|keyboard|controllers | death respawn|gameover | camera shared|player1 | friendlyfire on|off | boss on|off |");
         Print(LineKind::Error, "      player2 <class>|auto | storysafety on|off]");
         return;
     }
@@ -653,14 +655,15 @@ void Coop(const std::vector<std::string>& words)
         SaveSettings();
     static const char* const kInputs[] = { "auto (keyboard alone with one controller)", "keyboard is player 1",
         "two controllers" };
-    Print(LineKind::Output, "  co-op %s; input: %s; when player 2 dies: %s; camera: %s; friendly fire %s; story safety %s; "
+    Print(LineKind::Output, "  co-op %s; input: %s; when player 2 dies: %s; camera: %s; friendly fire %s; boss: %s; story safety %s; "
         "player 2 without a companion: %s", s.coop ? "on" : "off", kInputs[s.coopInput], s.coopDeath ? "game over" : "they come back",
         s.coopCamera ? "follows player 1" : "shared", s.coopFriendlyFire ? "on" : "off",
+        s.coopBoss ? "player 2 plays it" : "the game's",
         s.coopStorySafety ? "on" : "off", s.coopPlayer2.empty() ? "automatic" : s.coopPlayer2.c_str());
     const game::CoopState state = game::GetCoopState();
     if (state.playing)
         Print(LineKind::Output, "  player 2 plays %s %s (health %.0f / %.0f, %.0f from player 1)",
-            state.spawned ? "the spawned" : "the companion", state.player2.c_str(), state.health, state.maxHealth, state.distance);
+            state.boss ? "the boss" : state.spawned ? "the spawned" : "the companion", state.player2.c_str(), state.health, state.maxHealth, state.distance);
     else if (s.coop)
         Print(LineKind::Output, "  player 2 is not playing: %s", state.reason.empty() ? "-" : state.reason.c_str());
     if (state.cutscene)

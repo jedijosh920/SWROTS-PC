@@ -26,6 +26,7 @@ struct Settings {
     int coopInput = 0;        // 0 auto, 1 keyboard is player 1 and the first controller player 2, 2 two controllers
     int coopDeath = 0;        // when player 2 dies: 0 they come back beside player 1, 1 game over
     bool coopStorySafety = true; // co-op leaves cutscenes to the game (no leash, no shared camera, no joining)
+    bool coopBoss = true;     // in boss fights (the boss is the game's player 2) player 2 plays the boss
     bool coopFriendlyFire = false; // the two players' blows hurt each other (they stay allies)
     int coopCamera = 0;       // 0 a shared camera that keeps both players in view, 1 it follows player 1 alone
     std::string coopPlayer2;  // player 2's class when the mission has no companion (e.g. "IObiwan"); empty: automatic

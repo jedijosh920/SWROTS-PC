@@ -155,6 +155,10 @@ Drallig bonus mission plays one from about 4 to 7.5 seconds; player 1's control 
 - **Removal.** Turning co-op off removes the character it spawned. A character removed while it is player
   2's (the port's `despawn`) is let go of first: its focus list entries would otherwise point at a freed
   object, and the game's next resolve (0xC4688, its vfunc +0x5C) crashed.
+- **Boss fights.** A boss in slot 2 (an AI enemy: Dooku, Grievous, Mace, Serra, the Mustafar duelists, old
+  Obi-Wan) is player 2's with `Boss=1`: control mode 2 and controller 1 only; its health, health bar,
+  invincibility, side, the camera and the game's rules stay as they are (no respawn, rescue, leash or
+  shared camera). Its defeat ends player 2's part in the mission.
 - **Missions with a player 2 of their own.** The co-op bonus missions started without a second
   controller leave their player 2 (Cin Drallig) to the AI with control mode 16 in slot 2 (count 2); the
   port plays it like a companion and gives it back to the AI as it was. The story duels count their

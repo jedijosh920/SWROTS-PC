@@ -12,7 +12,8 @@ namespace swrots::game {
 // is kept in view by the camera while near (a player 2 left far behind is brought back) and takes damage;
 // when they would die they come back beside player 1 or, with Player2Death=1, the mission is lost. In the
 // bonus missions made for two players, player 2 plays the game's own second character when the game left
-// it to the AI; Versus and the story duels are left as they are. Applied anew at every level start.
+// it to the AI; in boss fights (the boss is the game's player 2: the story duels) player 2 plays the boss,
+// as in Versus. Versus itself is left as it is. Applied anew at every level start.
 
 // At every boot, after the image is loaded.
 void InstallCoop();
@@ -28,6 +29,7 @@ struct CoopState {
     bool playing = false;      // player 2 plays a character now
     std::string player2;       // that character's class, or the one waiting for player 2
     bool spawned = false;      // co-op spawned it (the mission has no companion)
+    bool boss = false;         // it is the mission's boss (a boss fight: the boss is the game's player 2)
     float health = 0, maxHealth = 0; // player 2's, while playing
     float distance = 0;        // between the players, while playing
     bool cutscene = false;     // a cutscene is playing

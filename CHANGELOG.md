@@ -16,9 +16,10 @@ Two-player co-op in the story missions.
   player 1. A shared camera keeps both in the picture; a player 2 left out of it, or falling into the void,
   is brought back to player 1, and a fatal hit brings them back instead of ending the mission (or, with
   `Player2Death=1`, ends it as player 1's death does). Turn it on and off with **Cooperative** in the
-  pause menu; more in `settings.ini` (`[Coop]`) and the debug console's `coop`. Versus and the story
-  duels are unchanged. See the [co-op guide](https://github.com/jedijosh920/SWROTS-PC/blob/main/docs/coop.md),
+  pause menu; more in `settings.ini` (`[Coop]`) and the debug console's `coop`. In the boss fights
+  (Dooku, Grievous, the Mustafar duels...) player 2 plays the boss, as in Versus. Versus is unchanged. See the [co-op guide](https://github.com/jedijosh920/SWROTS-PC/blob/main/docs/coop.md),
   with its known issues.
+- **Boss fights for two**: player 2 plays the mission's boss (`Boss=0` leaves it to the computer).
 - **Friendly fire** for co-op (`FriendlyFire=1`): the players' blows hurt each other; they stay allies.
 - **A hang watchdog**: if the game stops responding for 20 seconds, the log says where it is stuck.
 

@@ -47,7 +47,8 @@ Things the Xbox release never had:
   Anakin) or a character of their own beside you, with the game's own second HUD, and come back beside you
   when they fall or wander out of the picture. Also in the bonus missions made
   for two players, with one controller. One controller is enough: the keyboard and
-  mouse are then player 1. See the [co-op guide](docs/coop.md).
+  mouse are then player 1. In the boss fights player 2 plays the boss, as in Versus. See the
+  [co-op guide](docs/coop.md).
 - **Unlock everything** with the developers' own cheat, `unlockprofile` (debug console).
 - **Free camera.** Fly the view anywhere with `freecam` (debug console): keyboard and mouse or a
   controller, without the game's camera shake and zoom. With `set timeScale 0` and `set hud 0`, a

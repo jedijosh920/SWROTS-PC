@@ -36,11 +36,15 @@ plug it in again and player 2 takes it again.
 Player 2 gets the game's own second HUD (portrait, health and Force bars) and player 1's maximum health
 and Force.
 
-**Versus and the boss fights** are left as they are: where the game makes the opponent its own second
-player (for the boss's health bar and the duel camera), co-op stays out of the mission. These are Count
-Dooku's throne room, General Grievous on Utapau, Mace Windu in Palpatine's office, the Jedi training
-arena, both Mustafar duels, and old Obi-Wan's Death Star mission. The bonus duels and training maps are
-like Versus.
+## Boss fights: player 2 plays the boss
+
+Where the game makes a mission's boss its own second player (for the boss's health bar and the duel
+camera), player 2 plays the boss, as in Versus: Count Dooku in the throne room, General Grievous on
+Utapau, Mace Windu in Palpatine's office, Serra in the Jedi training arena, Anakin and Obi-Wan in the
+Mustafar duels, old Obi-Wan on the Death Star. Everything else stays the game's: the boss's health and
+health bar, the camera, its side, and the rules: beating the boss moves the story on, and losing is
+player 1's game over. `Boss=0` (or `coop boss off`) leaves the bosses to the computer. Versus, the bonus
+duels and the training maps are unchanged.
 
 ## The camera and staying together
 
@@ -73,7 +77,9 @@ after) the camera is the game's own and player 2 is not brought back to player 1
   spot, open a door). Turn co-op off from the pause menu, let the moment play, and turn it on again.
 - **The camera** can end up behind a wall in tight places. Behind the menu, the paused game is sometimes
   shown from far away.
-- **The boss fights above** are single-player for now.
+- **A boss fight's scripted moments** (a boss's special attack, a step of the duel) may wait for the
+  computer's boss. Turn co-op off from the pause menu to let the computer play the boss, and on again.
+- **Bosses are not changed for players:** a boss keeps the health and moves the story gives it.
 - **The pause menu's Cooperative entry** is also there in Versus, where it does nothing but change the
   setting.
 - **Missions not tested from start to end in co-op**: the first mission has been; others may have

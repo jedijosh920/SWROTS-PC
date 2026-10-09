@@ -121,6 +121,8 @@ ChangeHealthFn g_OriginalChangeHealth = nullptr;
 struct State {
     ULONGLONG levelSeen = 0;      // when the level's player was first seen
     bool nativeTwoPlayers = false; // the mission has its own player 2 (a co-op bonus mission)
+    bool boss = false;             // a boss fight: player 2 plays the boss (the game's player 2), as in Versus
+    bool bossDone = false;         // the boss fell: nothing more for player 2 in this mission
     bool decided = false;          // nativeTwoPlayers was looked at
     uint8_t* p2 = nullptr;         // the character player 2 plays (or would)
     uint32_t p2Id = 0;
@@ -445,7 +447,7 @@ void __fastcall HudSetupHook(uint8_t* hud, void*)
 void __fastcall ChangeHealthHook(uint8_t* character, void*, float change, uint32_t a, uint32_t b)
 {
     g_OriginalChangeHealth(character, nullptr, change, a, b);
-    if (character != g_State.p2 || !g_State.playing || GetSettings().coopDeath != 0)
+    if (character != g_State.p2 || !g_State.playing || g_State.boss || GetSettings().coopDeath != 0)
         return;
     float& health = Field<float>(character, kCharacterHealth);
     if (health <= 0.0f && !Field<uint8_t>(character, kCharacterDead)) {
@@ -458,7 +460,7 @@ void __fastcall ChangeHealthHook(uint8_t* character, void*, float change, uint32
 // mission's scripts still need): they are brought back to player 1 instead.
 void __fastcall InstantKillHook(uint8_t* character, void*, uint32_t a)
 {
-    if (character == g_State.p2 && g_State.playing) {
+    if (character == g_State.p2 && g_State.playing && !g_State.boss) {
         g_State.rescuePending = true;
         return;
     }
@@ -549,6 +551,17 @@ void Register()
     g_State.savedSlotId = Field<uint32_t>(manager, kManagerPlayerIds + 4);
     g_State.savedMaxHealth = Field<float>(c, kCharacterMaxHealth);
     g_State.savedMaxPower = Field<float>(c, kCharacterMaxPower);
+    if (g_State.boss) {
+        // The boss stays the game's in all but its controls: its health, its health bar, its moments of
+        // invincibility, its side.
+        Field<int>(c, kCharacterControl) = kControlPlayer;
+        BindController(c, kPlayer2Port);
+        g_State.playing = true;
+        g_State.reason.clear();
+        g_State.controlsLost = 0;
+        LOG_INFO("Co-op: player 2 plays the boss %s (control was %d)", g_State.p2Class.c_str(), g_State.savedControl);
+        return;
+    }
     if (uint8_t* player = PlayerObject())
         MatchPlayer1(player);
     Field<int>(c, kCharacterControl) = kControlPlayer;
@@ -574,6 +587,14 @@ void Unregister(const char* why)
     g_State.playing = false;
     SetFriendlyFire(nullptr, nullptr);
     g_State.respawnPending = false;
+    if (g_State.boss) {
+        if (StillThere()) {
+            UnbindController(g_State.p2);
+            Field<int>(g_State.p2, kCharacterControl) = g_State.savedControl;
+        }
+        LOG_INFO("Co-op: player 2 left the boss %s (%s)", g_State.p2Class.c_str(), why);
+        return;
+    }
     if (uint8_t* manager = Manager()) {
         // As the mission had them: a co-op bonus mission's own player 2 stays in its slot.
         Field<uint32_t>(manager, kManagerPlayerIds + 4) = g_State.savedSlotId;
@@ -773,7 +794,7 @@ bool SharedCamera(float m[16], float fov)
     g_LastCameraTick = now;
     float target[3] = {};
     uint8_t* player = PlayerObject();
-    if (GetSettings().coopCamera == 0 && player && g_State.playing && StillThere() && Alive(g_State.p2) && fov > 0 &&
+    if (GetSettings().coopCamera == 0 && player && g_State.playing && !g_State.boss && StillThere() && Alive(g_State.p2) && fov > 0 &&
         !InCutscene()) {
         if (fov > 3.2f)
             fov *= 3.14159265f / 180.0f;
@@ -914,24 +935,36 @@ void CoopFrame()
     }
     if (!g_State.decided) {
         // A mission whose slot 2 is taken: a co-op bonus mission's player 2 left to the AI (Cin Drallig
-        // beside Serra, without a second controller) is a companion like any other; a story duel's
-        // opponent (slot 2 shows the opponent's health) or a player 2 already playing is left alone.
+        // beside Serra, without a second controller) is a companion like any other; a boss fight's boss
+        // (slot 2 shows its health: Dooku, Grievous, the Mustafar duels) is player 2's to play, as in Versus;
+        // a player 2 already playing is left alone.
         uint8_t* manager = Manager();
         g_State.decided = true;
         if (manager && Field<int>(manager, kManagerPlayerCount) >= 2) {
             uint8_t* other = ObjectById(Field<uint32_t>(manager, kManagerPlayerIds + 4));
-            const bool companion = other && other != player && Alive(other) &&
-                Field<int>(other, kCharacterControl) == kControlCompanion && !TargetsPlayer(other) && IsJedi(other);
-            g_State.nativeTwoPlayers = !companion;
+            const bool usable = other && other != player && Alive(other) && Field<int>(other, kCharacterControl) != kControlPlayer;
+            const bool companion = usable && Field<int>(other, kCharacterControl) == kControlCompanion && !TargetsPlayer(other) &&
+                IsJedi(other);
+            const bool boss = usable && TargetsPlayer(other);
+            g_State.nativeTwoPlayers = !companion && !boss;
+            if (boss) {
+                g_State.boss = true;
+                g_State.p2 = other;
+                g_State.p2Id = Field<uint32_t>(other, kInstanceId);
+                g_State.p2Class = TypeName(other);
+                g_State.spawned = false;
+            }
             LOG_INFO("Co-op: this mission has a player 2 of its own (%s)%s", other ? TypeName(other) : "none",
-                companion ? ", left to the AI: co-op plays it" : ": left alone");
+                companion ? ", left to the AI: co-op plays it" : boss ? ", the boss: player 2 plays it" : ": left alone");
         }
     }
     if (g_State.gameOverSent) // the mission is lost: nothing more until it starts again
         return;
-    if (g_State.nativeTwoPlayers) {
+    if (g_State.nativeTwoPlayers || (g_State.boss && (!settings.coopBoss || g_State.bossDone))) {
+        Unregister("boss fights are single-player");
         input::SetCoopInput(false);
-        g_State.reason = "this mission has a player 2 of its own";
+        g_State.reason = g_State.boss ? (g_State.bossDone ? "the boss fell" : "boss fights are single-player ([Coop] Boss)")
+                                      : "this mission has a player 2 of its own";
         return;
     }
     input::SetCoopInput(settings.coop);
@@ -965,6 +998,22 @@ void CoopFrame()
             return;
     }
 
+    if (g_State.playing && g_State.boss) {
+        // As in Versus: the game's rules for the boss (its health, its death), its camera.
+        if (!StillThere() || !Alive(g_State.p2)) {
+            Unregister("the boss fell");
+            g_State.bossDone = true;
+        } else if (!ControlsIntact(g_State.p2)) {
+            LOG_INFO("Co-op: the boss's controls were changed (control %d); given back", Field<int>(g_State.p2, kCharacterControl));
+            Field<int>(g_State.p2, kCharacterControl) = kControlPlayer;
+            BindController(g_State.p2, kPlayer2Port);
+        }
+        if (g_State.playing && !controller) {
+            Unregister("the controller went");
+            g_State.reason = "waiting for a controller for player 2";
+        }
+        return;
+    }
     if (g_State.playing) {
         if (!StillThere()) {
             Unregister("the character is gone");
@@ -1030,6 +1079,14 @@ void CoopFrame()
         g_State.reason = "player 2 comes back in a moment";
         return;
     }
+    if (g_State.boss) {
+        if (!Alive(g_State.p2)) {
+            g_State.bossDone = true;
+            return;
+        }
+        Register();
+        return;
+    }
     if (!Alive(g_State.p2)) {
         // Every second at most while no character can be had.
         static ULONGLONG lastTry = 0;
@@ -1065,6 +1122,7 @@ CoopState GetCoopState()
     const Settings& settings = GetSettings();
     s.enabled = settings.coop;
     s.levelAllows = PlayerObject() && !g_State.nativeTwoPlayers;
+    s.boss = g_State.boss;
     s.controller = input::Player2HasController();
     s.playing = g_State.playing;
     s.player2 = g_State.p2Class;

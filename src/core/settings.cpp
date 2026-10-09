@@ -68,6 +68,7 @@ void LoadSettings(const std::wstring& path)
     s.coopStorySafety = ReadInt(L"Coop", L"StorySafety", d.coopStorySafety, 0, 1) != 0;
     s.coopCamera = ReadInt(L"Coop", L"Camera", d.coopCamera, 0, 1);
     s.coopFriendlyFire = ReadInt(L"Coop", L"FriendlyFire", d.coopFriendlyFire, 0, 1) != 0;
+    s.coopBoss = ReadInt(L"Coop", L"Boss", d.coopBoss, 0, 1) != 0;
     s.coopPlayer2 = ReadText(L"Coop", L"Player2", d.coopPlayer2);
     SaveSettings(); // writes defaults for missing keys, normalizes values
     LOG_INFO("Settings: %dx%d%s%s%s, resolution scale %d%s, %s, %dx anisotropic, bloom %s, %d fps", s.width, s.height,
@@ -75,9 +76,9 @@ void LoadSettings(const std::wstring& path)
         s.resolutionScale ? "" : " (auto)", s.widescreen ? "16:9" : "4:3", s.anisotropy, s.bloom ? "on" : "off",
         s.fpsLimit);
     static const char* const kInputs[] = { "auto", "keyboard is player 1", "two controllers" };
-    LOG_INFO("Settings: co-op %s (input %s, player 2 death: %s, camera %s, friendly fire %s, story safety %s, player 2 %s)",
+    LOG_INFO("Settings: co-op %s (input %s, player 2 death: %s, camera %s, friendly fire %s, boss %s, story safety %s, player 2 %s)",
         s.coop ? "on" : "off", kInputs[s.coopInput], s.coopDeath ? "game over" : "comes back", s.coopCamera ? "player 1" : "shared",
-        s.coopFriendlyFire ? "on" : "off",
+        s.coopFriendlyFire ? "on" : "off", s.coopBoss ? "player 2" : "the game's",
         s.coopStorySafety ? "on" : "off", s.coopPlayer2.empty() ? "automatic" : s.coopPlayer2.c_str());
 }
 
@@ -102,6 +103,7 @@ void SaveSettings()
     WriteInt(L"Coop", L"StorySafety", s.coopStorySafety);
     WriteInt(L"Coop", L"Camera", s.coopCamera);
     WriteInt(L"Coop", L"FriendlyFire", s.coopFriendlyFire);
+    WriteInt(L"Coop", L"Boss", s.coopBoss);
     WriteText(L"Coop", L"Player2", s.coopPlayer2);
 }
 
