@@ -133,6 +133,19 @@ static int ControllerOfPort(DWORD port, size_t controllers)
     return index >= 0 && size_t(index) < controllers ? index : -1;
 }
 
+static std::atomic<bool> g_Player2Shoot = false;
+static std::atomic<ULONGLONG> g_Player2ShotAt = 0;
+
+void SetPlayer2ShootButton(bool active)
+{
+    g_Player2Shoot = active;
+}
+
+bool Player2Shooting()
+{
+    return g_Player2Shoot && GetTickCount64() - g_Player2ShotAt < 300;
+}
+
 void SetCoopInput(bool active)
 {
     if (g_CoopInput.exchange(active) != active)
@@ -142,13 +155,14 @@ void SetCoopInput(bool active)
 }
 
 // Test switch SWROTS_TEST_PAD2=<seconds>[:run]: a scripted controller on port 1 (player 2), from that many
-// seconds on: its stick circles and it attacks, or with ":run" it runs straight ahead.
+// seconds on: its stick circles and it attacks, or with ":run" it runs straight ahead; with ":shoot" its
+// attacks are heavy attacks (Y: a clone trooper's shot in co-op).
 // ":until<seconds>" unplugs it then, ":start<seconds>" presses player 1's Start then (pause), ":pick<seconds>"
 // presses player 1's Up then A (in the pause menu: the entry above the first); ":a<seconds>", ":b<seconds>",
 // ":down<seconds>" (any number of them) press player 1's A, B or Down then. Seconds count from the first
 // input read.
 struct TestPad2Script {
-    bool on = false, run = false;
+    bool on = false, run = false, shoot = false;
     double start = 0, until = 0, pause = -1, pick = -1;
     std::vector<std::pair<double, int>> presses; // (seconds, 0 A / 1 B / 2 Down)
     ULONGLONG origin = 0;
@@ -164,6 +178,7 @@ static const TestPad2Script& TestPad2Spec()
         s.on = true;
         s.start = atof(v);
         s.run = std::strstr(v, ":run") != nullptr;
+        s.shoot = std::strstr(v, ":shoot") != nullptr;
         if (const char* until = std::strstr(v, ":until"))
             s.until = atof(until + 6);
         if (const char* pause = std::strstr(v, ":start"))
@@ -496,8 +511,13 @@ static DWORD __stdcall XbInputGetState(HANDLE device, XInputState* state)
                 g.sThumbLY = SHORT(std::sin(t * 0.9) * 30000.0);
                 const int step = int(t / 0.5);
                 if (t - step * 0.5 < 0.15)
-                    g.bAnalogButtons[(step % 2) ? 2 : 0] = 0xFF;
+                    g.bAnalogButtons[TestPad2Spec().shoot ? XB_Y : (step % 2) ? XB_X : XB_A] = 0xFF;
             }
+        }
+        if (index == 1 && g_Player2Shoot && g.bAnalogButtons[XB_Y] > 0x40) {
+            g.bAnalogButtons[XB_X] = g.bAnalogButtons[XB_Y];
+            g.bAnalogButtons[XB_Y] = 0;
+            g_Player2ShotAt = GetTickCount64();
         }
     }
     if (std::memcmp(&g, &port->last, sizeof(g)) != 0) {

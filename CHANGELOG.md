@@ -19,7 +19,10 @@ Two-player co-op in the story missions.
   **Cooperative Mod** screen; more in `settings.ini` (`[Coop]`) and the debug console's `coop`. In the boss fights
   (Dooku, Grievous, the Mustafar duels...) player 2 plays the boss, as in Versus. Versus is unchanged. See the [co-op guide](https://github.com/jedijosh920/SWROTS-PC/blob/main/docs/coop.md),
   with its known issues.
-- **Boss fights for two**: player 2 plays the mission's boss (`Boss=0` leaves it to the computer).
+- **Boss fights for two**: player 2 plays the mission's boss, or with **Player 2 As Boss** off fights it
+  beside player 1 (a Jedi or a 501st clone trooper, by the boss's side).
+- **A clone trooper player 2 shoots**: heavy attack fires the blaster (attack stays the rifle butt), and
+  player 2 keeps their limbs (a clone used to live on armless).
 - **Friendly fire** for co-op (`FriendlyFire=1`): the players' blows hurt each other; they stay allies.
 - **A hang watchdog**: if the game stops responding for 20 seconds, the log says where it is stuck.
 

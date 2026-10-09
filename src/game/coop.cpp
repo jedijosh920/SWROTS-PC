@@ -122,7 +122,10 @@ ChangeHealthFn g_OriginalChangeHealth = nullptr;
 struct State {
     ULONGLONG levelSeen = 0;      // when the level's player was first seen
     bool nativeTwoPlayers = false; // the mission has its own player 2 (a co-op bonus mission)
-    bool boss = false;             // a boss fight: player 2 plays the boss (the game's player 2), as in Versus
+    bool bossMission = false;      // a boss fight: the boss is the game's player 2 (slot 2, its health bar)
+    uint8_t* bossObject = nullptr; // the boss
+    uint32_t bossId = 0;
+    bool boss = false;             // player 2 plays the boss, as in Versus ([Coop] Boss); else an ally of player 1's
     bool bossDone = false;         // the boss fell: nothing more for player 2 in this mission
     bool decided = false;          // nativeTwoPlayers was looked at
     uint8_t* p2 = nullptr;         // the character player 2 plays (or would)
@@ -700,9 +703,12 @@ void Register()
     BindController(c, kPlayer2Port);
     Field<uint8_t>(c, kCharacterInvincible) = 0;
     // The second HUD (the third HudVitals, which names slot 2) shows whoever is in slot 2 while there are two.
-    Field<uint32_t>(manager, kManagerPlayerIds + 4) = g_State.p2Id;
-    Field<int>(manager, kManagerPlayerCount) = 2;
-    ResetPlayer2Hud(false); // the portrait is picked for this character
+    // In a boss fight slot 2 stays the boss's (its health bar, the duel camera): player 2 has no HUD there.
+    if (!g_State.bossMission) {
+        Field<uint32_t>(manager, kManagerPlayerIds + 4) = g_State.p2Id;
+        Field<int>(manager, kManagerPlayerCount) = 2;
+        ResetPlayer2Hud(false); // the portrait is picked for this character
+    }
     g_State.playing = true;
     g_State.reason.clear();
     g_State.controlsLost = 0;
@@ -730,12 +736,13 @@ void Unregister(const char* why, bool removing = false)
         LOG_INFO("Co-op: player 2 left the boss %s (%s)", g_State.p2Class.c_str(), why);
         return;
     }
-    if (uint8_t* manager = Manager()) {
+    uint8_t* manager = Manager();
+    if (manager && !g_State.bossMission) {
         // As the mission had them: a co-op bonus mission's own player 2 stays in its slot.
         Field<uint32_t>(manager, kManagerPlayerIds + 4) = g_State.savedSlotId;
         Field<int>(manager, kManagerPlayerCount) = g_State.savedCount;
     }
-    if (!g_State.savedSlotId)
+    if (!g_State.savedSlotId && !g_State.bossMission)
         ResetPlayer2Hud(true);
     if (StillThere() && removing) {
         UnbindController(g_State.p2);
@@ -755,8 +762,8 @@ void Unregister(const char* why, bool removing = false)
 
 // The mission's companion: a living Jedi beside the player whom the story moves (control mode 16) and
 // who is not the player's enemy (Obi-Wan beside Anakin, Cin Drallig beside Serra), the nearest to player
-// 1. Allied soldiers (the Jedi Temple's clones) and R2-D2 are not companions: without one, player 2 gets
-// a character of their own.
+// 1. Allied soldiers (the Jedi Temple's clones), R2-D2 and Palpatine are not companions: without one,
+// player 2 gets a character of their own.
 uint8_t* FindCompanion(uint8_t* player)
 {
     uint8_t* best = nullptr;
@@ -764,7 +771,7 @@ uint8_t* FindCompanion(uint8_t* player)
     const float* p = &Field<float>(player, kCharacterTransform + 48);
     for (uint8_t* c : LevelCharacters()) {
         if (c == player || !Alive(c) || Field<int>(c, kCharacterControl) != kControlCompanion || TargetsPlayer(c) ||
-            !IsJedi(c))
+            !IsJedi(c) || _stricmp(TypeName(c), "IPalpatine") == 0) // Palpatine watching Mace's duel is the story's
             continue;
         const float* q = &Field<float>(c, kCharacterTransform + 48);
         const float d = (p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]);
@@ -801,6 +808,17 @@ SpawnChoice ChooseSpawn(uint8_t* player)
     const std::string& chosen = GetSettings().coopPlayer2;
     if (!chosen.empty())
         return { chosen, "", "" };
+    if (g_State.bossMission && g_State.bossObject && ObjectById(g_State.bossId) == g_State.bossObject) {
+        // Beside player 1 against the boss: a Jedi against a Sith boss (Dooku, Grievous, Anakin on
+        // Mustafar), a 501st clone trooper against a Jedi (Mace Windu, Obi-Wan beside Anakin).
+        static const char* const kSithBosses[] = { "IDooku", "IGrievous", "IAnakin", "IVader", "IPalpatine" };
+        const char* boss = TypeName(g_State.bossObject);
+        const bool sith = std::any_of(std::begin(kSithBosses), std::end(kSithBosses),
+            [&](const char* name) { return _strnicmp(boss, name, strlen(name)) == 0; });
+        if (!sith)
+            return { "ICloneTrooper", "hordeTrooper", "_var01" };
+        return { _stricmp(TypeName(player), "IObiwan") == 0 ? "IJediKnight" : "IObiwan", "", "" };
+    }
     if (uint8_t* clone = SithSideClone(player)) // dressed as the level's own (the temple's 501st)
         return { TypeName(clone), std::to_string(Field<int>(clone, kCharacterCostume)),
             std::to_string(Field<int>(clone, kCharacterSkin)) };
@@ -1012,7 +1030,8 @@ void GameOver()
 // --- Player 2's clone trooper shoots ---
 // A clone's moves are its script class's sequences (CloneTrooper.cpp, script vtable 0x5E53D0), thiscall on
 // the script object with two stack arguments. Under player controls the attack button plays the rifle butt
-// (0x356B80); the AI shoots with CloneBlastAttack (0x3562B0), which player 2's clone plays instead.
+// (0x356B80); the AI shoots with CloneBlastAttack (0x3562B0). Player 2's heavy attack (which a clone does
+// not have) is pressed as the attack button (input.cpp) and plays CloneBlastAttack instead.
 constexpr uint32_t kRifleButt = 0x00356B80;
 constexpr uint8_t kRifleButtBytes[] = { 0x56, 0x68, 0x60, 0xFB, 0x55, 0x00 }; // push esi; push 0x55FB60
 constexpr uint32_t kBlastAttack = 0x003562B0;
@@ -1033,12 +1052,20 @@ bool __fastcall RifleButtIsPlayer2(uint8_t*)
     const uint8_t* script = Field<uint8_t*>(g_State.p2, kCharacterScript);
     if (!context || !script || *reinterpret_cast<uint8_t* const*>(script + kScriptInstance) != context)
         return false;
+    // The sequence is entered again every frame while it plays: the choice is made when it starts (no
+    // call for a moment before) and kept, so one attack is a shot or a rifle butt, never both.
+    static ULONGLONG lastCall = 0;
+    static bool shot = false;
+    const ULONGLONG now = GetTickCount64();
+    if (now - lastCall > 150)
+        shot = input::Player2Shooting();
+    lastCall = now;
     static uint8_t* noted = nullptr;
-    if (noted != g_State.p2) {
+    if (shot && noted != g_State.p2) {
         noted = g_State.p2;
-        LOG_INFO("Co-op: player 2's clone fires its blaster (the AI's attack) instead of the rifle butt");
+        LOG_INFO("Co-op: player 2's clone fires its blaster (heavy attack: the AI's shot instead of the rifle butt)");
     }
-    return true;
+    return shot;
 }
 
 __declspec(naked) void RifleButtHook()
@@ -1066,16 +1093,31 @@ constexpr uint8_t kDismemberNotifyBytes[] = { 0x8B, 0x0D, 0x98, 0x32, 0x7F, 0x00
 using DismemberNotifyFn = void(__stdcall*)(uint8_t*, uint32_t, uint32_t, void*);
 DismemberNotifyFn g_OriginalDismemberNotify = nullptr;
 
-void __stdcall DismemberNotifyHook(uint8_t* character, uint32_t kind, uint32_t value, void* part)
+// The cut itself: the character's dismemberment binding (vtable 0x5D7D24, its character at +4) slot 2
+// (0x2DBEA0, thiscall (part, value)) tells the script, then takes the limb off the body. Skipped whole.
+constexpr uint32_t kDismemberCut = 0x002DBEA0;
+constexpr uint8_t kDismemberCutBytes[] = { 0x8B, 0x44, 0x24, 0x08, 0x56 }; // mov eax, [esp + 8]; push esi
+using DismemberCutFn = uint32_t(__fastcall*)(uint8_t*, void*, void*, uint32_t);
+DismemberCutFn g_OriginalDismemberCut = nullptr;
+
+uint32_t __fastcall DismemberCutHook(uint8_t* binding, void*, void* part, uint32_t value)
 {
+    uint8_t* character = binding ? Field<uint8_t*>(binding, 4) : nullptr;
     if (character && character == g_State.p2 && g_State.playing && !g_State.boss) {
         static uint8_t* noted = nullptr;
         if (noted != character) {
             noted = character;
             LOG_INFO("Co-op: player 2 keeps a limb a hit would have cut off");
         }
-        return;
+        return 0;
     }
+    return g_OriginalDismemberCut(binding, nullptr, part, value);
+}
+
+void __stdcall DismemberNotifyHook(uint8_t* character, uint32_t kind, uint32_t value, void* part)
+{
+    if (character && character == g_State.p2 && g_State.playing && !g_State.boss)
+        return;
     g_OriginalDismemberNotify(character, kind, value, part);
 }
 
@@ -1124,6 +1166,13 @@ void InstallCoop()
     } else {
         LOG_WARN("Co-op: unexpected code at the dismemberment notice; player 2 can lose limbs");
     }
+    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kDismemberCut)), kDismemberCutBytes, sizeof(kDismemberCutBytes)) == 0) {
+        static uint8_t* cutStub = trampoline(kDismemberCut, kDismemberCutBytes, sizeof(kDismemberCutBytes));
+        g_OriginalDismemberCut = reinterpret_cast<DismemberCutFn>(cutStub);
+        PatchJump(kDismemberCut, reinterpret_cast<const void*>(&DismemberCutHook));
+    } else {
+        LOG_WARN("Co-op: unexpected code at the dismemberment notice; player 2 can lose limbs");
+    }
     SetCameraAdjuster(&SharedCamera);
 }
 
@@ -1161,24 +1210,49 @@ void CoopFrame()
             const bool boss = usable && TargetsPlayer(other);
             g_State.nativeTwoPlayers = !companion && !boss;
             if (boss) {
-                g_State.boss = true;
-                g_State.p2 = other;
-                g_State.p2Id = Field<uint32_t>(other, kInstanceId);
-                g_State.p2Class = TypeName(other);
-                g_State.spawned = false;
+                g_State.bossMission = true;
+                g_State.bossObject = other;
+                g_State.bossId = Field<uint32_t>(other, kInstanceId);
             }
             LOG_INFO("Co-op: this mission has a player 2 of its own (%s)%s", other ? TypeName(other) : "none",
-                companion ? ", left to the AI: co-op plays it" : boss ? ", the boss: player 2 plays it" : ": left alone");
+                companion ? ", left to the AI: co-op plays it" : boss ? ", the boss" : ": left alone");
         }
     }
     if (g_State.gameOverSent) // the mission is lost: nothing more until it starts again
         return;
-    if (g_State.nativeTwoPlayers || (g_State.boss && (!settings.coopBoss || g_State.bossDone))) {
-        Unregister("boss fights are single-player");
+    if (g_State.nativeTwoPlayers || g_State.bossDone) {
+        Unregister(g_State.bossDone ? "the boss fell" : "this mission has a player 2 of its own");
         input::SetCoopInput(false);
-        g_State.reason = g_State.boss ? (g_State.bossDone ? "the boss fell" : "boss fights are single-player ([Coop] Boss)")
-                                      : "this mission has a player 2 of its own";
+        input::SetPlayer2ShootButton(false);
+        g_State.reason = g_State.bossDone ? "the boss fell" : "this mission has a player 2 of its own";
         return;
+    }
+    if (g_State.bossMission) {
+        // Player 2 As Boss: the boss; else a character of player 1's side beside them (the boss keeps the
+        // second slot and its health bar). Changed while playing, player 2 changes over.
+        const bool wantBoss = settings.coopBoss;
+        if (wantBoss != g_State.boss || (wantBoss && !g_State.p2)) {
+            Unregister(wantBoss ? "player 2 plays the boss now" : "Player 2 As Boss was turned off");
+            if (!g_State.boss && g_State.spawned && StillThere()) {
+                RemoveSpawnedCharacter(g_State.p2);
+                LOG_INFO("Co-op: the character spawned for player 2 was removed");
+            }
+            g_State.boss = wantBoss;
+            g_State.spawned = false;
+            g_State.p2 = nullptr;
+            g_State.p2Class.clear();
+            g_State.costume.clear();
+            g_State.skin.clear();
+            g_State.respawnAt = 0;
+            if (wantBoss && ObjectById(g_State.bossId) == g_State.bossObject) {
+                g_State.p2 = g_State.bossObject;
+                g_State.p2Id = g_State.bossId;
+                g_State.p2Class = TypeName(g_State.bossObject);
+            } else if (wantBoss) {
+                g_State.bossDone = true; // the boss is gone
+                return;
+            }
+        }
     }
     input::SetCoopInput(settings.coop);
     if (!settings.coop) {
@@ -1196,6 +1270,7 @@ void CoopFrame()
         return;
     }
     const bool controller = input::Player2HasController();
+    input::SetPlayer2ShootButton(g_State.playing && !g_State.boss && _strnicmp(g_State.p2Class.c_str(), "IClone", 6) == 0);
 
     // Story safety: in a cutscene (and a moment after) co-op leaves the characters to it: no leash, no
     // shared camera, no joining. Player 2 keeps the character: the cutscene plays it all the same, and a

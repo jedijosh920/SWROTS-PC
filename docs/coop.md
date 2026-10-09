@@ -7,7 +7,8 @@ themselves as soon as a controller is there for them: there is no button to pres
 
 - **In the game:** pause, then choose **Cooperative Mod** (under Quit Mission). Its screen has:
   - **Co-op**: on or off.
-  - **Player 2 As Boss**: in boss fights, player 2 plays the boss (below).
+  - **Player 2 As Boss**: in boss fights, player 2 plays the boss; off, player 2 fights it beside player 1
+    (below).
   - **Friendly Fire**: the players' blows hurt each other.
   - **Respawn Player 2**: on, player 2 comes back beside player 1; off, the mission is lost when they die.
   - **Shared Camera**: on, the camera keeps both players in the picture; off, it follows player 1 alone.
@@ -43,8 +44,8 @@ Player 2 gets the game's own second HUD (portrait, health and Force bars) and pl
 and Force. Player 2 never loses a limb to a saber: a clone trooper as strong as player 1 would live on
 without its arm (and blaster).
 
-**A clone trooper's attack button fires its blaster**, as the computer's clones do; the game's controls
-only gave it the rifle butt.
+**A clone trooper player 2**: attack is the rifle butt, **heavy attack (Y / triangle) fires the blaster**
+as the computer's clones do. A clone has no jump or Force moves of its own.
 
 ## Boss fights: player 2 plays the boss
 
@@ -53,8 +54,13 @@ camera), player 2 plays the boss, as in Versus: Count Dooku in the throne room, 
 Utapau, Mace Windu in Palpatine's office, Serra in the Jedi training arena, Anakin and Obi-Wan in the
 Mustafar duels, old Obi-Wan on the Death Star. Everything else stays the game's: the boss's health and
 health bar, the camera, its side, and the rules: beating the boss moves the story on, and losing is
-player 1's game over. `Boss=0` (or `coop boss off`) leaves the bosses to the computer. Versus, the bonus
-duels and the training maps are unchanged.
+player 1's game over. Versus, the bonus duels and the training maps are unchanged.
+
+With **Player 2 As Boss** off (`Boss=0`, `coop boss off`) the computer plays the boss and player 2 fights
+it beside player 1: the mission's companion where there is one (Obi-Wan against Dooku), else a Jedi
+against a Sith boss (Obi-Wan, or a Jedi Knight beside Obi-Wan) and a 501st clone trooper against a Jedi
+(Mace Windu, Obi-Wan beside Anakin). The boss keeps the second health bar, so player 2 has no HUD in these
+fights. The setting can be changed during the fight; player 2 changes over at once.
 
 ## The camera and staying together
 
@@ -91,8 +97,8 @@ after) the camera is the game's own and player 2 is not brought back to player 1
   computer's boss. Turn co-op off from the pause menu to let the computer play the boss, and on again.
 - **Bosses are not changed for players:** a boss keeps the health and moves the story gives it.
 - **The pause menu's Cooperative Mod entry** is also there in Versus, where its settings do nothing.
-- **A clone trooper player 2 shoots on every attack**, even up close (no rifle butt), and aims the way
-  the computer's clones do.
+- **A clone trooper player 2's shots are aimed by the game**, as the computer's clones' are, not exactly where the
+  stick points.
 - **Some settings are only in `settings.ini`** for now: `Input`, `Player2` and `StorySafety`.
 - **Missions not tested from start to end in co-op**: the first mission has been; others may have
   moments like the above.

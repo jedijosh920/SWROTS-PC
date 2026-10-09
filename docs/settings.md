@@ -28,7 +28,7 @@ Player2Death=0      ; when player 2 dies: 0 they come back beside player 1, 1 th
 StorySafety=1       ; 1: in cutscenes co-op leaves the characters and camera to the game
 Camera=0            ; 0: a shared camera keeps both players in the picture; 1: it follows player 1 alone
 FriendlyFire=0      ; 1: the two players' blows hurt each other (they stay allies)
-Boss=1              ; 1: in boss fights player 2 plays the boss, as in Versus; 0: the computer does
+Boss=1              ; 1: in boss fights player 2 plays the boss, as in Versus; 0: fights beside player 1
 Player2=            ; player 2's character where the mission has no companion (e.g. IAnakin); empty: automatic
 ```
 
@@ -74,8 +74,8 @@ playing.
 - `Camera`: `1` leaves the camera to follow player 1 alone, as without co-op (player 2 is still brought
   back when out of the picture).
 - `FriendlyFire`: `1` lets the players hurt each other; enemies and allies stay as they are.
-- `Boss`: in boss fights (Dooku, Grievous, the Mustafar duels...) player 2 plays the boss with `1`; `0`
-  leaves the bosses to the computer and those missions single-player.
+- `Boss`: in boss fights (Dooku, Grievous, the Mustafar duels...) player 2 plays the boss with `1`; with `0`
+  the computer plays the boss and player 2 fights it beside player 1.
 - `StorySafety`: with `1` (recommended), while a cutscene plays and a moment after, player 2 is not
   brought back to player 1, the camera is the game's own, and player 2 does not join.
 - `Player2`: a character class (e.g. `IVader`, `ICloneTrooper`) for player 2 where the mission has no
