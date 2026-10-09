@@ -30,6 +30,7 @@ constexpr uint32_t kCharacterDead = 0x12C;       // byte: set when its death has
 constexpr uint32_t kCharacterHealth = 0x130;     // float
 constexpr uint32_t kCharacterMaxHealth = 0x134;  // float
 constexpr uint32_t kCharacterTransform = 0x150;  // rows right, up, forward, position
+constexpr uint32_t kCharacterTransformCopy = 0x720; // the same again (its last element at +0x75C)
 constexpr uint32_t kCharacterPower = 0xA40;      // float: the Force (Jedi-like characters)
 constexpr uint32_t kCharacterMaxPower = 0xA44;   // float
 constexpr uint32_t kCharacterCostume = 0x1E8;    // int: the costume (variant)
@@ -361,9 +362,24 @@ void MatchPlayer1(uint8_t* player)
         SetMaximum(g_State.p2, kCharacterPower, kCharacterMaxPower, Field<float>(player, kCharacterMaxPower));
 }
 
+// A cutscene can leave the last element of an AI character's transform (+0x18C, and its copy at +0x75C) not
+// a number; the AI does not mind, but a player-controlled character cannot move with it (Cin Drallig after
+// her bonus mission's opening cutscene).
+void RepairTransform(uint8_t* c)
+{
+    for (uint32_t offset : { kCharacterTransform + 0x3C, kCharacterTransformCopy + 0x3C }) {
+        float& w = Field<float>(c, offset);
+        if (!std::isfinite(w)) {
+            LOG_INFO("Co-op: player 2's transform had a bad element at +0x%X; repaired", offset);
+            w = 1.0f;
+        }
+    }
+}
+
 void Register()
 {
     uint8_t* c = g_State.p2;
+    RepairTransform(c);
     uint8_t* manager = Manager();
     if (!manager)
         return;
@@ -383,6 +399,7 @@ void Register()
     Field<int>(manager, kManagerPlayerCount) = 2;
     ResetPlayer2Hud(false); // the portrait is picked for this character
     g_State.playing = true;
+    g_State.reason.clear();
     g_State.controlsLost = 0;
     g_State.farSince = 0;
     LOG_INFO("Co-op: player 2 plays %s %s (control was %d)", g_State.spawned ? "the spawned" : "the companion",
@@ -740,17 +757,18 @@ void CoopFrame()
     }
     const bool controller = input::Player2HasController();
 
-    // Story safety: in a cutscene the companion is the game's (scripts move it, the cutscene keeps it
-    // alive); player 2 takes it again a moment after.
-    if (settings.coopStorySafety && InCutscene()) {
+    // Story safety: in a cutscene (and a moment after) co-op leaves the characters to it: no leash, no
+    // shared camera, no joining. Player 2 keeps the character: the cutscene plays it all the same, and a
+    // character let go of for a cutscene and taken again stood still afterwards (Cin Drallig in her bonus
+    // mission, Obi-Wan in the first mission), whatever its controls said.
+    if (InCutscene())
         g_State.cutsceneSeen = now;
-        Unregister("a cutscene");
+    const bool cutscene = settings.coopStorySafety && g_State.cutsceneSeen && now - g_State.cutsceneSeen < kAfterCutsceneMs;
+    if (cutscene) {
+        g_State.farSince = 0;
         g_State.reason = "a cutscene is playing";
-        return;
-    }
-    if (g_State.cutsceneSeen && now - g_State.cutsceneSeen < kAfterCutsceneMs) {
-        g_State.reason = "a cutscene is playing";
-        return;
+        if (!g_State.playing)
+            return;
     }
 
     if (g_State.playing) {
@@ -790,7 +808,7 @@ void CoopFrame()
             BindController(g_State.p2, kPlayer2Port);
             ++g_State.controlsLost;
         }
-        if (g_State.playing && StillThere() && Alive(g_State.p2)) {
+        if (g_State.playing && StillThere() && Alive(g_State.p2) && !cutscene) {
             Leash(player, now);
             MatchPlayer1(player); // player 1's maximums can grow (upgrades)
         }
@@ -825,7 +843,6 @@ void CoopFrame()
             Respawn(player);
     }
     g_State.respawnAt = 0;
-    g_State.reason.clear();
     Register();
 }
 
@@ -859,6 +876,7 @@ CoopState GetCoopState()
         if (uint8_t* player = PlayerObject())
             s.distance = Distance(player, g_State.p2);
     }
+    s.cutscene = s.levelAllows && InCutscene();
     s.reason = g_State.reason;
     return s;
 }

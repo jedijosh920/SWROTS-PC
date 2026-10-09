@@ -106,8 +106,14 @@ Drallig bonus mission plays one from about 4 to 7.5 seconds; player 1's control 
   character spawned beside player 1 as an ally. It gets control mode 2, controller 1 (0x150580), its
   "Invincible?" cleared, its id in slot 2 with a player count of 2 (the second HUD), and an entry in
   every focus list that holds player 1; lists resolved later (slot 5 is hooked) get one too.
-- **Leaving.** The controller goes, co-op is turned off, or a cutscene plays (with story safety): the
-  character is unbound, gets its control mode and "Invincible?" back, slot 2 and the count get their
+- **Cutscenes.** Player 2 keeps the character through a cutscene (the cutscene plays it as it does the
+  AI's; both end on time). Letting go of it for the cutscene and taking it again left it standing still
+  for good (Cin Drallig after her bonus mission's opening, Obi-Wan in the first mission) although its
+  control mode, controller and port were all set again; unbinding the controller for the cutscene alone
+  did it too. The cutscene also left the last element of its transform (+0x18C, copy +0x75C) not a
+  number, repaired when player 2 takes a character. With story safety the leash and the shared camera
+  wait for the cutscene's end (and a second).
+- **Leaving.** The controller goes or co-op is turned off: the character is unbound, gets its control mode and "Invincible?" back, slot 2 and the count get their
   mission's values back, its focus list entries are emptied and resolved away, and player 2's HUD is
   hidden. Unbinding needs the port's own help: 0x150580 with -1 writes -1 to the character's controller
   (+0x43C) before the input manager's unbind (0x8ADD0) reads it there, so the port's entry

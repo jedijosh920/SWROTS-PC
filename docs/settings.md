@@ -25,7 +25,7 @@ FpsLimit=30         ; 30 like the original; 60 is experimental
 Enabled=0           ; 1: a second player in the story and single-player missions (see below)
 Input=0             ; 0 auto, 1 the keyboard is player 1 and the first controller player 2, 2 two controllers
 Player2Death=0      ; when player 2 dies: 0 they come back beside player 1, 1 the mission is lost
-StorySafety=1       ; 1: cutscenes give player 2's character back to the game until they end
+StorySafety=1       ; 1: in cutscenes co-op leaves the characters and camera to the game
 Camera=0            ; 0: a shared camera keeps both players in the picture; 1: it follows player 1 alone
 Player2=            ; player 2's character where the mission has no companion (e.g. IAnakin); empty: automatic
 ```
@@ -82,8 +82,9 @@ beside Serra) when the game left it to the AI. Versus and the story duels are le
   as when player 1 does.
 - `Camera`: `1` leaves the camera to follow player 1 alone, as without co-op (player 2 is still brought
   back when out of the picture).
-- `StorySafety`: the story moves its companion in cutscenes; with `1` (recommended) player 2 lets go of
-  it while a cutscene plays and takes it again just after.
+- `StorySafety`: with `1` (recommended), while a cutscene plays and a moment after, player 2 is not
+  brought back to player 1, the camera is the game's own, and player 2 does not join. Player 2 keeps
+  the character: the cutscene plays it all the same.
 - The debug menu's console has `coop` to see what co-op is doing and change these settings while playing.
 
 ## Developer options

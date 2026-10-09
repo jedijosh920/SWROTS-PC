@@ -30,6 +30,7 @@ struct CoopState {
     bool spawned = false;      // co-op spawned it (the mission has no companion)
     float health = 0, maxHealth = 0; // player 2's, while playing
     float distance = 0;        // between the players, while playing
+    bool cutscene = false;     // a cutscene is playing
     std::string reason;        // why player 2 does not play, when not
 };
 CoopState GetCoopState();

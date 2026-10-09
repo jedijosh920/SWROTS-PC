@@ -111,6 +111,7 @@ bool g_HaveGameView = false;
 Matrix g_GameView = {};             // the master camera's latest placement from the game
 Matrix g_ShownView = {};            // the same as shown (adjusted, see SetCameraAdjuster)
 CameraAdjuster g_Adjuster = nullptr;
+bool g_Adjusted = false;            // g_ShownView was adjusted last time
 float g_GameFov = 0.0f;             // the field of view the game gave the renderer (below)
 bool g_HaveGameFov = false;
 Matrix g_FlownView = {};            // this frame's flown placement
@@ -186,12 +187,18 @@ void __fastcall SetTransformHook(void* camera, void* edx, const Matrix* transfor
         LOG_INFO("Free camera: off");
     }
     if (!g_Flying) {
-        if (transform)
+        // The game sometimes places the camera where it already is (while paused): that is the adjusted
+        // placement already, which must not be adjusted again (the camera ran off a little more each time).
+        const bool again = transform && g_Adjusted && std::memcmp(transform, &g_ShownView, sizeof(Matrix)) == 0;
+        if (transform && !again)
             g_ShownView = *transform;
-        if (transform && g_Adjuster && g_Adjuster(&g_ShownView.m[0][0], g_HaveGameFov ? g_GameFov : 0.0f)) {
+        g_Adjusted = false;
+        if (transform && !again && g_Adjuster && g_Adjuster(&g_ShownView.m[0][0], g_HaveGameFov ? g_GameFov : 0.0f)) {
+            g_Adjusted = true;
             g_OriginalSetTransform(camera, edx, &g_ShownView);
             return;
         }
+        g_Adjusted = again;
         g_OriginalSetTransform(camera, edx, transform);
         return;
     }

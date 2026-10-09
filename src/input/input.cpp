@@ -143,10 +143,11 @@ void SetCoopInput(bool active)
 
 // Test switch SWROTS_TEST_PAD2=<seconds>[:run]: a scripted controller on port 1 (player 2), from that many
 // seconds on: its stick circles and it attacks, or with ":run" it runs straight ahead.
-// ":until<seconds>" unplugs it then. Seconds count from the first input read.
+// ":until<seconds>" unplugs it then, ":start<seconds>" presses player 1's Start then (pause). Seconds count from the first
+// input read.
 struct TestPad2Script {
     bool on = false, run = false;
-    double start = 0, until = 0;
+    double start = 0, until = 0, pause = -1;
     ULONGLONG origin = 0;
 };
 
@@ -162,6 +163,8 @@ static const TestPad2Script& TestPad2Spec()
         s.run = std::strstr(v, ":run") != nullptr;
         if (const char* until = std::strstr(v, ":until"))
             s.until = atof(until + 6);
+        if (const char* pause = std::strstr(v, ":start"))
+            s.pause = atof(pause + 6);
         s.origin = GetTickCount64();
         return s;
     }();
@@ -459,6 +462,9 @@ static DWORD __stdcall XbInputGetState(HANDLE device, XInputState* state)
         if (index == 0) {
             ReadKeyboard(g);
             ReadTestInput(g);
+            const double now = TestPad2Seconds(); // SWROTS_TEST_PAD2's ":start": player 1 pauses
+            if (TestPad2Spec().on && TestPad2Spec().pause >= 0 && now >= TestPad2Spec().pause && now < TestPad2Spec().pause + 0.2)
+                g.wButtons |= XB_START;
         }
         if (index == 1 && TestPad2()) { // the scripted player 2 (TestPad2)
             const double t = TestPad2Seconds() - TestPad2Spec().start;

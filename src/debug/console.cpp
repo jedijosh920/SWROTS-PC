@@ -661,6 +661,8 @@ void Coop(const std::vector<std::string>& words)
             state.spawned ? "the spawned" : "the companion", state.player2.c_str(), state.health, state.maxHealth, state.distance);
     else if (s.coop)
         Print(LineKind::Output, "  player 2 is not playing: %s", state.reason.empty() ? "-" : state.reason.c_str());
+    if (state.cutscene)
+        Print(LineKind::Output, "  a cutscene is playing");
 }
 
 void Memory()
