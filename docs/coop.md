@@ -5,8 +5,14 @@ themselves as soon as a controller is there for them: there is no button to pres
 
 ## Turning it on
 
-- **In the game:** pause, then choose **Cooperative** (under Quit Mission). It turns co-op on or off and
-  continues the game. The choice is remembered.
+- **In the game:** pause, then choose **Cooperative Mod** (under Quit Mission). Its screen has:
+  - **Co-op**: on or off.
+  - **Player 2 As Boss**: in boss fights, player 2 plays the boss (below).
+  - **Friendly Fire**: the players' blows hurt each other.
+  - **Respawn Player 2**: on, player 2 comes back beside player 1; off, the mission is lost when they die.
+  - **Shared Camera**: on, the camera keeps both players in the picture; off, it follows player 1 alone.
+
+  Changes apply at once and are remembered (in `settings.ini`).
 - **In `settings.ini`:** `Enabled=1` under `[Coop]` (see [settings](settings.md#co-op) for every key).
 - **In the debug console:** `coop on` / `coop off`; `coop` alone says what co-op is doing.
 
@@ -80,8 +86,8 @@ after) the camera is the game's own and player 2 is not brought back to player 1
 - **A boss fight's scripted moments** (a boss's special attack, a step of the duel) may wait for the
   computer's boss. Turn co-op off from the pause menu to let the computer play the boss, and on again.
 - **Bosses are not changed for players:** a boss keeps the health and moves the story gives it.
-- **The pause menu's Cooperative entry** is also there in Versus, where it does nothing but change the
-  setting.
+- **The pause menu's Cooperative Mod entry** is also there in Versus, where its settings do nothing.
+- **Some settings are only in `settings.ini`** for now: `Input`, `Player2` and `StorySafety`.
 - **Missions not tested from start to end in co-op**: the first mission has been; others may have
   moments like the above.
 

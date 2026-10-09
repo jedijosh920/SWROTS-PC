@@ -472,7 +472,11 @@ const std::vector<uint8_t>* Generated(const std::string& lowerName)
         std::vector<uint8_t> data;
         if (generator(lowerName, data) && !data.empty()) {
             LOG_INFO("Generated: %s (%zu bytes)", lowerName.c_str(), data.size());
-            WriteGeneratedFile(lowerName, data);
+            // Textures must be loose files (above); menus are taken from memory (served as a loose file, a
+            // menu's screen was made empty).
+            const bool menu = lowerName.size() > 4 && lowerName.compare(lowerName.size() - 4, 4, ".xml") == 0;
+            if (!menu)
+                WriteGeneratedFile(lowerName, data);
             return &(g_Generated[lowerName] = std::move(data));
         }
     }

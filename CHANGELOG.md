@@ -15,8 +15,8 @@ Two-player co-op in the story missions.
   second HUD and player 1's health and Force. One controller is enough: the keyboard and mouse are then
   player 1. A shared camera keeps both in the picture; a player 2 left out of it, or falling into the void,
   is brought back to player 1, and a fatal hit brings them back instead of ending the mission (or, with
-  `Player2Death=1`, ends it as player 1's death does). Turn it on and off with **Cooperative** in the
-  pause menu; more in `settings.ini` (`[Coop]`) and the debug console's `coop`. In the boss fights
+  `Player2Death=1`, ends it as player 1's death does). Turn it on and change it in the pause menu's new
+  **Cooperative Mod** screen; more in `settings.ini` (`[Coop]`) and the debug console's `coop`. In the boss fights
   (Dooku, Grievous, the Mustafar duels...) player 2 plays the boss, as in Versus. Versus is unchanged. See the [co-op guide](https://github.com/jedijosh920/SWROTS-PC/blob/main/docs/coop.md),
   with its known issues.
 - **Boss fights for two**: player 2 plays the mission's boss (`Boss=0` leaves it to the computer).

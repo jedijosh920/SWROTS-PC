@@ -186,10 +186,31 @@ copy, slot 4 takes events (thiscall (event, value)): 0x23 is "chosen". Continue'
 0x5CFCE8, events 0x2B3D10) first asks the Navigation handler's (0x2B3CA0), then continues the game and
 keeps the button press from reaching it.
 
-The port adds a row "Cooperative" (the game's `IDS_COOPERATIVE`) under Quit Mission with its own action
-`CoopToggle`: a Continue handler with its own vtable that turns co-op on or off before continuing.
+Texts: the menus hash a text id (0x222BA0, the same hash as item and screen names) and look it up in the
+language's string table (0x23B6E0, thiscall `(out*, key*)`, a binary search; `out` stays null for an
+unknown id). A text is wide characters with its LENGTH as the first character (a text without it loses its
+first letter). `game/menus.cpp` hooks the lookup and answers ids of the port's own (`IDS_PORT_...`).
+
+Screens: `gameinfo\guilist.txt` (in each level PAK) lists the in-game menus' screens, one compiled file a
+line; the GUI manager (0xD5270) loads each (0x245B60, a type-31 resource) and keeps them in the HUD's list
+(+0x1F4 count, +0x1F8 array; a screen's name key at +0x38; the current screen at +0x1FC). A screen of the
+port's own is appended to the list, DECLARED to the level (type 31) and served from memory when asked
+for: a loose file (cache\disc) decoded to nothing and a preloaded one made an empty screen.
+
+The On/Off rows of Settings (Subtitles, Vibration) are `SettingsScreenOnOffControl` (factory 0x2D9690,
+vtable 0x5D7000): value at +0x23C; slot 3 draws (it re-reads the profile's subtitles byte, profile+0x2A,
+when the row's +0x84 is 1), slot 4 takes events (0x23 / 0x1F / 0x20 toggle, then slot 28 applies),
+slot 27 resets to the default. Its base (0x2D7DF0) answers back (0x26) with the "settings won't be saved"
+question; the plain handler (0x2C62D0) just goes back.
+
+The port's **Cooperative Mod** screen (`pause_coop`) is built from the pause Settings screen
+(`interfc\pause_settings.xml`): its Subtitles row copied for each option, the other rows removed (the item
+count lowered: rows moved off screen still drew), the title replaced. The rows' handler `CoopOption` is a
+copy of the On/Off vtable with draw (shows the setting), events (back goes straight back), copy, default
+and apply (writes settings.ini) replaced. The pause screen gets a row "Cooperative Mod" copied from its
+Settings row (a `Navigation` row) under Quit Mission, its target `pause_coop`.
 
 ## Still open
 
 - Story scripts that move a companion outside cutscenes (doors, "wait for Obi-Wan" moments).
-- A pause menu entry of the port's own, and its text.
+- Menus of the port's own beyond On/Off rows (lists, sliders), e.g. the player 2 character.

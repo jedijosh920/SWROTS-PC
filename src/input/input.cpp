@@ -144,11 +144,13 @@ void SetCoopInput(bool active)
 // Test switch SWROTS_TEST_PAD2=<seconds>[:run]: a scripted controller on port 1 (player 2), from that many
 // seconds on: its stick circles and it attacks, or with ":run" it runs straight ahead.
 // ":until<seconds>" unplugs it then, ":start<seconds>" presses player 1's Start then (pause), ":pick<seconds>"
-// presses player 1's Up then A (in the pause menu: the entry above the first). Seconds count from the first
+// presses player 1's Up then A (in the pause menu: the entry above the first); ":a<seconds>", ":b<seconds>",
+// ":down<seconds>" (any number of them) press player 1's A, B or Down then. Seconds count from the first
 // input read.
 struct TestPad2Script {
     bool on = false, run = false;
     double start = 0, until = 0, pause = -1, pick = -1;
+    std::vector<std::pair<double, int>> presses; // (seconds, 0 A / 1 B / 2 Down)
     ULONGLONG origin = 0;
 };
 
@@ -156,7 +158,7 @@ static const TestPad2Script& TestPad2Spec()
 {
     static const TestPad2Script spec = [] {
         TestPad2Script s;
-        char v[64] = {};
+        char v[160] = {};
         if (!GetEnvironmentVariableA("SWROTS_TEST_PAD2", v, sizeof(v)))
             return s;
         s.on = true;
@@ -168,6 +170,11 @@ static const TestPad2Script& TestPad2Spec()
             s.pause = atof(pause + 6);
         if (const char* pick = std::strstr(v, ":pick"))
             s.pick = atof(pick + 5);
+        static const struct { const char* tag; int button; } kTags[] = { { ":a", 0 }, { ":b", 1 }, { ":down", 2 } };
+        for (const auto& tag : kTags)
+            for (const char* at = v; (at = std::strstr(at, tag.tag)) != nullptr; at += std::strlen(tag.tag))
+                if (at[std::strlen(tag.tag)] >= '0' && at[std::strlen(tag.tag)] <= '9')
+                    s.presses.push_back({ atof(at + std::strlen(tag.tag)), tag.button });
         s.origin = GetTickCount64();
         return s;
     }();
@@ -472,6 +479,13 @@ static DWORD __stdcall XbInputGetState(HANDLE device, XInputState* state)
                 g.wButtons |= XB_DPAD_UP;
             if (TestPad2Spec().on && TestPad2Spec().pick >= 0 && now >= TestPad2Spec().pick + 0.6 && now < TestPad2Spec().pick + 0.75)
                 g.bAnalogButtons[0] = 0xFF;
+            for (const auto& [at, button] : TestPad2Spec().presses) {
+                if (!TestPad2Spec().on || now < at || now >= at + 0.15)
+                    continue;
+                if (button == 0) g.bAnalogButtons[0] = 0xFF;
+                if (button == 1) g.bAnalogButtons[1] = 0xFF;
+                if (button == 2) g.wButtons |= XB_DPAD_DOWN;
+            }
         }
         if (index == 1 && TestPad2()) { // the scripted player 2 (TestPad2)
             const double t = TestPad2Seconds() - TestPad2Spec().start;

@@ -27,6 +27,7 @@
 #include "game/devoptions.h"
 #include "game/fixes.h"
 #include "game/freecam.h"
+#include "game/menus.h"
 #include "game/game.h"
 #include "game/resources.h"
 #include "game/roster.h"
@@ -171,6 +172,7 @@ static void StartGame(const void* launchData)
     game::InstallRoster();
     game::InstallAnimationAliases();
     game::InstallCharacters();
+    game::InstallMenus();
     game::InstallCoop();
     game::InstallResourceHooks(g_Boot.paths.gameData, g_Boot.paths.mods, g_Boot.paths.cache, g_Boot.dumpDir,
         g_Boot.logResources);

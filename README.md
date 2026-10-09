@@ -42,7 +42,7 @@ Things the Xbox release never had:
   button), on your side or against you, loaded from other levels if need be, remove them again
   (`despawn`), and give **your saber its own colour**
   (`saber red`, any colour), which power-ups no longer change.
-- **Two-player co-op in the story missions.** Turn it on from the pause menu (**Cooperative**) and a
+- **Two-player co-op in the story missions.** Turn it on from the pause menu (**Cooperative Mod**) and a
   second player with a controller joins by themselves: they play the mission's companion (Obi-Wan beside
   Anakin) or a character of their own beside you, with the game's own second HUD, and come back beside you
   when they fall or wander out of the picture. Also in the bonus missions made

@@ -17,6 +17,7 @@
 #include "core/settings.h"
 #include "game/characters.h"
 #include "game/freecam.h"
+#include "game/menus.h"
 #include "game/resources.h"
 #include "input/controls.h"
 #include "kernel/kernel.h"
@@ -283,161 +284,292 @@ void ResetPlayer2Hud(bool hide)
 
 // --- The pause menu ---
 
-// The pause screen (interfc\pausescreen.xbl_xml in each level's PAK, asked for as interfc\pausescreen.xml)
-// gets a row "Cooperative" under Quit Mission, in the panel's first empty row: a copy of Quit Mission's
-// item (an item: the strings screenItem and its name, a u32, the position x and y as floats, ...; its text
-// id, its down and up neighbours, its action) with its child (the highlight bar), renamed "coop", one row
-// lower, with the game's own "Cooperative" text and the port's action "CoopToggle"; Quit Mission's down
-// and Continue's up lead to it, and the screen's item count (a u32 after the screen's two names) grows by
-// one. Selecting it turns co-op on or off and continues the game, as Continue does.
+// The pause screen (interfc\pausescreen.xbl_xml, asked for as interfc\pausescreen.xml) gets a row
+// "Cooperative Mod" under Quit Mission, in the panel's first empty row: a copy of Settings' item (with its
+// child, the highlight bar; Settings is a Navigation row, to the screen pause_settings), renamed "coop", one
+// row under Quit Mission, with its own text, neighbours and screen ("pause_coop"); Quit Mission's down and
+// Continue's up lead to it, and the screen's item count (a u32 after its two names) grows by one.
 constexpr char kPauseScreen[] = "interfc\\pausescreen.xml";
+constexpr char kCoopScreenName[] = "pause_coop";
+constexpr char kCoopScreen[] = "interfc\\pause_coop.xml";
+constexpr char kSettingsScreen[] = "interfc\\pause_settings.xml";
 constexpr float kPauseRowStep = 24.0f;
-
-std::vector<uint8_t> MenuString(const std::string& text)
-{
-    std::vector<uint8_t> out(4 + text.size());
-    const uint32_t length = uint32_t(text.size());
-    std::memcpy(out.data(), &length, 4);
-    std::memcpy(out.data() + 4, text.data(), text.size());
-    return out;
-}
-
-size_t FindIn(const std::vector<uint8_t>& data, const std::vector<uint8_t>& what, size_t from, size_t to)
-{
-    if (to > data.size())
-        to = data.size();
-    for (size_t i = from; i + what.size() <= to; ++i)
-        if (std::memcmp(data.data() + i, what.data(), what.size()) == 0)
-            return i;
-    return std::string::npos;
-}
-
-// Replaces the first `from` string (with its length) in [begin, end) by `to`; the end moves along.
-bool ReplaceString(std::vector<uint8_t>& data, size_t begin, size_t& end, const std::string& from, const std::string& to)
-{
-    const std::vector<uint8_t> a = MenuString(from), b = MenuString(to);
-    const size_t at = FindIn(data, a, begin, end);
-    if (at == std::string::npos)
-        return false;
-    data.erase(data.begin() + at, data.begin() + at + a.size());
-    data.insert(data.begin() + at, b.begin(), b.end());
-    end = end - a.size() + b.size();
-    return true;
-}
+constexpr size_t kScreenItemCount = 0x1D; // in the pause screen: after "pausescreen" and "resume"
 
 void PatchPauseScreen(std::vector<uint8_t>& data)
 {
-    const std::vector<uint8_t> item = MenuString("screenItem");
-    auto itemNamed = [&](const std::string& name) {
-        std::vector<uint8_t> what = item;
-        const std::vector<uint8_t> n = MenuString(name);
-        what.insert(what.end(), n.begin(), n.end());
-        return FindIn(data, what, 0, data.size());
-    };
-    const size_t quit = itemNamed("quit"), resume = itemNamed("resume");
-    if (quit == std::string::npos || resume == std::string::npos || itemNamed("coop") != std::string::npos ||
-        data.size() < 0x21) {
-        LOG_WARN("Co-op: the pause screen is not as expected; no Cooperative entry");
+    size_t quit, quitEnd, resume, resumeEnd, settings, settingsEnd, existing, existingEnd;
+    if (!MenuRowBlock(data, "quit", quit, quitEnd) || !MenuRowBlock(data, "resume", resume, resumeEnd) ||
+        !MenuRowBlock(data, "settings", settings, settingsEnd) || MenuRowBlock(data, "coop", existing, existingEnd) ||
+        data.size() < kScreenItemCount + 4) {
+        LOG_WARN("Co-op: the pause screen is not as expected; no Cooperative Mod entry");
         return;
     }
-    // Quit Mission's item and its child: up to the item after them.
-    const size_t child = FindIn(data, item, quit + 1, data.size());
-    const size_t next = child == std::string::npos ? std::string::npos : FindIn(data, item, child + 1, data.size());
-    if (next == std::string::npos) {
-        LOG_WARN("Co-op: the pause screen's Quit Mission entry is not as expected; no Cooperative entry");
-        return;
-    }
-    std::vector<uint8_t> row(data.begin() + quit, data.begin() + next);
-    // The name ("quit" and "coop" are as long), then a u32 and the position.
-    const size_t nameAt = item.size();
-    std::memcpy(row.data() + nameAt + 4, "coop", 4);
-    float y;
-    std::memcpy(&y, row.data() + nameAt + 8 + 8, 4);
+    // The new row: a copy of Settings (a Navigation row) one row under Quit Mission.
+    std::vector<uint8_t> quitRow(data.begin() + quit, data.begin() + quitEnd);
+    std::vector<uint8_t> row(data.begin() + settings, data.begin() + settingsEnd);
+    float x, y;
+    MenuItemPosition(quitRow, &x, &y, false);
     y += kPauseRowStep;
-    std::memcpy(row.data() + nameAt + 8 + 8, &y, 4);
+    MenuItemPosition(row, &x, &y, true);
+    const size_t nameAt = MenuString("screenItem").size();
     size_t rowEnd = row.size();
-    if (!ReplaceString(row, nameAt + 8, rowEnd, "IDS_PAUSE_QUIT_MISSION", "IDS_COOPERATIVE") ||
-        !ReplaceString(row, nameAt + 8, rowEnd, "restart", "quit") ||
-        !ReplaceString(row, nameAt + 8, rowEnd, "Quit", "CoopToggle")) {
-        LOG_WARN("Co-op: the pause screen's Quit Mission entry is not as expected; no Cooperative entry");
+    bool ok = MenuReplaceString(row, 0, rowEnd, "settings", "coop") &&
+              MenuReplaceString(row, nameAt + 8, rowEnd, "IDS_PAUSE_SETTINGS", "IDS_PORT_COOP_MENU") &&
+              MenuReplaceString(row, nameAt + 8, rowEnd, "restart", "resume") &&
+              MenuReplaceString(row, nameAt + 8, rowEnd, "combat", "quit") &&
+              MenuReplaceString(row, nameAt + 8, rowEnd, "pause_settings", kCoopScreenName);
+    if (!ok) {
+        LOG_WARN("Co-op: the pause screen's Settings entry is not as expected; no Cooperative Mod entry");
         return;
     }
-    // Links into the new row, then the row itself after Quit Mission's (the later edits first: they move
-    // nothing before them).
-    size_t quitEnd = next;
-    if (!ReplaceString(data, quit + item.size() + 8, quitEnd, "resume", "coop")) {
-        LOG_WARN("Co-op: the pause screen's links are not as expected; no Cooperative entry");
+    // Links into the new row, then the row after Quit Mission's (the later edits first: they move nothing
+    // before them).
+    if (!MenuReplaceString(data, quit + nameAt + 8, quitEnd, "resume", "coop")) {
+        LOG_WARN("Co-op: the pause screen's links are not as expected; no Cooperative Mod entry");
         return;
     }
     data.insert(data.begin() + quitEnd, row.begin(), row.end());
-    size_t resumeEnd = FindIn(data, item, resume + 1, data.size());
-    if (resumeEnd == std::string::npos || !ReplaceString(data, resume + item.size() + 10, resumeEnd, "quit", "coop")) {
-        LOG_WARN("Co-op: the pause screen's links are not as expected; no Cooperative entry");
+    size_t resumeLinks = resumeEnd;
+    if (!MenuReplaceString(data, resume + nameAt + 10, resumeLinks, "quit", "coop")) {
+        LOG_WARN("Co-op: the pause screen's links are not as expected; no Cooperative Mod entry");
         return;
     }
     uint32_t count;
-    std::memcpy(&count, data.data() + 0x1D, 4);
+    std::memcpy(&count, data.data() + kScreenItemCount, 4);
     ++count;
-    std::memcpy(data.data() + 0x1D, &count, 4);
-    LOG_INFO("Co-op: the pause screen has a Cooperative entry");
+    std::memcpy(data.data() + kScreenItemCount, &count, 4);
+    LOG_INFO("Co-op: the pause screen has a Cooperative Mod entry");
 }
 
-// The pause screen's actions are menu handlers registered by name with a prototype (the HUD's setup,
-// IVaderHUD vfunc 0x2A8600, appends {name, prototype} to the HUD's list at +0x268 with 0x157300). The
-// port's "CoopToggle" is a Continue handler (made by 0x2B2550, vtable 0x5CFCE8) with a vtable of its own:
-// slot 4 (thiscall (event, value), ret 8) turns co-op on or off when the entry is chosen (event 0x23 that
-// the Navigation part, 0x2B3CA0, leaves alone), then lets Continue's own (0x2B3D10) continue the game;
-// slot 10 makes another one (the menu's copy for its item).
-constexpr uint32_t kHudSetup = 0x002A8600;
-constexpr uint8_t kHudSetupBytes[] = { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8, 0x83, 0xEC, 0x0C };
-constexpr uint32_t kHudHandlers = 0x268;
-constexpr uint32_t kAddHandler = 0x00157300;     // thiscall (const {name, prototype}*)
-constexpr uint32_t kMakeContinue = 0x002B2550;   // cdecl () -> handler
-constexpr uint32_t kContinueVtable = 0x005CFCE8;
-constexpr uint32_t kNavigationEvent = 0x002B3CA0; // thiscall (event, value) -> handled
-constexpr uint32_t kContinueEvent = 0x002B3D10;
-constexpr int kHandlerSlots = 27;
-constexpr int kChosen = 0x23;
-using HudSetupFn = void(__fastcall*)(uint8_t*, void*);
-using EventFn = char(__fastcall*)(uint8_t*, void*, int, int);
-HudSetupFn g_OriginalHudSetup = nullptr;
-uint32_t g_CoopToggleVtable[kHandlerSlots];
+// The port's screen "pause_coop": the pause screen's Settings (interfc\pause_settings.xbl_xml) with its rows
+// replaced: each made from the Subtitles row (an On/Off control, SettingsScreenOnOffControl) with the
+// port's name, text, neighbours and action "CoopOption"; the rows the screen does not need are removed (and
+// the screen's item count, a u32 after its name and its first item's, lowered).
+struct CoopRow {
+    const char* name;
+    const char* textId;
+    const wchar_t* text;
+};
+constexpr CoopRow kCoopRows[] = {
+    { "coopon", "IDS_PORT_COOP_ON", L"Co-op" },
+    { "coopboss", "IDS_PORT_COOP_BOSS", L"Player 2 As Boss" },
+    { "coopfriendlyfire", "IDS_PORT_COOP_FRIENDLY_FIRE", L"Friendly Fire" },
+    { "cooprespawn", "IDS_PORT_COOP_RESPAWN", L"Respawn Player 2" },
+    { "coopcamera", "IDS_PORT_COOP_CAMERA", L"Shared Camera" },
+};
+constexpr const char* kSettingsRows[] = { "controller", "vibration", "subtitles", "musicvolume", "effectsvolume",
+    "dialoguevolume", "difficulty", "restoredefaults" };
 
-char __fastcall CoopToggleEvent(uint8_t* handler, void*, int event, int value)
+bool GenerateCoopScreen(const std::string& lowerName, std::vector<uint8_t>& data)
 {
-    if (event == kChosen &&
-        reinterpret_cast<EventFn>(uintptr_t(kNavigationEvent))(handler, nullptr, event, value) != 1) {
-        Settings& settings = EditSettings();
-        settings.coop = !settings.coop;
-        SaveSettings();
-        LOG_INFO("Co-op: turned %s from the pause screen", settings.coop ? "on" : "off");
+    if (lowerName != kCoopScreen || !ReadDiscResource(kSettingsScreen, data))
+        return false;
+    size_t templateBegin, templateEnd;
+    if (!MenuRowBlock(data, "subtitles", templateBegin, templateEnd)) {
+        LOG_WARN("Co-op: the Settings screen is not as expected; no co-op screen");
+        return false;
     }
-    return reinterpret_cast<EventFn>(uintptr_t(kContinueEvent))(handler, nullptr, event, value);
+    const std::vector<uint8_t> templateRow(data.begin() + templateBegin, data.begin() + templateEnd);
+    const size_t nameAt = MenuString("screenItem").size();
+    float x;
+    int removed = 0;
+    // From the last row back: replacing a row moves only what follows it.
+    for (int i = int(std::size(kSettingsRows)) - 1; i >= 0; --i) {
+        size_t begin, end;
+        if (!MenuRowBlock(data, kSettingsRows[i], begin, end)) {
+            LOG_WARN("Co-op: the Settings screen's %s row is missing; no co-op screen", kSettingsRows[i]);
+            return false;
+        }
+        std::vector<uint8_t> original(data.begin() + begin, data.begin() + end);
+        float y;
+        MenuItemPosition(original, &x, &y, false);
+        const int rows = int(std::size(kCoopRows));
+        if (i >= rows) { // a row the screen does not need
+            data.erase(data.begin() + begin, data.begin() + end);
+            ++removed;
+            continue;
+        }
+        std::vector<uint8_t> row = templateRow;
+        const std::string name = kCoopRows[i].name;
+        const std::string down = kCoopRows[(i + 1) % rows].name;
+        const std::string up = kCoopRows[(i + rows - 1) % rows].name;
+        size_t rowEnd = row.size();
+        bool ok = MenuReplaceString(row, 0, rowEnd, "subtitles", name) &&
+                  MenuReplaceString(row, nameAt + 4, rowEnd, "IDS_SHELL_SUBTITLES", kCoopRows[i].textId) &&
+                  MenuReplaceString(row, nameAt + 4, rowEnd, "musicvolume", down) &&
+                  MenuReplaceString(row, nameAt + 4, rowEnd, "vibration", up) &&
+                  MenuReplaceString(row, nameAt + 4, rowEnd, "SettingsScreenOnOffControl", "CoopOption");
+        if (!ok) {
+            LOG_WARN("Co-op: the Settings screen's Subtitles row is not as expected; no co-op screen");
+            return false;
+        }
+        MenuItemPosition(row, &x, &y, true);
+        data.erase(data.begin() + begin, data.begin() + end);
+        data.insert(data.begin() + begin, row.begin(), row.end());
+    }
+    // The screen's name and its first item, then its number of items (after them), then the title.
+    size_t end = 64;
+    if (!MenuReplaceString(data, 0, end, "pause_settings", kCoopScreenName) ||
+        !MenuReplaceString(data, 0, end, "controller", kCoopRows[0].name)) {
+        LOG_WARN("Co-op: the Settings screen's header is not as expected; no co-op screen");
+        return false;
+    }
+    const size_t countAt = 4 + MenuString(kCoopScreenName).size() + MenuString(kCoopRows[0].name).size();
+    uint32_t count;
+    std::memcpy(&count, data.data() + countAt, 4);
+    count -= removed;
+    std::memcpy(data.data() + countAt, &count, 4);
+    end = data.size();
+    if (!MenuReplaceString(data, 0, end, "IDS_SETTINGS", "IDS_PORT_COOP_TITLE"))
+        LOG_WARN("Co-op: the Settings screen's title is not as expected");
+    return true;
 }
 
-uint8_t* MakeCoopToggle()
+// The co-op screen's rows: the game's On/Off control (made by 0x2D9690, vtable 0x5D7000; its value a byte at
+// +0x23C, its item at +8, the item's name key at +4) with a vtable of the port's own: slot 3 (thiscall (x),
+// drawn every frame) shows the port's setting where the control reads its own (it reads the profile's
+// subtitles byte, profile +0x2A, for a row made from Subtitles, whose +0x84 is 1); slot 28 (thiscall (),
+// called when the value changes) writes the setting; slot 27 (back to the default) sets the setting's default;
+// slot 4 (events) goes back without the settings screen's saving; slot 10 makes another one.
+constexpr uint32_t kMakeOnOff = 0x002D9690;
+constexpr uint32_t kOnOffVtable = 0x005D7000;
+constexpr int kOnOffSlots = 32;
+constexpr uint32_t kOnOffValue = 0x23C;
+constexpr uint32_t kProfiles = 0x007E8F24;     // the profile manager
+constexpr uint32_t kCurrentProfile = 0x0024CC50; // thiscall () -> profile or null
+constexpr uint32_t kProfileSubtitles = 0x2A;
+using DrawFn = char(__fastcall*)(uint8_t*, void*, uint32_t);
+uint32_t g_CoopOptionVtable[kOnOffSlots];
+DrawFn g_OnOffDraw = nullptr;
+
+int CoopRowOf(uint8_t* handler)
 {
-    uint8_t* handler = reinterpret_cast<uint8_t*(__cdecl*)()>(uintptr_t(kMakeContinue))();
+    const uint8_t* item = Field<uint8_t*>(handler, 8);
+    if (!item)
+        return -1;
+    const uint32_t key = *reinterpret_cast<const uint32_t*>(item + 4);
+    for (int i = 0; i < int(std::size(kCoopRows)); ++i)
+        if (key == MenuKey(kCoopRows[i].name))
+            return i;
+    return -1;
+}
+
+bool CoopRowValue(int row)
+{
+    const Settings& s = GetSettings();
+    switch (row) {
+    case 0: return s.coop;
+    case 1: return s.coopBoss;
+    case 2: return s.coopFriendlyFire;
+    case 3: return s.coopDeath == 0;
+    case 4: return s.coopCamera == 0;
+    default: return false;
+    }
+}
+
+void SetCoopRowValue(int row, bool on)
+{
+    Settings& s = EditSettings();
+    switch (row) {
+    case 0: s.coop = on; break;
+    case 1: s.coopBoss = on; break;
+    case 2: s.coopFriendlyFire = on; break;
+    case 3: s.coopDeath = on ? 0 : 1; break;
+    case 4: s.coopCamera = on ? 0 : 1; break;
+    default: return;
+    }
+    SaveSettings();
+    LOG_INFO("Co-op: %ls turned %s from the pause screen", kCoopRows[row].text, on ? "on" : "off");
+}
+
+uint8_t* CurrentProfile()
+{
+    uint8_t* profiles = *reinterpret_cast<uint8_t**>(uintptr_t(kProfiles));
+    return profiles ? reinterpret_cast<uint8_t*(__fastcall*)(uint8_t*, void*)>(uintptr_t(kCurrentProfile))(profiles, nullptr)
+                    : nullptr;
+}
+
+char __fastcall CoopOptionDraw(uint8_t* handler, void*, uint32_t value)
+{
+    const int row = CoopRowOf(handler);
+    if (row < 0)
+        return g_OnOffDraw(handler, nullptr, value);
+    const uint8_t on = CoopRowValue(row) ? 1 : 0;
+    Field<uint8_t>(handler, kOnOffValue) = on;
+    uint8_t* profile = CurrentProfile();
+    const uint8_t saved = profile ? profile[kProfileSubtitles] : 0;
+    if (profile)
+        profile[kProfileSubtitles] = on;
+    const char result = g_OnOffDraw(handler, nullptr, value);
+    if (profile)
+        profile[kProfileSubtitles] = saved;
+    return result;
+}
+
+void __fastcall CoopOptionApply(uint8_t* handler, void*)
+{
+    const int row = CoopRowOf(handler);
+    if (row >= 0 && (Field<uint8_t>(handler, kOnOffValue) != 0) != CoopRowValue(row))
+        SetCoopRowValue(row, Field<uint8_t>(handler, kOnOffValue) != 0);
+}
+
+void __fastcall CoopOptionDefault(uint8_t* handler, void*)
+{
+    const int row = CoopRowOf(handler);
+    const Settings defaults;
+    const bool on = row == 0 ? defaults.coop : row == 1 ? defaults.coopBoss : row == 2 ? defaults.coopFriendlyFire
+                  : row == 3 ? defaults.coopDeath == 0 : defaults.coopCamera == 0;
+    Field<uint8_t>(handler, kOnOffValue) = on ? 1 : 0;
+    CoopOptionApply(handler, nullptr);
+}
+
+// Back (event 0x26): the settings screen's controls save the game's settings to the profile (or warn that
+// they cannot, without a saved game: 0x2D7DF0); the port's are in settings.ini, so the menu just goes back,
+// as any item does (0x2C62D0).
+constexpr uint32_t kItemEvent = 0x002C62D0;
+constexpr int kBack = 0x26;
+using EventFn = char(__fastcall*)(uint8_t*, void*, int, int);
+EventFn g_OnOffEvent = nullptr;
+
+char __fastcall CoopOptionEvent(uint8_t* handler, void*, int event, int value)
+{
+    if (event == kBack)
+        return reinterpret_cast<EventFn>(uintptr_t(kItemEvent))(handler, nullptr, event, value);
+    return g_OnOffEvent(handler, nullptr, event, value);
+}
+
+uint8_t* MakeCoopOption()
+{
+    uint8_t* handler = reinterpret_cast<uint8_t*(__cdecl*)()>(uintptr_t(kMakeOnOff))();
     if (handler)
-        *reinterpret_cast<uint32_t**>(handler) = g_CoopToggleVtable;
+        *reinterpret_cast<uint32_t**>(handler) = g_CoopOptionVtable;
     return handler;
 }
 
-uint8_t* __fastcall MakeCoopToggleSlot(uint8_t*, void*)
+uint8_t* __fastcall MakeCoopOptionSlot(uint8_t*, void*)
 {
-    return MakeCoopToggle();
+    return MakeCoopOption();
 }
 
-void __fastcall HudSetupHook(uint8_t* hud, void*)
+void InstallCoopMenus()
 {
-    g_OriginalHudSetup(hud, nullptr);
-    struct {
-        const char* name;
-        uint8_t* prototype;
-    } entry = { "CoopToggle", MakeCoopToggle() };
-    if (entry.prototype)
-        reinterpret_cast<void(__fastcall*)(uint8_t*, void*, const void*)>(uintptr_t(kAddHandler))(hud + kHudHandlers, nullptr,
-            &entry);
+    std::memcpy(g_CoopOptionVtable, reinterpret_cast<const void*>(uintptr_t(kOnOffVtable)), sizeof(g_CoopOptionVtable));
+    g_OnOffDraw = reinterpret_cast<DrawFn>(uintptr_t(g_CoopOptionVtable[3]));
+    g_CoopOptionVtable[3] = uint32_t(reinterpret_cast<uintptr_t>(&CoopOptionDraw));
+    g_OnOffEvent = reinterpret_cast<EventFn>(uintptr_t(g_CoopOptionVtable[4]));
+    g_CoopOptionVtable[4] = uint32_t(reinterpret_cast<uintptr_t>(&CoopOptionEvent));
+    g_CoopOptionVtable[10] = uint32_t(reinterpret_cast<uintptr_t>(&MakeCoopOptionSlot));
+    g_CoopOptionVtable[27] = uint32_t(reinterpret_cast<uintptr_t>(&CoopOptionDefault));
+    g_CoopOptionVtable[28] = uint32_t(reinterpret_cast<uintptr_t>(&CoopOptionApply));
+    SetMenuText("IDS_PORT_COOP_MENU", L"Cooperative Mod");
+    SetMenuText("IDS_PORT_COOP_TITLE", L"Cooperative Mod");
+    for (const CoopRow& row : kCoopRows)
+        SetMenuText(row.textId, row.text);
+    AddMenuHandler("CoopOption", &MakeCoopOption);
+    AddMenuScreen(kCoopScreen);
+    RegisterResourceGenerator(&GenerateCoopScreen);
+    RegisterResourcePatch(kPauseScreen, &PatchPauseScreen);
 }
 
 // --- Damage ---
@@ -580,7 +712,10 @@ void Register()
 }
 
 // Player 2 stops playing: the character goes back to the game (its AI, its own invincibility).
-void Unregister(const char* why)
+// `removing`: the character is about to be removed: only its controller is let go (as a live player swap
+// does). Given back to the AI in the frame it goes, the game made AI state for it that outlived it (a crash
+// two frames later).
+void Unregister(const char* why, bool removing = false)
 {
     if (!g_State.playing)
         return;
@@ -602,7 +737,9 @@ void Unregister(const char* why)
     }
     if (!g_State.savedSlotId)
         ResetPlayer2Hud(true);
-    if (StillThere()) {
+    if (StillThere() && removing) {
+        UnbindController(g_State.p2);
+    } else if (StillThere()) {
         UnbindController(g_State.p2);
         Field<int>(g_State.p2, kCharacterControl) = g_State.savedControl;
         Field<uint8_t>(g_State.p2, kCharacterInvincible) = g_State.savedInvincible;
@@ -898,18 +1035,8 @@ void InstallCoop()
     g_OriginalChangeHealth = reinterpret_cast<ChangeHealthFn>(changeHealthStub);
     g_OriginalInstantKill = reinterpret_cast<InstantKillFn>(instantKillStub);
     PatchJump(kChangeHealth, reinterpret_cast<const void*>(&ChangeHealthHook));
-    // The pause screen's Cooperative entry.
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kHudSetup)), kHudSetupBytes, sizeof(kHudSetupBytes)) == 0) {
-        static uint8_t* hudSetupStub = trampoline(kHudSetup, kHudSetupBytes, sizeof(kHudSetupBytes));
-        g_OriginalHudSetup = reinterpret_cast<HudSetupFn>(hudSetupStub);
-        std::memcpy(g_CoopToggleVtable, reinterpret_cast<const void*>(uintptr_t(kContinueVtable)), sizeof(g_CoopToggleVtable));
-        g_CoopToggleVtable[4] = uint32_t(reinterpret_cast<uintptr_t>(&CoopToggleEvent));
-        g_CoopToggleVtable[10] = uint32_t(reinterpret_cast<uintptr_t>(&MakeCoopToggleSlot));
-        PatchJump(kHudSetup, reinterpret_cast<const void*>(&HudSetupHook));
-        RegisterResourcePatch(kPauseScreen, &PatchPauseScreen);
-    } else {
-        LOG_WARN("Co-op: unexpected code at the HUD's setup; no pause screen entry");
-    }
+    // The pause screen's Cooperative Mod entry and its screen.
+    InstallCoopMenus();
     PatchJump(kInstantKill, reinterpret_cast<const void*>(&InstantKillHook));
     SetCameraAdjuster(&SharedCamera);
 }
@@ -1106,7 +1233,7 @@ void CoopCharacterRemoving(uint8_t* character)
 {
     if (!character || character != g_State.p2)
         return;
-    Unregister("the character is removed");
+    Unregister("the character is removed", true);
     g_State.p2 = nullptr;
     g_State.respawnAt = GetTickCount64() + kRespawnDelayMs;
 }
