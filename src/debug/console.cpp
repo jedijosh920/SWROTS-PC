@@ -249,7 +249,7 @@ void Help(uint8_t* console)
     Print(LineKind::Output, "                           [scale <size>]: a character in front of the player");
     Print(LineKind::Output, "  scale [<size>] [spawned]  your size (or the last spawned character's), 1 being its own");
     Print(LineKind::Output, "  infiniteforce [on|off]   your Force stays full");
-    Print(LineKind::Output, "  coop [on|off|input ..|death ..|player2 ..|storysafety ..]  two players in story missions");
+    Print(LineKind::Output, "  coop [on|off|input ..|death ..|camera ..|friendlyfire ..|boss ..|player2 ..|storysafety ..]  two players in story missions");
     Print(LineKind::Output, "  memory                   the game's memory use, and the characters spawned");
     Print(LineKind::Output, "  despawn                  remove the characters you spawned");
     Print(LineKind::Output, "  restart                  restart the mission");
@@ -617,8 +617,9 @@ void InfiniteForceCommand(const std::vector<std::string>& words)
     Print(LineKind::Output, "  infinite Force: %s", game::InfiniteForce() ? "on" : "off");
 }
 
-// coop [on|off | input auto|keyboard|controllers | death respawn|gameover | player2 <class>|auto |
-// storysafety on|off]: co-op's settings (saved to settings.ini), and what it is doing.
+// coop [on|off | input auto|keyboard|controllers | death respawn|gameover | camera shared|player1 |
+// friendlyfire on|off | boss on|off | player2 <class>|auto | storysafety on|off]: co-op's settings (saved to
+// settings.ini), and what it is doing.
 void Coop(const std::vector<std::string>& words)
 {
     Settings& s = EditSettings();
