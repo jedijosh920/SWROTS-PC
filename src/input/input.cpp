@@ -133,8 +133,14 @@ static int ControllerOfPort(DWORD port, size_t controllers)
     return index >= 0 && size_t(index) < controllers ? index : -1;
 }
 
+// Player 2's shoot button: each press of Y is one short press of the attack button (held, the game queued
+// more attacks); an attack is a shot when Y was pressed after the attack button last was, so the attacks
+// a press leads to stay shots.
 static std::atomic<bool> g_Player2Shoot = false;
-static std::atomic<ULONGLONG> g_Player2ShotAt = 0;
+static std::atomic<ULONGLONG> g_Player2ShotAt = 0;   // Y pressed then
+static std::atomic<ULONGLONG> g_Player2AttackAt = 0; // the attack button itself pressed then
+static ULONGLONG g_Player2PulseUntil = 0;
+static bool g_Player2YDown = false, g_Player2XDown = false;
 
 void SetPlayer2ShootButton(bool active)
 {
@@ -143,7 +149,7 @@ void SetPlayer2ShootButton(bool active)
 
 bool Player2Shooting()
 {
-    return g_Player2Shoot && GetTickCount64() - g_Player2ShotAt < 300;
+    return g_Player2Shoot && g_Player2ShotAt > g_Player2AttackAt && GetTickCount64() - g_Player2ShotAt < 3000;
 }
 
 void SetCoopInput(bool active)
@@ -514,10 +520,20 @@ static DWORD __stdcall XbInputGetState(HANDLE device, XInputState* state)
                     g.bAnalogButtons[TestPad2Spec().shoot ? XB_Y : (step % 2) ? XB_X : XB_A] = 0xFF;
             }
         }
-        if (index == 1 && g_Player2Shoot && g.bAnalogButtons[XB_Y] > 0x40) {
-            g.bAnalogButtons[XB_X] = g.bAnalogButtons[XB_Y];
+        if (index == 1 && g_Player2Shoot) {
+            const ULONGLONG now = GetTickCount64();
+            const bool y = g.bAnalogButtons[XB_Y] > 0x40, x = g.bAnalogButtons[XB_X] > 0x40;
+            if (x && !g_Player2XDown)
+                g_Player2AttackAt = now;
+            if (y && !g_Player2YDown) {
+                g_Player2ShotAt = now;
+                g_Player2PulseUntil = now + 120;
+            }
+            g_Player2XDown = x;
+            g_Player2YDown = y;
             g.bAnalogButtons[XB_Y] = 0;
-            g_Player2ShotAt = GetTickCount64();
+            if (now < g_Player2PulseUntil)
+                g.bAnalogButtons[XB_X] = 0xFF;
         }
     }
     if (std::memcmp(&g, &port->last, sizeof(g)) != 0) {

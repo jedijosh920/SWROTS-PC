@@ -715,6 +715,12 @@ void Register()
     g_State.farSince = 0;
     LOG_INFO("Co-op: player 2 plays %s %s (control was %d)", g_State.spawned ? "the spawned" : "the companion",
         g_State.p2Class.c_str(), g_State.savedControl);
+    // A class's sounds are set up only while a level loads (CharSoundManager; +0x444 its sound set, 0 none):
+    // a class the level does not have plays its moves without them.
+    constexpr uint32_t kCharacterSoundSet = 0x444;
+    if (Field<int>(c, kCharacterSoundSet) == 0)
+        LOG_INFO("Co-op: %s has no sounds in this level (the level has no character of its own of that class)",
+            g_State.p2Class.c_str());
 }
 
 // Player 2 stops playing: the character goes back to the game (its AI, its own invincibility).

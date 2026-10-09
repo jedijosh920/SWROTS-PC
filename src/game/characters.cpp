@@ -1340,7 +1340,10 @@ int ClearReferencesTo(const std::vector<uint8_t*>& removed)
     std::unordered_set<uintptr_t> parts;
     for (const uint8_t* object : removed)
         for (uintptr_t o = 0; o < 0x1200; o += 4) {
-            const uintptr_t p = *reinterpret_cast<const uint32_t*>(object + o);
+            // Read safely: a smaller character can end at the end of its memory (a clone trooper did).
+            uint32_t p = 0;
+            if (!ReadGameDword(uintptr_t(object) + o, p))
+                break;
             if (p < 0x10000 || !InScanRegions(p, 4))
                 continue;
             const bool inCharacter = std::any_of(characters.begin(), characters.end(),

@@ -24,7 +24,8 @@ Two-player co-op in the story missions.
 - **A clone trooper player 2 shoots**: heavy attack fires the blaster (attack stays the rifle butt), and
   player 2 keeps their limbs (a clone used to live on armless).
 - **Friendly fire** for co-op (`FriendlyFire=1`): the players' blows hurt each other; they stay allies.
-- **A hang watchdog**: if the game stops responding for 20 seconds, the log says where it is stuck.
+- **A hang watchdog**: if the game stops responding for 20 seconds, the log says where it is stuck; a
+  game caught in its own error handler is named once instead of filling the log.
 
 ### Fixed
 

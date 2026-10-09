@@ -97,6 +97,9 @@ after) the camera is the game's own and player 2 is not brought back to player 1
   computer's boss. Turn co-op off from the pause menu to let the computer play the boss, and on again.
 - **Bosses are not changed for players:** a boss keeps the health and moves the story gives it.
 - **The pause menu's Cooperative Mod entry** is also there in Versus, where its settings do nothing.
+- **A character the level has none of is silent**: the game sets up a kind of character's sounds only
+  while a level loads, so a clone trooper player 2 in Mace Windu's or the Mustafar duels fires without
+  blaster sounds (the log says so). In the Jedi Temple, with the level's own clones, it is heard.
 - **A clone trooper player 2's shots are aimed by the game**, as the computer's clones' are, not exactly where the
   stick points.
 - **Some settings are only in `settings.ini`** for now: `Input`, `Player2` and `StorySafety`.

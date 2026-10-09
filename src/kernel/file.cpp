@@ -345,6 +345,28 @@ static void TraceOpenCallers(const std::string& xpath, void* stackTop)
     game::LogGameCallers("open", stackTop);
 }
 
+
+// The game writes D:\Message.log (logs\Message.log) at boot and when something went wrong. Its exception
+// handler can fail and start over without end (a fault it cannot handle),
+// rewriting the file thousands of times a second: that is said once, and the file layer's debug lines
+// stop (they filled a log with 70 MB).
+static bool g_GameErrorLoop = false;
+
+static bool QuietFileLog(const std::string& xpath)
+{
+    if (g_GameErrorLoop)
+        return true;
+    if (xpath.size() < 11 || _stricmp(xpath.c_str() + xpath.size() - 11, "Message.log") != 0)
+        return false;
+    static int opens = 0; // a few at boot (it starts the file)
+    if (++opens == 200) {
+        g_GameErrorLoop = true;
+        LOG_ERROR("The game is stuck in its own error handler (it keeps rewriting logs\\Message.log); the game has "
+                  "stopped. The lines above say what went wrong.");
+    }
+    return false;
+}
+
 NTSTATUS XBAPI NtCreateFile(HANDLE* FileHandle, ACCESS_MASK DesiredAccess, xbox::OBJECT_ATTRIBUTES* ObjectAttributes,
     xbox::IO_STATUS_BLOCK* IoStatusBlock, LARGE_INTEGER* AllocationSize, ULONG FileAttributes, ULONG ShareAccess,
     ULONG CreateDisposition, ULONG CreateOptions)
@@ -391,8 +413,9 @@ NTSTATUS XBAPI NtCreateFile(HANDLE* FileHandle, ACCESS_MASK DesiredAccess, xbox:
 
     status = ::NtCreateFile(FileHandle, DesiredAccess, &oa, reinterpret_cast<PIO_STATUS_BLOCK>(IoStatusBlock),
         AllocationSize, FileAttributes, ShareAccess, CreateDisposition, CreateOptions, nullptr, 0);
-    LOG_DEBUG("NtCreateFile '%s' disp %lu opts %08lX -> %08lX handle %p", xpath.c_str(), CreateDisposition, CreateOptions,
-        status, status >= 0 ? *FileHandle : nullptr);
+    if (!QuietFileLog(xpath))
+        LOG_DEBUG("NtCreateFile '%s' disp %lu opts %08lX -> %08lX handle %p", xpath.c_str(), CreateDisposition, CreateOptions,
+            status, status >= 0 ? *FileHandle : nullptr);
     if (status >= 0)
         TrackGameHandle(*FileHandle);
     TraceOpenCallers(xpath, _AddressOfReturnAddress());
@@ -466,7 +489,8 @@ NTSTATUS XBAPI NtSetInformationFile(HANDLE FileHandle, xbox::IO_STATUS_BLOCK* Io
         return ::NtSetInformationFile(FileHandle, reinterpret_cast<PIO_STATUS_BLOCK>(IoStatusBlock), ri, ULONG(buf.size()),
             FileInformationClass);
     }
-    LOG_DEBUG("NtSetInformationFile(%p, class %lu)", FileHandle, FileInformationClass);
+    if (!g_GameErrorLoop)
+        LOG_DEBUG("NtSetInformationFile(%p, class %lu)", FileHandle, FileInformationClass);
     return Check("NtSetInformationFile", FileHandle, ::NtSetInformationFile(FileHandle,
         reinterpret_cast<PIO_STATUS_BLOCK>(IoStatusBlock), FileInformation, Length, FileInformationClass));
 }
