@@ -21,8 +21,9 @@ Two-player co-op in the story missions.
   with its known issues.
 - **Boss fights for two**: player 2 plays the mission's boss, or with **Player 2 As Boss** off fights it
   beside player 1 (a Jedi or a 501st clone trooper, by the boss's side).
-- **A clone trooper player 2 shoots**: heavy attack fires the blaster (attack stays the rifle butt), and
-  player 2 keeps their limbs (a clone used to live on armless).
+- **A clone trooper player 2 shoots**: holding heavy attack fires the blaster while walking or standing,
+  as the computer's clones do (attack stays the rifle butt), and player 2 keeps their limbs (a clone used
+  to live on armless).
 - **Friendly fire** for co-op (`FriendlyFire=1`): the players' blows hurt each other; they stay allies.
 - **A hang watchdog**: if the game stops responding for 20 seconds, the log says where it is stuck; a
   game caught in its own error handler is named once instead of filling the log.

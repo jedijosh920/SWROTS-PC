@@ -49,8 +49,8 @@ void HoldPlayerInput(bool hold);
 void SetCoopInput(bool active);
 // The controller player 2 has, if any (for co-op to know whether player 2 can play).
 bool Player2HasController();
-// Co-op's clone trooper (a character without a heavy attack): player 2's heavy attack (Y) is pressed as the
-// attack button (X), and Player2Shooting tells co-op that this attack is a shot (Y held a moment ago).
+// Co-op's clone trooper (a character without a heavy attack): player 2's heavy attack (Y) held is shooting
+// (Player2Shooting), and the game does not see it.
 void SetPlayer2ShootButton(bool active);
 bool Player2Shooting();
 

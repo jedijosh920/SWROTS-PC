@@ -1034,59 +1034,83 @@ void GameOver()
 } // namespace
 
 // --- Player 2's clone trooper shoots ---
-// A clone's moves are its script class's sequences (CloneTrooper.cpp, script vtable 0x5E53D0), thiscall on
-// the script object with two stack arguments. Under player controls the attack button plays the rifle butt
-// (0x356B80); the AI shoots with CloneBlastAttack (0x3562B0). Player 2's heavy attack (which a clone does
-// not have) is pressed as the attack button (input.cpp) and plays CloneBlastAttack instead.
-constexpr uint32_t kRifleButt = 0x00356B80;
-constexpr uint8_t kRifleButtBytes[] = { 0x56, 0x68, 0x60, 0xFB, 0x55, 0x00 }; // push esi; push 0x55FB60
-constexpr uint32_t kBlastAttack = 0x003562B0;
-constexpr uint8_t kBlastAttackBytes[] = { 0x56, 0x8B, 0x35, 0xC0, 0x64, 0x69, 0x00 }; // push esi; mov esi, [0x6964C0]
-uint8_t* g_RifleButtStub = nullptr;
+// The clones' own shooting is in their script's StateManager (CloneTrooper.cpp, 0x35AD70, thiscall on the
+// clone script with two stack arguments, run for each clone every frame), which for a clone the AI moves
+// runs its combat (0x35AE70): now and then, facing its target, it starts the shooting loop as an
+// upper-body layer over whatever the clone does (ctroop_atk_shooting_loop, 0x173B40), and a few frames on
+// fires a bolt at its target (0x3C0090), steps its muzzle (0x1760B0) and plays the blaster's sound
+// (0x17AD20). Under player controls the StateManager takes its other way and a clone only has the rifle
+// butt. For player 2's clone the same calls are made, in the clone's script's turn, while heavy attack (Y)
+// is held: the layer from the press on, a bolt every kShotIntervalMs at the clone's target.
+constexpr uint32_t kCloneStateManager = 0x0035AD70;
+constexpr uint8_t kCloneStateManagerBytes[] = { 0x56, 0x57, 0x8B, 0x3D, 0xC0, 0x64, 0x69, 0x00 }; // push esi; push edi; mov edi, [0x6964C0]
+constexpr uint32_t kScriptHasTarget = 0x00176FF0;   // cdecl bool (): the current character has a target
+constexpr uint32_t kScriptPlayLayer = 0x00173B40;   // cdecl (animation, ...): an animation layer
+constexpr uint32_t kScriptStopLayer = 0x00173B80;   // cdecl (layer, blend)
+constexpr uint32_t kScriptShotSpread = 0x00176AB0;  // cdecl bool (): no spread
+constexpr uint32_t kCloneFireBolt = 0x003C0090;     // cdecl (instance, script, 0, spread, muzzle data, muzzle)
+constexpr uint32_t kCloneNextMuzzle = 0x001760B0;   // cdecl (muzzle*, count)
+constexpr uint32_t kScriptPlaySound = 0x0017AD20;   // cdecl (sound, near, 1, far, -1, 0)
+constexpr uint32_t kScriptContext = 0x006964C0;     // the script instance running
+constexpr uint32_t kScriptCharacterContext = 0x006943CC; // +0x68: the character it runs for
+constexpr uint32_t kCloneMuzzle = 0x3D8, kCloneMuzzleData = 0x3EC, kCloneFireSound = 0x3E4; // in the instance
+constexpr char kCloneShootingLoop[] = "ctroop_atk_shooting_loop";
+constexpr ULONGLONG kShotIntervalMs = 300;
+using StateManagerFn = void(__fastcall*)(uint8_t*, void*, uint32_t, uint32_t);
+StateManagerFn g_OriginalCloneStateManager = nullptr;
+bool g_CloneShooting = false;     // player 2's clone has its shooting layer on
+ULONGLONG g_CloneLastShot = 0;
 
-// The sequence runs for the character whose script instance is the current context ([0x6964C0]: a
-// character's +0x434 holds its script, whose +0x1C is that instance).
-constexpr uint32_t kScriptContext = 0x006964C0;
-constexpr uint32_t kCharacterScript = 0x434;
-constexpr uint32_t kScriptInstance = 0x1C;
-
-bool __fastcall RifleButtIsPlayer2(uint8_t*)
+void ClonePlayer2Shooting(uint8_t* script, uint8_t* instance)
 {
-    if (!g_State.playing || !g_State.p2 || g_State.boss)
-        return false;
-    const uint8_t* context = *reinterpret_cast<uint8_t**>(uintptr_t(kScriptContext));
-    const uint8_t* script = Field<uint8_t*>(g_State.p2, kCharacterScript);
-    if (!context || !script || *reinterpret_cast<uint8_t* const*>(script + kScriptInstance) != context)
-        return false;
-    // The sequence is entered again every frame while it plays: the choice is made when it starts (no
-    // call for a moment before) and kept, so one attack is a shot or a rifle butt, never both.
-    static ULONGLONG lastCall = 0;
-    static bool shot = false;
-    const ULONGLONG now = GetTickCount64();
-    if (now - lastCall > 150)
-        shot = input::Player2Shooting();
-    lastCall = now;
-    static uint8_t* noted = nullptr;
-    if (shot && noted != g_State.p2) {
-        noted = g_State.p2;
-        LOG_INFO("Co-op: player 2's clone fires its blaster (heavy attack: the AI's shot instead of the rifle butt)");
+    static uint8_t* shooter = nullptr; // a new character for player 2 starts with no layer on
+    if (shooter != g_State.p2) {
+        shooter = g_State.p2;
+        g_CloneShooting = false;
     }
-    return shot;
+    const bool held = input::Player2Shooting();
+    if (!held) {
+        if (g_CloneShooting) {
+            reinterpret_cast<void(__cdecl*)(int, int)>(uintptr_t(kScriptStopLayer))(2, 5);
+            g_CloneShooting = false;
+        }
+        return;
+    }
+    const ULONGLONG now = GetTickCount64();
+    if (!g_CloneShooting) {
+        reinterpret_cast<void(__cdecl*)(const char*, int, int, float, int, int, int, int, int)>(uintptr_t(kScriptPlayLayer))(
+            kCloneShootingLoop, 0, 0, 1.0f, 5, 2, 0, 1, 2);
+        g_CloneShooting = true;
+        g_CloneLastShot = now - kShotIntervalMs + 50; // the first bolt a few frames into the layer
+        static uint8_t* noted = nullptr;
+        if (noted != g_State.p2) {
+            noted = g_State.p2;
+            LOG_INFO("Co-op: player 2's clone shoots as the computer's clones do (heavy attack held)");
+        }
+    }
+    if (now - g_CloneLastShot < kShotIntervalMs || !reinterpret_cast<bool(__cdecl*)()>(uintptr_t(kScriptHasTarget))())
+        return;
+    g_CloneLastShot = now;
+    const float spread = reinterpret_cast<bool(__cdecl*)()>(uintptr_t(kScriptShotSpread))() ? 0.0f : 10.0f;
+    uint32_t spreadBits;
+    std::memcpy(&spreadBits, &spread, 4);
+    reinterpret_cast<void(__cdecl*)(uint8_t*, uint8_t*, uint32_t, uint32_t, uint32_t, uint32_t)>(uintptr_t(kCloneFireBolt))(
+        instance, script, 0, spreadBits, Field<uint32_t>(instance, kCloneMuzzleData), Field<uint32_t>(instance, kCloneMuzzle));
+    reinterpret_cast<void(__cdecl*)(uint8_t*, int)>(uintptr_t(kCloneNextMuzzle))(instance + kCloneMuzzle, 4);
+    reinterpret_cast<void(__cdecl*)(uint32_t, float, int, float, int, int)>(uintptr_t(kScriptPlaySound))(
+        Field<uint32_t>(instance, kCloneFireSound), 100.0f, 1, 800.0f, -1, 0);
 }
 
-__declspec(naked) void RifleButtHook()
+void __fastcall CloneStateManagerHook(uint8_t* script, void*, uint32_t a, uint32_t b)
 {
-    __asm {
-        push ecx
-        call RifleButtIsPlayer2
-        pop ecx
-        test al, al
-        jz original
-        mov eax, kBlastAttack
-        jmp eax
-    original:
-        jmp [g_RifleButtStub]
-    }
+    g_OriginalCloneStateManager(script, nullptr, a, b);
+    if (!g_State.playing || !g_State.p2 || g_State.boss)
+        return;
+    const uint8_t* characterContext = *reinterpret_cast<uint8_t* const*>(uintptr_t(kScriptCharacterContext));
+    uint8_t* instance = *reinterpret_cast<uint8_t**>(uintptr_t(kScriptContext));
+    if (!characterContext || !instance || *reinterpret_cast<uint8_t* const*>(characterContext + 0x68) != g_State.p2)
+        return;
+    ClonePlayer2Shooting(script, instance);
 }
 
 // --- Player 2 keeps their limbs ---
@@ -1157,13 +1181,13 @@ void InstallCoop()
     // The pause screen's Cooperative Mod entry and its screen.
     InstallCoopMenus();
     PatchJump(kInstantKill, reinterpret_cast<const void*>(&InstantKillHook));
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kRifleButt)), kRifleButtBytes, sizeof(kRifleButtBytes)) == 0 &&
-        std::memcmp(reinterpret_cast<const void*>(uintptr_t(kBlastAttack)), kBlastAttackBytes, sizeof(kBlastAttackBytes)) == 0) {
-        static uint8_t* rifleButtStub = trampoline(kRifleButt, kRifleButtBytes, sizeof(kRifleButtBytes));
-        g_RifleButtStub = rifleButtStub;
-        PatchJump(kRifleButt, reinterpret_cast<const void*>(&RifleButtHook));
+    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kCloneStateManager)), kCloneStateManagerBytes,
+            sizeof(kCloneStateManagerBytes)) == 0) {
+        static uint8_t* stateManagerStub = trampoline(kCloneStateManager, kCloneStateManagerBytes, sizeof(kCloneStateManagerBytes));
+        g_OriginalCloneStateManager = reinterpret_cast<StateManagerFn>(stateManagerStub);
+        PatchJump(kCloneStateManager, reinterpret_cast<const void*>(&CloneStateManagerHook));
     } else {
-        LOG_WARN("Co-op: unexpected code at the clone trooper's attacks; player 2's clone uses its rifle butt");
+        LOG_WARN("Co-op: unexpected code at the clone trooper's script; player 2's clone does not shoot");
     }
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kDismemberNotify)), kDismemberNotifyBytes, sizeof(kDismemberNotifyBytes)) == 0) {
         static uint8_t* dismemberStub = trampoline(kDismemberNotify, kDismemberNotifyBytes, sizeof(kDismemberNotifyBytes));

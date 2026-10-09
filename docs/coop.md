@@ -44,8 +44,10 @@ Player 2 gets the game's own second HUD (portrait, health and Force bars) and pl
 and Force. Player 2 never loses a limb to a saber: a clone trooper as strong as player 1 would live on
 without its arm (and blaster).
 
-**A clone trooper player 2**: attack is the rifle butt, **heavy attack (Y / triangle) fires the blaster**
-as the computer's clones do. A clone has no jump or Force moves of its own.
+**A clone trooper player 2**: attack is the rifle butt; **hold heavy attack (Y / triangle) to shoot**, as
+the computer's clones do: the blaster raised while walking or standing, a bolt about three times a second
+at the enemy the clone is fighting (it needs one: with no enemy about, it holds its fire). A clone has no
+jump or Force moves of its own.
 
 ## Boss fights: player 2 plays the boss
 
@@ -100,8 +102,8 @@ after) the camera is the game's own and player 2 is not brought back to player 1
 - **A character the level has none of is silent**: the game sets up a kind of character's sounds only
   while a level loads, so a clone trooper player 2 in Mace Windu's or the Mustafar duels fires without
   blaster sounds (the log says so). In the Jedi Temple, with the level's own clones, it is heard.
-- **A clone trooper player 2's shots are aimed by the game**, as the computer's clones' are, not exactly where the
-  stick points.
+- **A clone trooper player 2's shots go to the enemy it is fighting**, as the computer's clones' do, not
+  where it faces.
 - **Some settings are only in `settings.ini`** for now: `Input`, `Player2` and `StorySafety`.
 - **Missions not tested from start to end in co-op**: the first mission has been; others may have
   moments like the above.

@@ -215,9 +215,18 @@ Settings row (a `Navigation` row) under Quit Mission, its target `pause_coop`.
 A clone's moves are its script class's sequences (GScript_Vader\CloneTrooper.cpp; script vtable
 0x5E53D0, one object for all clones), thiscall with two stack arguments; the character they run for is
 the current script context (`[0x6964C0]`), which is the character's script (+0x434) +0x1C. Under player
-controls the attack button plays the rifle butt (0x356B80, `ctroop_atk_riflebutt`); the AI shoots with
-CloneBlastAttack (0x3562B0, `ctroop_atk_shooting_loop`, the bolts fired by its animation events). The port
-sends player 2's rifle butt to CloneBlastAttack.
+controls the attack button plays the rifle butt (0x356B80, `ctroop_atk_riflebutt`).
+
+The clones' shooting is not a sequence of its own: their script's StateManager (0x35AD70, every frame)
+runs, for a clone the AI moves, its combat (0x35AE70, cdecl (instance, script)): close up the rifle butt,
+otherwise, after a random 40 to 520 frames and facing its target within 10 degrees (0x172F00), the
+shooting loop as an upper-body layer over whatever the clone does (0x173B40 `ctroop_atk_shooting_loop`,
+layer 2; stopped with 0x173B80 (2, 5)), and three frames on a bolt at its target (0x3C0090 (instance,
+script, 0, spread, [instance+0x3EC], [instance+0x3D8])), the next muzzle (0x1760B0) and the blaster sound
+(0x17AD20 ([instance+0x3E4], 100, 1, 800, -1, 0)). Under player controls the StateManager takes its other
+way (0x173D70). Playing CloneBlastAttack for the player instead (an AI sequence, through the melee attack)
+made the clone step and shuffle. The port makes the same layer, bolt and sound calls for player 2's
+clone, in its script's turn, while heavy attack is held (a bolt every 300 ms at its target).
 
 A saber cut is the dismemberment manager's (TDismembermentManager); it tells the character's script
 (0x2DB950, stdcall (character, kind, value, part)), and the clone's callback (CloneTrooper_Callbacks.h,

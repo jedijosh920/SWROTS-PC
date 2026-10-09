@@ -133,14 +133,10 @@ static int ControllerOfPort(DWORD port, size_t controllers)
     return index >= 0 && size_t(index) < controllers ? index : -1;
 }
 
-// Player 2's shoot button: each press of Y is one short press of the attack button (held, the game queued
-// more attacks); an attack is a shot when Y was pressed after the attack button last was, so the attacks
-// a press leads to stay shots.
+// Player 2's shoot button (co-op's clone trooper): Y held is shooting, which co-op runs as the clones'
+// own; the game does not see Y (a clone has no heavy attack).
 static std::atomic<bool> g_Player2Shoot = false;
-static std::atomic<ULONGLONG> g_Player2ShotAt = 0;   // Y pressed then
-static std::atomic<ULONGLONG> g_Player2AttackAt = 0; // the attack button itself pressed then
-static ULONGLONG g_Player2PulseUntil = 0;
-static bool g_Player2YDown = false, g_Player2XDown = false;
+static std::atomic<ULONGLONG> g_Player2ShotAt = 0; // Y last seen held then
 
 void SetPlayer2ShootButton(bool active)
 {
@@ -149,7 +145,7 @@ void SetPlayer2ShootButton(bool active)
 
 bool Player2Shooting()
 {
-    return g_Player2Shoot && g_Player2ShotAt > g_Player2AttackAt && GetTickCount64() - g_Player2ShotAt < 3000;
+    return g_Player2Shoot && GetTickCount64() - g_Player2ShotAt < 150;
 }
 
 void SetCoopInput(bool active)
@@ -163,7 +159,7 @@ void SetCoopInput(bool active)
 // Test switch SWROTS_TEST_PAD2=<seconds>[:run]: a scripted controller on port 1 (player 2), from that many
 // seconds on: its stick circles and it attacks, or with ":run" it runs straight ahead; with ":shoot" its
 // attacks are heavy attacks (Y: a clone trooper's shot in co-op); with ":still" it stands and presses a
-// button every 2 s.
+// button every 2 s (with both, it stands holding Y).
 // ":until<seconds>" unplugs it then, ":start<seconds>" presses player 1's Start then (pause), ":pick<seconds>"
 // presses player 1's Up then A (in the pause menu: the entry above the first); ":a<seconds>", ":b<seconds>",
 // ":down<seconds>" (any number of them) press player 1's A, B or Down then. Seconds count from the first
@@ -521,24 +517,16 @@ static DWORD __stdcall XbInputGetState(HANDLE device, XInputState* state)
                 }
                 const double every = TestPad2Spec().still ? 2.0 : 0.5; // standing: one press every 2 s
                 const int step = int(t / every);
-                if (t - step * every < 0.15)
+                if (TestPad2Spec().still && TestPad2Spec().shoot)
+                    g.bAnalogButtons[XB_Y] = 0xFF; // standing and shooting: Y held
+                else if (t - step * every < 0.15)
                     g.bAnalogButtons[TestPad2Spec().shoot ? XB_Y : (step % 2) ? XB_X : XB_A] = 0xFF;
             }
         }
         if (index == 1 && g_Player2Shoot) {
-            const ULONGLONG now = GetTickCount64();
-            const bool y = g.bAnalogButtons[XB_Y] > 0x40, x = g.bAnalogButtons[XB_X] > 0x40;
-            if (x && !g_Player2XDown)
-                g_Player2AttackAt = now;
-            if (y && !g_Player2YDown) {
-                g_Player2ShotAt = now;
-                g_Player2PulseUntil = now + 120;
-            }
-            g_Player2XDown = x;
-            g_Player2YDown = y;
+            if (g.bAnalogButtons[XB_Y] > 0x40)
+                g_Player2ShotAt = GetTickCount64();
             g.bAnalogButtons[XB_Y] = 0;
-            if (now < g_Player2PulseUntil)
-                g.bAnalogButtons[XB_X] = 0xFF;
         }
     }
     if (std::memcmp(&g, &port->last, sizeof(g)) != 0) {
