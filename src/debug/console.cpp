@@ -741,10 +741,15 @@ bool Summarize(uint8_t* c, const uint8_t* player, CharacterSummary& out)
         // The AI controller's target (character +0x9FC, +0x41C).
         if (const uint8_t* brain = *reinterpret_cast<uint8_t* const*>(c + 0x9FC)) {
             if (uint8_t* target = *reinterpret_cast<uint8_t* const*>(brain + 0x41C)) {
+                // An AI's target can be stale (a character gone): named only when it is still an object (its
+                // vtable in the game's .rdata).
+                const uint32_t vtable = IsBadReadPtr(target, 4) ? 0 : *reinterpret_cast<const uint32_t*>(target);
                 if (target == player)
                     strcpy_s(out.target, "you");
-                else
+                else if (vtable >= 0x0055F660 && vtable < 0x00612BC8)
                     CopyName(out.target, sizeof(out.target), target);
+                else
+                    strcpy_s(out.target, "(gone)");
             }
         }
         return true;

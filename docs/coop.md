@@ -33,14 +33,18 @@ plug it in again and player 2 takes it again.
 
 - **The mission's companion**, where there is one: Obi-Wan beside Anakin, Anakin beside Obi-Wan.
 - **A character of their own**, placed beside player 1, where there is none: a Jedi when player 1 fights
-  for the Jedi (Obi-Wan, or a Jedi Knight beside Obi-Wan), a 501st clone trooper when player 1 fights
-  with the clones (Anakin in the Jedi Temple). `Player2=` in `settings.ini` (or `coop player2 IVader`)
+  for the Jedi (Obi-Wan, or a Jedi Knight beside Obi-Wan), a clone trooper dressed as the level's own
+  when player 1 fights with the clones (a 501st beside Anakin in the Jedi Temple). `Player2=` in `settings.ini` (or `coop player2 IVader`)
   chooses another; the debug menu's Characters tab lists the classes. Turning co-op off removes it.
 - **The bonus missions made for two players**: with one controller the game leaves its second
   character (Cin Drallig beside Serra) to the computer; co-op gives it to player 2.
 
 Player 2 gets the game's own second HUD (portrait, health and Force bars) and player 1's maximum health
-and Force.
+and Force. Player 2 never loses a limb to a saber: a clone trooper as strong as player 1 would live on
+without its arm (and blaster).
+
+**A clone trooper's attack button fires its blaster**, as the computer's clones do; the game's controls
+only gave it the rifle butt.
 
 ## Boss fights: player 2 plays the boss
 
@@ -87,6 +91,8 @@ after) the camera is the game's own and player 2 is not brought back to player 1
   computer's boss. Turn co-op off from the pause menu to let the computer play the boss, and on again.
 - **Bosses are not changed for players:** a boss keeps the health and moves the story gives it.
 - **The pause menu's Cooperative Mod entry** is also there in Versus, where its settings do nothing.
+- **A clone trooper player 2 shoots on every attack**, even up close (no rifle butt), and aims the way
+  the computer's clones do.
 - **Some settings are only in `settings.ini`** for now: `Input`, `Player2` and `StorySafety`.
 - **Missions not tested from start to end in co-op**: the first mission has been; others may have
   moments like the above.

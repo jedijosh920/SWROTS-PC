@@ -14,6 +14,7 @@
 #include <list>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "core/log.h"
@@ -1325,7 +1326,9 @@ int ClearTargetsOn(const std::vector<uint8_t*>& removed, const std::vector<uint8
 }
 
 // Other characters' own pointers to characters about to be removed (an opponent, an aim), and their AI
-// objects', set to none, by the rules a live change moves them by (OtherCharacterHolding).
+// objects', set to none, by the rules a live change moves them by (OtherCharacterHolding). Not inside the
+// removed characters' own parts (the objects they point to: e.g. their weapons' manager, whose owner its
+// removal still reads; 0x14DD85): one lying just after another character looked like that character's.
 int ClearReferencesTo(const std::vector<uint8_t*>& removed)
 {
     std::vector<std::pair<uintptr_t, size_t>> regions = kernel::GameMemoryRegions();
@@ -1333,6 +1336,18 @@ int ClearReferencesTo(const std::vector<uint8_t*>& removed)
     g_ScanRegions = &regions;
     std::unordered_map<uintptr_t, bool> readable;
     g_ReadablePages = &readable;
+    const std::vector<uint8_t*> characters = LevelCharacters();
+    std::unordered_set<uintptr_t> parts;
+    for (const uint8_t* object : removed)
+        for (uintptr_t o = 0; o < 0x1200; o += 4) {
+            const uintptr_t p = *reinterpret_cast<const uint32_t*>(object + o);
+            if (p < 0x10000 || !InScanRegions(p, 4))
+                continue;
+            const bool inCharacter = std::any_of(characters.begin(), characters.end(),
+                [&](const uint8_t* c) { return p >= uintptr_t(c) && p < uintptr_t(c) + 0x1200; });
+            if (!inCharacter)
+                parts.insert(p);
+        }
     std::vector<uintptr_t> candidates(1 << 14);
     int cleared = 0;
     for (uint8_t* object : removed) {
@@ -1348,6 +1363,11 @@ int ClearReferencesTo(const std::vector<uint8_t*>& removed)
                     continue;
                 const uint8_t* other = reinterpret_cast<const uint8_t*>(holder);
                 if (std::find(removed.begin(), removed.end(), other) != removed.end())
+                    continue;
+                bool ownPart = false;
+                for (uintptr_t at = a & ~uintptr_t(3); at > holder && !ownPart; at -= 4)
+                    ownPart = parts.count(at) != 0;
+                if (ownPart)
                     continue;
                 *reinterpret_cast<uint32_t*>(a) = 0;
                 ++cleared;

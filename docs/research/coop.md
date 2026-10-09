@@ -210,6 +210,22 @@ copy of the On/Off vtable with draw (shows the setting), events (back goes strai
 and apply (writes settings.ini) replaced. The pause screen gets a row "Cooperative Mod" copied from its
 Settings row (a `Navigation` row) under Quit Mission, its target `pause_coop`.
 
+## Player 2 as a clone trooper
+
+A clone's moves are its script class's sequences (GScript_Vader\CloneTrooper.cpp; script vtable
+0x5E53D0, one object for all clones), thiscall with two stack arguments; the character they run for is
+the current script context (`[0x6964C0]`), which is the character's script (+0x434) +0x1C. Under player
+controls the attack button plays the rifle butt (0x356B80, `ctroop_atk_riflebutt`); the AI shoots with
+CloneBlastAttack (0x3562B0, `ctroop_atk_shooting_loop`, the bolts fired by its animation events). The port
+sends player 2's rifle butt to CloneBlastAttack.
+
+A saber cut is the dismemberment manager's (TDismembermentManager); it tells the character's script
+(0x2DB950, stdcall (character, kind, value, part)), and the clone's callback (CloneTrooper_Callbacks.h,
+0x35AB80) hides the arm, marks it lost (the script instance's +0x32C / +0x32D: no more shooting) and plays
+`Dismember_RightArm`. A clone dies of the hit as a rule; player 2 (player 1's health) lived on armless, so
+player 2's characters are not told. Its texture set and costume come from the level's own clones
+(the temple: costume hordeTrooper, set _var01, the 501st).
+
 ## Still open
 
 - Story scripts that move a companion outside cutscenes (doors, "wait for Obi-Wan" moments).

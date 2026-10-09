@@ -1009,6 +1009,76 @@ void GameOver()
 
 } // namespace
 
+// --- Player 2's clone trooper shoots ---
+// A clone's moves are its script class's sequences (CloneTrooper.cpp, script vtable 0x5E53D0), thiscall on
+// the script object with two stack arguments. Under player controls the attack button plays the rifle butt
+// (0x356B80); the AI shoots with CloneBlastAttack (0x3562B0), which player 2's clone plays instead.
+constexpr uint32_t kRifleButt = 0x00356B80;
+constexpr uint8_t kRifleButtBytes[] = { 0x56, 0x68, 0x60, 0xFB, 0x55, 0x00 }; // push esi; push 0x55FB60
+constexpr uint32_t kBlastAttack = 0x003562B0;
+constexpr uint8_t kBlastAttackBytes[] = { 0x56, 0x8B, 0x35, 0xC0, 0x64, 0x69, 0x00 }; // push esi; mov esi, [0x6964C0]
+uint8_t* g_RifleButtStub = nullptr;
+
+// The sequence runs for the character whose script instance is the current context ([0x6964C0]: a
+// character's +0x434 holds its script, whose +0x1C is that instance).
+constexpr uint32_t kScriptContext = 0x006964C0;
+constexpr uint32_t kCharacterScript = 0x434;
+constexpr uint32_t kScriptInstance = 0x1C;
+
+bool __fastcall RifleButtIsPlayer2(uint8_t*)
+{
+    if (!g_State.playing || !g_State.p2 || g_State.boss)
+        return false;
+    const uint8_t* context = *reinterpret_cast<uint8_t**>(uintptr_t(kScriptContext));
+    const uint8_t* script = Field<uint8_t*>(g_State.p2, kCharacterScript);
+    if (!context || !script || *reinterpret_cast<uint8_t* const*>(script + kScriptInstance) != context)
+        return false;
+    static uint8_t* noted = nullptr;
+    if (noted != g_State.p2) {
+        noted = g_State.p2;
+        LOG_INFO("Co-op: player 2's clone fires its blaster (the AI's attack) instead of the rifle butt");
+    }
+    return true;
+}
+
+__declspec(naked) void RifleButtHook()
+{
+    __asm {
+        push ecx
+        call RifleButtIsPlayer2
+        pop ecx
+        test al, al
+        jz original
+        mov eax, kBlastAttack
+        jmp eax
+    original:
+        jmp [g_RifleButtStub]
+    }
+}
+
+// --- Player 2 keeps their limbs ---
+// A saber cut takes a limb (TDismembermentManager): the manager tells the character's script
+// (0x2DB950, stdcall (character, kind, value, part)), whose callback hides the limb and, for a clone,
+// takes away its blaster (the arm is gone). A clone dies of the hit as a rule; player 2, as strong as
+// player 1, lived on armless. Player 2's characters are not told.
+constexpr uint32_t kDismemberNotify = 0x002DB950;
+constexpr uint8_t kDismemberNotifyBytes[] = { 0x8B, 0x0D, 0x98, 0x32, 0x7F, 0x00 }; // mov ecx, [0x7F3298]
+using DismemberNotifyFn = void(__stdcall*)(uint8_t*, uint32_t, uint32_t, void*);
+DismemberNotifyFn g_OriginalDismemberNotify = nullptr;
+
+void __stdcall DismemberNotifyHook(uint8_t* character, uint32_t kind, uint32_t value, void* part)
+{
+    if (character && character == g_State.p2 && g_State.playing && !g_State.boss) {
+        static uint8_t* noted = nullptr;
+        if (noted != character) {
+            noted = character;
+            LOG_INFO("Co-op: player 2 keeps a limb a hit would have cut off");
+        }
+        return;
+    }
+    g_OriginalDismemberNotify(character, kind, value, part);
+}
+
 void InstallCoop()
 {
     g_State = State{};
@@ -1039,6 +1109,21 @@ void InstallCoop()
     // The pause screen's Cooperative Mod entry and its screen.
     InstallCoopMenus();
     PatchJump(kInstantKill, reinterpret_cast<const void*>(&InstantKillHook));
+    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kRifleButt)), kRifleButtBytes, sizeof(kRifleButtBytes)) == 0 &&
+        std::memcmp(reinterpret_cast<const void*>(uintptr_t(kBlastAttack)), kBlastAttackBytes, sizeof(kBlastAttackBytes)) == 0) {
+        static uint8_t* rifleButtStub = trampoline(kRifleButt, kRifleButtBytes, sizeof(kRifleButtBytes));
+        g_RifleButtStub = rifleButtStub;
+        PatchJump(kRifleButt, reinterpret_cast<const void*>(&RifleButtHook));
+    } else {
+        LOG_WARN("Co-op: unexpected code at the clone trooper's attacks; player 2's clone uses its rifle butt");
+    }
+    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kDismemberNotify)), kDismemberNotifyBytes, sizeof(kDismemberNotifyBytes)) == 0) {
+        static uint8_t* dismemberStub = trampoline(kDismemberNotify, kDismemberNotifyBytes, sizeof(kDismemberNotifyBytes));
+        g_OriginalDismemberNotify = reinterpret_cast<DismemberNotifyFn>(dismemberStub);
+        PatchJump(kDismemberNotify, reinterpret_cast<const void*>(&DismemberNotifyHook));
+    } else {
+        LOG_WARN("Co-op: unexpected code at the dismemberment notice; player 2 can lose limbs");
+    }
     SetCameraAdjuster(&SharedCamera);
 }
 

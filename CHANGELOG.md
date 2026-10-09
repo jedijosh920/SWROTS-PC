@@ -25,6 +25,12 @@ Two-player co-op in the story missions.
 
 ### Fixed
 
+- **The game restarted in a new window** when a mission ended right as a movie began (after the Mace
+  Windu and Mustafar duels): returning to the menu could not stop the movie player, and the game restarted
+  its process instead.
+- **`despawn` in the debug console could crash the game** a moment later: clearing what pointed at the
+  removed characters also cleared their own weapons' link back to them.
+
 - **Log lines with folder names in other alphabets** (Cyrillic, for example) came out empty.
 
 ## [v0.3.1](https://github.com/jedijosh920/SWROTS-PC/releases/tag/v0.3.1) - 2026-10-05
