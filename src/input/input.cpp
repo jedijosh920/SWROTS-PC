@@ -162,13 +162,14 @@ void SetCoopInput(bool active)
 
 // Test switch SWROTS_TEST_PAD2=<seconds>[:run]: a scripted controller on port 1 (player 2), from that many
 // seconds on: its stick circles and it attacks, or with ":run" it runs straight ahead; with ":shoot" its
-// attacks are heavy attacks (Y: a clone trooper's shot in co-op).
+// attacks are heavy attacks (Y: a clone trooper's shot in co-op); with ":still" it stands and presses a
+// button every 2 s.
 // ":until<seconds>" unplugs it then, ":start<seconds>" presses player 1's Start then (pause), ":pick<seconds>"
 // presses player 1's Up then A (in the pause menu: the entry above the first); ":a<seconds>", ":b<seconds>",
 // ":down<seconds>" (any number of them) press player 1's A, B or Down then. Seconds count from the first
 // input read.
 struct TestPad2Script {
-    bool on = false, run = false, shoot = false;
+    bool on = false, run = false, shoot = false, still = false;
     double start = 0, until = 0, pause = -1, pick = -1;
     std::vector<std::pair<double, int>> presses; // (seconds, 0 A / 1 B / 2 Down)
     ULONGLONG origin = 0;
@@ -185,6 +186,7 @@ static const TestPad2Script& TestPad2Spec()
         s.start = atof(v);
         s.run = std::strstr(v, ":run") != nullptr;
         s.shoot = std::strstr(v, ":shoot") != nullptr;
+        s.still = std::strstr(v, ":still") != nullptr;
         if (const char* until = std::strstr(v, ":until"))
             s.until = atof(until + 6);
         if (const char* pause = std::strstr(v, ":start"))
@@ -513,10 +515,13 @@ static DWORD __stdcall XbInputGetState(HANDLE device, XInputState* state)
             if (t >= 0 && TestPad2Spec().run) {
                 g.sThumbLY = 30000;
             } else if (t >= 0) {
-                g.sThumbLX = SHORT(-std::cos(t * 0.9) * 30000.0);
-                g.sThumbLY = SHORT(std::sin(t * 0.9) * 30000.0);
-                const int step = int(t / 0.5);
-                if (t - step * 0.5 < 0.15)
+                if (!TestPad2Spec().still) {
+                    g.sThumbLX = SHORT(-std::cos(t * 0.9) * 30000.0);
+                    g.sThumbLY = SHORT(std::sin(t * 0.9) * 30000.0);
+                }
+                const double every = TestPad2Spec().still ? 2.0 : 0.5; // standing: one press every 2 s
+                const int step = int(t / every);
+                if (t - step * every < 0.15)
                     g.bAnalogButtons[TestPad2Spec().shoot ? XB_Y : (step % 2) ? XB_X : XB_A] = 0xFF;
             }
         }

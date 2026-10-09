@@ -75,7 +75,7 @@ round and the face buttons, triggers and white and black buttons pressed in turn
 for testing what only happens while the player moves and fights; `<seconds>:run` only holds the stick
 forward), `SWROTS_TEST_PAD2=<seconds>` (a second controller playing by itself from that many seconds
 after the start, for co-op tests; `<seconds>:run` only holds its stick forward, `:until<seconds>` unplugs it
-then, e.g. `9:until30`; `:shoot` makes its attacks heavy attacks; `:start<s>` presses player 1's Start then, `:pick<s>` Up then A (the pause entry above the first), `:a<s>`, `:b<s>` and `:down<s>` press A, B or Down
+then, e.g. `9:until30`; `:shoot` makes its attacks heavy attacks, `:still` makes it stand and press every 2 s; `:start<s>` presses player 1's Start then, `:pick<s>` Up then A (the pause entry above the first), `:a<s>`, `:b<s>` and `:down<s>` press A, B or Down
 then, to walk the menus), `SWROTS_COMMANDS="<seconds>:<command>;..."` (runs debug console
 commands that many seconds after the start, e.g. `"9:player IVader;12:spawn ICloneTrooper enemy;15:despawn"`;
 `screenshot <name>` among them saves what the game shows then to `screenshots\<name>.png`),
