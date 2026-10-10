@@ -29,6 +29,10 @@ Two-player co-op in the story missions.
     the rifle butt), and player 2 never loses a limb to a saber.
   - **Friendly fire** (`FriendlyFire=1`): the players' blows hurt each other; they stay allies.
   - Versus and the bonus missions made for two players are unchanged.
+- **Music modding** (by [@anakinfan8](https://github.com/anakinfan8), [#27](https://github.com/jedijosh920/SWROTS-PC/pull/27)):
+  a [guide](https://github.com/jedijosh920/SWROTS-PC/blob/main/docs/modding/replacing-music.md) to
+  replacing the game's music through `mods\`, and `tools/audio/hwx.py` to convert tracks to WAV and back,
+  fitted to a track's length.
 - **A hang watchdog**: if the game stops responding for 20 seconds, the log says where it is stuck, and a
   game caught in its own error handler is named once instead of filling the log.
 

@@ -203,7 +203,8 @@ The game itself is not included and is not distributed by this project; you must
 
 - [@chatgipity](https://github.com/chatgipity): the [Linux and handheld guide](docs/linux.md).
 - [@anakinfan8](https://github.com/anakinfan8): testing on a Mac that found the crashes after restarts
-  ([#2](../../issues/2), [#3](../../issues/3)), and [weapon modding](docs/modding/replacing-weapons.md): the
-  guide, the weapon mesh layout and the tools in `tools/weapons/`.
+  ([#2](../../issues/2), [#3](../../issues/3)), [weapon modding](docs/modding/replacing-weapons.md) (the
+  guide, the weapon mesh layout and the tools in `tools/weapons/`) and
+  [music modding](docs/modding/replacing-music.md) (the guide and `tools/audio/hwx.py`).
 - [@QTG128](https://github.com/QTG128): the first bug report, which found the missing sound at startup
   ([#1](../../issues/1)).

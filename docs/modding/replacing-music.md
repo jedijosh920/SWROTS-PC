@@ -30,7 +30,7 @@ Many tracks are shared between levels, so replacing one changes it everywhere it
 |---|---|---|---|
 | `mus_ui_mainmenu_lp` | 32179 | 1:18.3 | the main menu |
 | `mus_m14_dotforch_lp` | 32000 | 1:26.9 | both final duels (start and last rounds), versus Separatist Throne Room 1 |
-| `mus_ingamebattle28_lp` | 32000 | 1:59.2 | Obi-Wan's duel (`m14_mus_theduelobi`) only |
+| `mus_ingamebattle28_lp` | 32000 | 1:59.2 | Obi-Wan's duel (`m14_mus_theduelobi`), the only story level; also the Mustafar versus arenas and bonus missions |
 | `mus_ingamebattle17_lp` | 32095 | 1:45.7 | Anakin's duel (`m15`), Mustafar assassination (`m12b`) |
 | `mus_ingamebattle21_lp` | 32000 | 1:57.9 | Obi-Wan's duel, Palpatine's office (`m08`), `m12b` |
 | `mus_ingamebattle24_lp` | 32034 | 1:36.8 | Anakin's duel, Order 66 (`m11a`), versus Throne Room 2 |
@@ -109,4 +109,8 @@ files. Share the edit, for example the cut points, and these steps. Post them in
 - **Only same-length names can be swapped** in a level file, and only two tracks are used by no level:
   `mus_ingamebattle02_lp` and `mus_m02b_hallwaybattle01_lp`. A level's cues that name the same track can't
   be given different music: in the duels, the start and the last rounds both play `mus_m14_dotforch_lp`.
+- **An edited level file can crash the game.** In our tests (v0.3.1 and v0.4.0, starting straight into
+  the level with `map:` in `mods\Default_Xbox.cfg`), the game crashed as it loaded a level file from
+  `mods\levels\`, even an unchanged dumped one. Replacing tracks by name, as above, works in every level.
+  Giving a level its own track (repointing) needs this to be fixed or better understood.
 - Music in the pre-rendered movies is part of the video.
