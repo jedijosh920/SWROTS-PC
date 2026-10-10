@@ -108,6 +108,8 @@ after) the camera is the game's own and player 2 is not brought back to player 1
 ## Known issues
 
 - **Health pickups** are player 1's: player 2 cannot pick them up.
+- **Player 2 has no Force powers or saber throw** yet: their Force bar fills, but the powers do nothing.
+  Saber combat, blocking and jumping work.
 - **A scripted moment can wait for the companion** to do something only the computer does (walk to a
   spot, open a door). Turn co-op off from the pause menu, let the moment play, and turn it on again.
 - **The camera** can end up behind a wall in tight places. Behind the menu, the paused game is sometimes

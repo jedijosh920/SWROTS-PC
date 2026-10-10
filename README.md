@@ -116,8 +116,9 @@ and controller layouts: [controls](docs/controls.md).
 - Outside co-op the keyboard and the first controller are both player 1, so Versus and the bonus
   missions made for two need two controllers. In co-op one controller is enough: the keyboard is then
   player 1.
-- Co-op has known issues of its own (health pickups are player 1's, scripted moments that wait for the
-  computer's companion): see the [co-op guide](docs/coop.md#known-issues).
+- Co-op has known issues of its own (player 2 has no Force powers or saber throw yet, health pickups are
+  player 1's, scripted moments that wait for the computer's companion): see the
+  [co-op guide](docs/coop.md#known-issues).
 - Controllers other than Xbox (XInput) and PlayStation ones need Steam Input or a similar translator.
 - PlayStation controllers are read directly: with DS4Windows (or Steam Input) running, one controller can
   show up as two players. Close it while playing, or let it hide the real controller (HidHide).
