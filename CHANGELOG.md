@@ -34,6 +34,9 @@ Two-player co-op in the story missions.
 
 ### Fixed
 
+- **Dialogue in the movies played in the left ear only** (and their low bass in the right): the movies'
+  surround sound comes as three stereo streams, and the centre one, which carries the voices, went to the
+  left speaker. Each channel now goes where the game sends it.
 - **The game restarted in a new window** when a mission ended right as a movie began (after the Mace
   Windu and Mustafar duels): returning to the menu could not stop the movie player, and the game
   restarted its process instead.

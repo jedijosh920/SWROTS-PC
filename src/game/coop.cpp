@@ -131,6 +131,7 @@ struct State {
     uint8_t* p2 = nullptr;         // the character player 2 plays (or would)
     uint32_t p2Id = 0;
     bool spawned = false;          // co-op spawned it
+    ULONGLONG pendingSince = 0;    // co-op spawned it then and it is not alive yet (the level still loading)
     std::string p2Class;
     std::string costume, skin;     // its costume and texture set (numbers): a new one wears them too
     bool playing = false;          // registered as player 2
@@ -797,16 +798,34 @@ uint8_t* FindCompanion(uint8_t* player)
     return best;
 }
 
-// Player 1 is on the Sith side when the level's clone troopers are their allies (Anakin in the Jedi Temple);
-// on the Jedi side the clones, if any, are their enemies (Order 66 on Utapau). The level's clone when they
-// are allies (player 2 dresses as it), else null.
-uint8_t* SithSideClone(uint8_t* player)
+// Player 1's side, from the level's characters: the Sith side when clone troopers are their allies or Jedi
+// their enemies (Anakin in the Jedi Temple), the Jedi side when clones or droids are their enemies (Order 66
+// on Utapau, the Separatist ships). Unknown while the level has loaded neither yet (it can still be
+// streaming in a moment after the start). `clone`: an allied clone to dress player 2 as, if any.
+enum class Side { Unknown, Jedi, Sith };
+
+Side PlayerSide(uint8_t* player, uint8_t*& clone)
 {
-    for (uint8_t* c : LevelCharacters())
-        if (c != player && c != g_State.p2 && Alive(c) && _strnicmp(TypeName(c), "IClone", 6) == 0)
-            return TargetsPlayer(c) ? nullptr : c;
-    return nullptr;
+    clone = nullptr;
+    Side side = Side::Unknown;
+    for (uint8_t* c : LevelCharacters()) {
+        if (c == player || c == g_State.p2 || !Alive(c))
+            continue;
+        const char* type = TypeName(c);
+        const bool isClone = _strnicmp(type, "IClone", 6) == 0;
+        if (isClone && !TargetsPlayer(c)) {
+            clone = c;
+            return Side::Sith;
+        }
+        if (isClone || (TargetsPlayer(c) && strstr(type, "Droid")))
+            side = Side::Jedi;
+        else if (TargetsPlayer(c) && IsJedi(c) && side == Side::Unknown)
+            side = Side::Sith;
+    }
+    return side;
 }
+constexpr ULONGLONG kSideWaitMs = 10000; // how long co-op waits to see the level's characters
+constexpr ULONGLONG kSpawnReadyMs = 5000; // how long a new character may take to come alive
 
 // A character for player 2 where the mission has no companion: the chosen one ([Coop] Player2), else one
 // for player 1's side: a 501st clone trooper beside a Sith, else Obi-Wan (or, beside Obi-Wan, a Jedi Knight).
@@ -833,9 +852,18 @@ SpawnChoice ChooseSpawn(uint8_t* player)
             return { "ICloneTrooper", "hordeTrooper", "_var01" };
         return { _stricmp(TypeName(player), "IObiwan") == 0 ? "IJediKnight" : "IObiwan", "", "" };
     }
-    if (uint8_t* clone = SithSideClone(player)) // dressed as the level's own (the temple's 501st)
+    uint8_t* clone = nullptr;
+    Side side = PlayerSide(player, clone);
+    if (side == Side::Unknown) {
+        if (GetTickCount64() - g_State.levelSeen < kSideWaitMs)
+            return {}; // not yet: the level's characters are still loading
+        side = _strnicmp(TypeName(player), "IVader", 6) == 0 ? Side::Sith : Side::Jedi;
+    }
+    if (clone) // dressed as the level's own (the temple's 501st)
         return { TypeName(clone), std::to_string(Field<int>(clone, kCharacterCostume)),
             std::to_string(Field<int>(clone, kCharacterSkin)) };
+    if (side == Side::Sith)
+        return { "ICloneTrooper", "hordeTrooper", "_var01" };
     return { _stricmp(TypeName(player), "IObiwan") == 0 ? "IJediKnight" : "IObiwan", "", "" };
 }
 
@@ -847,6 +875,10 @@ bool PickCharacter(uint8_t* player)
         g_State.spawned = false;
     } else {
         const SpawnChoice choice = ChooseSpawn(player);
+        if (choice.className.empty()) {
+            g_State.reason = "waiting for the level's characters (to choose player 2's side)";
+            return false;
+        }
         std::string error;
         if (!SpawnCharacter(choice.className.c_str(), choice.costume, choice.skin, "", SpawnSide::Ally, error) || !LastSpawnedObject()) {
             if (error != g_State.spawnError)
@@ -1417,7 +1449,28 @@ void CoopFrame()
         Register();
         return;
     }
-    if (!Alive(g_State.p2)) {
+    if (g_State.pendingSince) {
+        // A character co-op spawned while the level was still loading comes alive a moment later: player 2
+        // takes it then. One that does not is removed and another is made (never a second one beside it).
+        if (g_State.p2 && Alive(g_State.p2)) {
+            g_State.pendingSince = 0;
+            if (g_State.respawnAt)
+                Respawn(player);
+        } else if (g_State.p2 && now - g_State.pendingSince < kSpawnReadyMs) {
+            g_State.reason = "player 2's character is being made";
+            return;
+        } else {
+            if (g_State.p2)
+                RemoveSpawnedCharacter(g_State.p2);
+            LOG_INFO("Co-op: the character spawned for player 2 did not come alive; another is made");
+            g_State.p2 = nullptr;
+            g_State.spawned = false;
+            g_State.p2Class.clear();
+            g_State.pendingSince = 0;
+            g_State.respawnAt = now + 1000;
+            return;
+        }
+    } else if (!Alive(g_State.p2)) {
         // Every second at most while no character can be had.
         static ULONGLONG lastTry = 0;
         if (now - lastTry < 1000)
@@ -1425,6 +1478,11 @@ void CoopFrame()
         lastTry = now;
         if (!PickCharacter(player))
             return;
+        if (g_State.spawned && !Alive(g_State.p2)) {
+            g_State.pendingSince = now;
+            g_State.reason = "player 2's character is being made";
+            return;
+        }
         if (g_State.respawnAt && g_State.spawned)
             Respawn(player);
     }

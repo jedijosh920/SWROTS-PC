@@ -51,7 +51,8 @@ Force powers as player 1 has them on a controller. A clone trooper player 2 has 
 - **A character of their own**, placed beside player 1, where there is none: a Jedi when player 1 fights
   for the Jedi (Obi-Wan, or a Jedi Knight beside Obi-Wan), a clone trooper dressed as the level's own
   when player 1 fights with the clones (a 501st beside Anakin in the Jedi Temple). Never a character the
-  story would not put there. `Player2=` in `settings.ini` (or `coop player2 IVader`) chooses another; the
+  story would not put there. While a level is still loading, player 2 joins a few seconds later, once its
+  characters show which side player 1 is on. `Player2=` in `settings.ini` (or `coop player2 IVader`) chooses another; the
   debug menu's Characters tab lists the classes. Turning co-op off removes it.
 - **The bonus missions made for two players**: with one controller the game leaves its second
   character (Cin Drallig beside Serra) to the computer; co-op gives it to player 2.
@@ -120,6 +121,8 @@ after) the camera is the game's own and player 2 is not brought back to player 1
   blaster sounds (the log says so). In the Jedi Temple, with the level's own clones, it is heard.
 - **A clone trooper player 2's shots go to the enemy it is fighting**, as the computer's clones' do, not
   where it faces.
+- **Changing your character live from the debug menu** (`player ...`) while co-op is on can, rarely,
+  crash the game. Turn co-op off before changing character, and on again after.
 - **Some settings are only in `settings.ini`** for now: `Input`, `Player2` and `StorySafety`.
 - **Not every mission has been played from start to end in co-op**: the first mission, the Jedi Temple
   and the boss fights have been; others may have moments like the above.

@@ -371,9 +371,30 @@ struct Voice : IXAudio2VoiceCallback {
 
         DWORD ch = Channels();
         float matrix[16] = {};
+        const bool positioned = (flags & DSBCAPS_CTRL3D) && params3d.dwMode != DS3DMODE_DISABLE;
         if (ch == 1) {
             matrix[0] = left;
             matrix[1] = right;
+        } else if (!positioned && mixBins.size() >= ch) {
+            // As on the Xbox, a multichannel sound's channel n goes to the n-th mix bin: the movies play their
+            // 5.1 audio as three stereo streams (front left and right, back left and right, centre and LFE),
+            // and the centre (the dialogue) is not a left channel. Down to stereo: centre at -3 dB to both
+            // sides, LFE at half to both, back channels to their side.
+            for (DWORD c = 0; c < ch && c < 8; ++c) {
+                const float g = DbToGain(mixBins[c].lVolume);
+                float l = 0, r = 0;
+                switch (mixBins[c].dwMixBin) {
+                case 0: l = g; break;                       // front left
+                case 1: r = g; break;                       // front right
+                case 2: l = r = g * 0.7071f; break;         // centre
+                case 3: l = r = g * 0.5f; break;            // LFE
+                case 4: l = g; break;                       // back left
+                case 5: r = g; break;                       // back right
+                default: l = (c % 2 == 0) ? g : 0.0f; r = (c % 2 == 1) ? g : 0.0f; break;
+                }
+                matrix[c * 2 + 0] = l;
+                matrix[c * 2 + 1] = r;
+            }
         } else {
             for (DWORD c = 0; c < ch && c < 8; ++c) {
                 // Even source channels feed the left speaker, odd ones the right.

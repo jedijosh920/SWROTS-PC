@@ -119,6 +119,8 @@ and controller layouts: [controls](docs/controls.md).
 - Co-op has known issues of its own (health pickups are player 1's, scripted moments that wait for the
   computer's companion): see the [co-op guide](docs/coop.md#known-issues).
 - Controllers other than Xbox (XInput) and PlayStation ones need Steam Input or a similar translator.
+- PlayStation controllers are read directly: with DS4Windows (or Steam Input) running, one controller can
+  show up as two players. Close it while playing, or let it hide the real controller (HidHide).
 - Some modding limits: animations stored in a level's memory image (most `.bnm`) cannot be replaced
   by loose files yet, and loose text resources in folders the disc also has (e.g. `gameinfo\`) fail
   to load.
