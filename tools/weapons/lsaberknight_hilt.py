@@ -16,14 +16,10 @@ Writes the replacement hilt for the knight saber (docs/modding/replacing-weapons
 lsaberknight_atlas.png.
 
 The proportions are measured from the "before vs. after (slim)" turnaround of the hilt: the same length
-as the stock asset (its real mesh is 66 vertices / 58 triangles and runs y = -6.93 .. 4.77; the new
-hilt's emitter face is at 4.77, so the blade leaves where it did), a slimmer tube, a shallower curve,
-three milled slots in the neck, seven bright fins over a dark core, the clamp box with its copper
-speaker, red button, brass pin and wire, the short fin stack, the angled guard disc and the black
-blade socket.
-
-The stock `lsaberknight` is the black-handed, funnel-emitter hilt that Serra (and Grievous) wield. It is
-the file this script replaces; Cin Drallig's `lsaberobi` is a different asset and is left untouched.
+as the original (y = -7.15 .. 4.52, so the blade leaves the emitter where it did), a slimmer tube, a
+shallower curve, three milled slots in the neck, seven bright fins over a dark core, the clamp box with
+its copper speaker, red button, brass pin and wire, the short fin stack, the angled guard disc and the
+black blade socket.
 
 Coordinates are the game's: the hilt's axis is +y, the blade leaves the top, the curve bends towards +z.
 Angles go round the axis: 0 = +x, 90 = +z.
@@ -383,7 +379,7 @@ def build():
     # pommel: knurled cap, small nose, collar
     revolve(m, 0.00, [(0.00, 0.30), (0.030, 0.32), (0.075, 0.34), (0.10, 0.40),
                       (0.135, 0.46), (0.150, 0.47), (0.175, 0.64), (0.205, 0.65), (0.96, 0.65),
-                      (1.00, 0.62), (1.045, 0.56)], "knurl", n=48)
+                      (1.00, 0.62), (1.045, 0.56)], "knurl", n=20)
     flat_disc(m, 0.0, 0.30, "cap", n=24, up=-1)
     revolve(m, 1.055, [(0.0, 0.55), (0.0, 0.52), (0.02, 0.52)], "steel", n=40)
 
@@ -398,7 +394,7 @@ def build():
         plate.append(m.v((x_face, yy, zc + zz), np.array([-1.0, 0.0, 0.0]), rect("dark", 0.35, 0.35)))
     m.quad(plate[0], plate[1], plate[2], plate[3])
     # black band
-    tube(m, 1.055, 1.30, 0.535, 0.545, "black", n=40, steps=3)
+    tube(m, 1.055, 1.30, 0.535, 0.545, "black", n=16, steps=3)
 
     # neck: chrome, tapering, with milled slots
     def groove(s, th):
@@ -412,20 +408,20 @@ def build():
             return rect("slot", 0.5, 0.5)
         return rect("chrome", j / NECK_N, 0.5 + 0.5 * (s - 1.3) / 3.86)
 
-    NECK_STEPS, NECK_N = 68, 88
+    NECK_STEPS, NECK_N = 16, 22
     tube(m, 1.30, 5.16, 0.560, 0.520, "chrome", n=NECK_N, steps=NECK_STEPS, bump=groove, uv=neck_uv)
 
     # step ring into the fins
-    revolve(m, 5.16, [(0.0, 0.505), (0.0, 0.545), (0.04, 0.545), (0.05, 0.49)], "steel", n=40)
+    revolve(m, 5.16, [(0.0, 0.505), (0.0, 0.545), (0.04, 0.545), (0.05, 0.49)], "steel", n=16)
 
     # fin stack: dark core with seven bright fins
-    tube(m, 5.21, 7.20, 0.470, 0.470, "dark", n=40, steps=6)
+    tube(m, 5.21, 7.20, 0.470, 0.470, "dark", n=16, steps=6)
     for i in range(7):
         sf = 5.36 + i * 0.278
-        revolve(m, sf, [(-0.038, 0.470), (-0.038, 0.552), (0.038, 0.552), (0.038, 0.470)], "chrome", n=44)
+        revolve(m, sf, [(-0.038, 0.470), (-0.038, 0.552), (0.038, 0.552), (0.038, 0.470)], "chrome", n=14)
 
     # clamp body under the box
-    tube(m, 7.20, 8.50, 0.490, 0.490, "dark", n=40, steps=6)
+    tube(m, 7.20, 8.50, 0.490, 0.490, "dark", n=16, steps=6)
 
     # the clamp block on the -z side
     box(m, 7.18, 8.18, -0.33, 0.33, 0.20, 0.845, "satin", side=SIDE)
@@ -433,31 +429,31 @@ def build():
     s_btn, s_pin = 7.44, 7.84
     t, n, x = frame(s_btn)
     c = np.array([0.0, cl(s_btn)[0], cl(s_btn)[1]])
-    cylinder(m, c + n * SIDE * 0.842, n * SIDE, t, 0.10, 0.0, 0.085, "red", n=20)
+    cylinder(m, c + n * SIDE * 0.842, n * SIDE, t, 0.10, 0.0, 0.085, "red", n=12)
     t2, n2, x2 = frame(s_pin)
     c2 = np.array([0.0, cl(s_pin)[0], cl(s_pin)[1]])
-    cylinder(m, c2 + n2 * SIDE * 0.842, n2 * SIDE, t2, 0.08, 0.0, 0.07, "brass", n=18)
+    cylinder(m, c2 + n2 * SIDE * 0.842, n2 * SIDE, t2, 0.08, 0.0, 0.07, "brass", n=10)
 
     # copper speaker mesh on the +x face
     sm = 7.68
     t3, n3, x3 = frame(sm)
     c3 = np.array([0.0, cl(sm)[0], cl(sm)[1]])
     c3 = c3 + n3 * SIDE * 0.58 - x3 * 0.325
-    cylinder(m, c3, -x3, t3, 0.235, 0.0, 0.055, "mesh", n=30)
+    cylinder(m, c3, -x3, t3, 0.235, 0.0, 0.055, "mesh", n=16)
 
     # terminals and wire
     base = c3 - n3 * SIDE * 0.20 - x3 * 0.02
     p0 = base + t3 * -0.26
     p1 = base + t3 * 0.28
-    cylinder(m, p0, -x3, t3, 0.06, 0.0, 0.10, "mesh", n=14)
-    cylinder(m, p1, -x3, t3, 0.06, 0.0, 0.10, "mesh", n=14)
-    wire(m, p0 - x3 * 0.10, p1 - x3 * 0.10, n3 * -SIDE * 0.14, 0.018, "red", n=20, m_seg=6)
+    cylinder(m, p0, -x3, t3, 0.06, 0.0, 0.10, "mesh", n=10)
+    cylinder(m, p1, -x3, t3, 0.06, 0.0, 0.10, "mesh", n=10)
+    wire(m, p0 - x3 * 0.10, p1 - x3 * 0.10, n3 * -SIDE * 0.14, 0.018, "red", n=12, m_seg=6)
 
     # short dark fin stack behind the clamp
-    tube(m, 8.50, 8.96, 0.505, 0.505, "dark", n=40, steps=4)
+    tube(m, 8.50, 8.96, 0.505, 0.505, "dark", n=16, steps=4)
     for i in range(5):
         sf = 8.55 + i * 0.093
-        revolve(m, sf, [(-0.015, 0.505), (-0.015, 0.535), (0.015, 0.535), (0.015, 0.505)], "steel", n=36)
+        revolve(m, sf, [(-0.015, 0.505), (-0.015, 0.535), (0.015, 0.535), (0.015, 0.505)], "steel", n=12)
 
     # angled shroud: a plate whose faces are slightly conical
     s_sh = 9.00
@@ -490,20 +486,20 @@ def build():
 
     # emitter: chrome barrel, flare, bright step, black socket
     revolve(m, 8.96, [(0.00, 0.505), (0.05, 0.525), (1.30, 0.55), (1.38, 0.59), (1.60, 0.715),
-                      (1.68, 0.715), (1.71, 0.62), (1.72, 0.515)], "chrome", n=48)
-    revolve(m, 10.68, [(0.0, 0.515), (0.04, 0.53), (0.06, 0.53), (0.08, 0.515)], "chrome", n=40)
+                      (1.68, 0.715), (1.71, 0.62), (1.72, 0.515)], "chrome", n=22)
+    revolve(m, 10.68, [(0.0, 0.515), (0.04, 0.53), (0.06, 0.53), (0.08, 0.515)], "chrome", n=16)
     revolve(m, 10.76, [(0.0, 0.515), (LENGTH - 10.76 - 0.17, 0.515), (LENGTH - 10.76 - 0.13, 0.53),
-                       (LENGTH - 10.76 - 0.11, 0.53), (LENGTH - 10.76, 0.49)], "tip", n=48)
+                       (LENGTH - 10.76 - 0.11, 0.53), (LENGTH - 10.76, 0.49)], "tip", n=22)
     # socket opening and its inner wall
-    disc(m, LENGTH, 0.45, 0.255, "tip", n=36, up=1)
-    revolve(m, LENGTH - 0.22, [(0.0, 0.255), (0.22, 0.255)], "slot", n=36)
+    disc(m, LENGTH, 0.45, 0.255, "tip", n=16, up=1)
+    revolve(m, LENGTH - 0.22, [(0.0, 0.255), (0.22, 0.255)], "slot", n=16)
 
     # D-ring at the pommel, hanging below the end
     t, n, x = frame(0.0)
     c0 = np.array([0.0, cl(0.0)[0], cl(0.0)[1]])
     ring_c = c0 - t * 0.10 + n * 0.47
-    torus(m, ring_c, np.array([1.0, 0.0, 0.0]), 0.40, 0.045, "chrome", n=48, m_seg=10)
-    cylinder(m, c0 + n * 0.12, n, t, 0.085, 0.0, 0.20, "steel", n=14)
+    torus(m, ring_c, np.array([1.0, 0.0, 0.0]), 0.40, 0.045, "chrome", n=18, m_seg=6)
+    cylinder(m, c0 + n * 0.12, n, t, 0.085, 0.0, 0.20, "steel", n=12)
 
     return m
 
