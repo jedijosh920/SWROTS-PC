@@ -1450,6 +1450,63 @@ SDK_PASSTHROUGH("DSOUND_sub_5274C4"); // file media object destructor
 SDK_PASSTHROUGH("WMADEC_sub_53CC0D"); // WMA decoder media object factory
 SDK_PASSTHROUGH("WMADEC_sub_540E34");
 
+// --- The port's own sounds (PlayPortSound) ---------------------------------------------------------------------------
+struct PortSound {
+    IXAudio2SourceVoice* voice = nullptr;
+    std::vector<int16_t> samples; // the voice's buffer, kept while it plays
+};
+static std::vector<std::unique_ptr<PortSound>> g_PortSounds;
+
+static void DropPortSounds(bool all)
+{
+    for (auto it = g_PortSounds.begin(); it != g_PortSounds.end();) {
+        XAUDIO2_VOICE_STATE state{};
+        (*it)->voice->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
+        if (all || state.BuffersQueued == 0) {
+            (*it)->voice->DestroyVoice(); // (waits for the audio thread: the buffer is free after it)
+            it = g_PortSounds.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+bool PlayPortSound(std::vector<int16_t> samples, unsigned channels, unsigned sampleRate, float volume)
+{
+    std::lock_guard<std::recursive_mutex> lock(g_Lock);
+    if (!EnsureEngine() || g_AudioFailed || samples.empty() || channels < 1 || channels > 2 || !sampleRate)
+        return false;
+    DropPortSounds(false);
+    WAVEFORMATEX wf{};
+    wf.wFormatTag = WAVE_FORMAT_PCM;
+    wf.nChannels = WORD(channels);
+    wf.nSamplesPerSec = sampleRate;
+    wf.wBitsPerSample = 16;
+    wf.nBlockAlign = WORD(channels * 2);
+    wf.nAvgBytesPerSec = sampleRate * wf.nBlockAlign;
+    auto sound = std::make_unique<PortSound>();
+    sound->samples = std::move(samples);
+    if (FAILED(g_XAudio->CreateSourceVoice(&sound->voice, &wf)))
+        return false;
+    XAUDIO2_BUFFER buffer{};
+    buffer.AudioBytes = UINT32(sound->samples.size() * sizeof(int16_t));
+    buffer.pAudioData = reinterpret_cast<const BYTE*>(sound->samples.data());
+    buffer.Flags = XAUDIO2_END_OF_STREAM;
+    sound->voice->SetVolume(volume);
+    if (FAILED(sound->voice->SubmitSourceBuffer(&buffer)) || FAILED(sound->voice->Start())) {
+        sound->voice->DestroyVoice();
+        return false;
+    }
+    g_PortSounds.push_back(std::move(sound));
+    return true;
+}
+
+void StopPortSounds()
+{
+    std::lock_guard<std::recursive_mutex> lock(g_Lock);
+    DropPortSounds(true);
+}
+
 void Silence()
 {
     std::lock_guard<std::recursive_mutex> lock(g_Lock);
@@ -1462,6 +1519,7 @@ void ResetForReboot()
     std::lock_guard<std::recursive_mutex> lock(g_Lock);
     if (g_XAudio)
         g_XAudio->StopEngine();
+    DropPortSounds(true);
     const size_t voices = g_Voices.size();
     for (Voice* v : g_Voices)
         delete v; // destroys its XAudio2 voice

@@ -68,7 +68,7 @@ obi_handle=OBI-WAN|We'll handle this.
 qg_mindful=2.5          ; how long the line shows (optional: from its length)
 
 [Voice]
-qg_mindful=qg_mindful.wav   ; its voice file in the mission's folder (reserved: voices are not played yet)
+qg_mindful=qg_mindful.wav   ; its voice: a WAV in the mission's folder (16-bit PCM)
 ```
 
 `say("qg_mindful")` shows the line as a subtitle (the speaker's name above it) and waits until it is over. Dialogue is
@@ -205,11 +205,23 @@ Heights are from the floor; `look` is the height on the character the camera loo
 | `hud(on)` | the game's own HUD (health, Force) shown or hidden |
 | `skipping()` | true while a cutscene is being skipped |
 
+### Sound
+
+| Function | |
+|---|---|
+| `sound(file [, volume])` | plays a WAV of the mission's folder (16-bit PCM, mono or stereo) over the game's sound; returns its length in seconds |
+| `stop_sounds()` | stops the mission's sounds |
+| `music_volume(f)` | the music at `f` times the player's own music volume (0 silent, 1 as set), e.g. under a dramatic moment; put back at the mission's end |
+
+A line of `lines.ini` with a `[Voice]` file plays it when shown (`say`, `line`), and lasts as long as the voice
+unless `[Seconds]` says otherwise.
+
 ### The game
 
 | Function | |
 |---|---|
 | `set_var(name, value)` | sets a game variable, as the console's `set` (e.g. `set_var("timeScale", 0.5)` for slow motion) |
+| `get_var(name)` | a game variable's value (text), or nil |
 | `command(text)` | runs a debug console command |
 
 The script has Lua's base functions, `string`, `table`, `math` and `coroutine`; no files, no loading of other code.

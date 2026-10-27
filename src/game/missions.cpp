@@ -21,6 +21,7 @@
 
 #include "lua.hpp"
 
+#include "audio/audio.h"
 #include "core/log.h"
 #include "core/patch.h"
 #include "debug/console.h"
@@ -210,6 +211,7 @@ struct Marker {
     float x = 0, z = 0; // the map's coordinates
 };
 std::vector<Marker> g_Markers;
+float g_PlayersMusicVolume = -1; // volumemusic before music_volume() changed it (put back at the end); -1: unchanged
 std::string g_MusicServed; // the disc's music file the mission's own track is served for
 std::vector<Handle> g_Handles; // index 0 unused
 bool g_Woken = false;
@@ -1019,6 +1021,71 @@ int L_subtitle(lua_State* L)
     return 1;
 }
 
+// A sound file of the mission's folder played (a WAV: 16-bit PCM, mono or stereo); its length in seconds, 0 when it
+// cannot be played.
+double PlayMissionSound(const std::string& file, float volume)
+{
+    std::vector<uint8_t> data;
+    if (FILE* f = _wfopen((g_Folder + L"\\" + std::wstring(file.begin(), file.end())).c_str(), L"rb")) {
+        uint8_t buffer[65536];
+        size_t n;
+        while ((n = fread(buffer, 1, sizeof buffer, f)) > 0)
+            data.insert(data.end(), buffer, buffer + n);
+        fclose(f);
+    }
+    if (data.size() < 12 || std::memcmp(data.data(), "RIFF", 4) != 0 || std::memcmp(data.data() + 8, "WAVE", 4) != 0) {
+        LOG_WARN("Mission: sound %s: not a WAV file in the mission's folder", file.c_str());
+        return 0;
+    }
+    uint16_t format = 0, channels = 0, bits = 0;
+    uint32_t rate = 0;
+    const uint8_t* pcm = nullptr;
+    uint32_t pcmBytes = 0;
+    for (size_t at = 12; at + 8 <= data.size();) {
+        uint32_t size;
+        std::memcpy(&size, data.data() + at + 4, 4);
+        const size_t body = at + 8;
+        if (body + size > data.size())
+            size = uint32_t(data.size() - body);
+        if (std::memcmp(data.data() + at, "fmt ", 4) == 0 && size >= 16) {
+            std::memcpy(&format, data.data() + body, 2);
+            std::memcpy(&channels, data.data() + body + 2, 2);
+            std::memcpy(&rate, data.data() + body + 4, 4);
+            std::memcpy(&bits, data.data() + body + 14, 2);
+        } else if (std::memcmp(data.data() + at, "data", 4) == 0) {
+            pcm = data.data() + body;
+            pcmBytes = size;
+        }
+        at = body + size + (size & 1);
+    }
+    if (format != 1 || bits != 16 || (channels != 1 && channels != 2) || !rate || !pcm) {
+        LOG_WARN("Mission: sound %s: only 16-bit PCM WAV, mono or stereo", file.c_str());
+        return 0;
+    }
+    std::vector<int16_t> samples(pcmBytes / 2);
+    std::memcpy(samples.data(), pcm, samples.size() * 2);
+    const double seconds = double(samples.size()) / channels / rate;
+    if (!audio::PlayPortSound(std::move(samples), channels, rate, volume)) {
+        LOG_WARN("Mission: sound %s could not be played (no audio)", file.c_str());
+        return 0;
+    }
+    LOG_INFO("Mission: sound %s (%.1f s)", file.c_str(), seconds);
+    return seconds;
+}
+
+// sound(file [, volume]): a WAV of the mission's folder played (stingers, effects); returns its length (seconds)
+int L_sound(lua_State* L)
+{
+    lua_pushnumber(L, PlayMissionSound(luaL_checkstring(L, 1), float(luaL_optnumber(L, 2, 1.0))));
+    return 1;
+}
+
+int L_stop_sounds(lua_State*)
+{
+    audio::StopPortSounds();
+    return 0;
+}
+
 // line(id): a line of lines.ini shown (its voice played once voices are supported); returns its length
 int L_line(lua_State* L)
 {
@@ -1032,7 +1099,12 @@ int L_line(lua_State* L)
     const Line& line = it->second;
     g_Hud.speaker = line.speaker;
     g_Hud.line = line.text;
-    const double seconds = line.seconds > 0 ? line.seconds : LineSeconds(line.text);
+    double seconds = line.seconds > 0 ? line.seconds : LineSeconds(line.text);
+    if (!line.voice.empty()) { // its voice: the line lasts as long as it (at least)
+        const double voice = PlayMissionSound(line.voice, 1.0f);
+        if (voice > 0 && line.seconds <= 0)
+            seconds = voice + 0.3;
+    }
     g_LineUntil = Now() + seconds;
     LOG_INFO("Mission: %s: %s", line.speaker.c_str(), line.text.c_str());
     lua_pushnumber(L, seconds);
@@ -1107,6 +1179,30 @@ int L_set_var(lua_State* L)
     return 1;
 }
 
+int L_get_var(lua_State* L)
+{
+    std::string value;
+    if (debug::ReadGameVariable(luaL_checkstring(L, 1), value))
+        lua_pushstring(L, value.c_str());
+    else
+        lua_pushnil(L);
+    return 1;
+}
+
+// music_volume(f): the music at f times the player's own music volume (the game variable volumemusic; 1: as set)
+int L_music_volume(lua_State* L)
+{
+    if (g_PlayersMusicVolume < 0) {
+        std::string value;
+        g_PlayersMusicVolume = debug::ReadGameVariable("volumemusic", value) ? std::strtof(value.c_str(), nullptr) : 1.0f;
+    }
+    const float f = std::clamp(float(luaL_checknumber(L, 1)), 0.0f, 1.0f);
+    char text[32];
+    std::snprintf(text, sizeof text, "%.3f", g_PlayersMusicVolume * f);
+    debug::WriteGameVariable("volumemusic", text);
+    return 0;
+}
+
 int L_command(lua_State* L)
 {
     debug::QueueConsoleCommand(luaL_checkstring(L, 1));
@@ -1150,6 +1246,11 @@ void End(bool ok, const std::string& detail)
     g_Hud.ending = ok ? "MISSION COMPLETE" : "MISSION FAILED";
     g_Hud.endingDetail = detail;
     Hold(true); // everyone stops for the end
+    if (g_PlayersMusicVolume >= 0) { // the player's own music volume back
+        char text[32];
+        std::snprintf(text, sizeof text, "%.3f", g_PlayersMusicVolume);
+        debug::WriteGameVariable("volumemusic", text);
+    }
     LOG_INFO("Mission: %s%s%s", g_Hud.ending.c_str(), detail.empty() ? "" : ": ", detail.c_str());
 }
 
@@ -1222,6 +1323,8 @@ void Register(lua_State* L)
         { "distance", L_distance }, { "place", L_place }, { "face", L_face }, { "side", L_side }, { "ai", L_ai },
         { "attack", L_attack }, { "hold", L_hold }, { "play", L_play }, { "moves", L_moves }, { "saber", L_saber }, { "kill", L_kill },
         { "go", L_go }, { "going", L_going }, { "marker", L_marker },
+        { "sound", L_sound }, { "stop_sounds", L_stop_sounds }, { "get_var", L_get_var },
+        { "music_volume", L_music_volume },
         { "class_of", L_class_of }, { "set_player", L_set_player },
         { "camera_fixed", L_camera_fixed }, { "camera_orbit", L_camera_orbit }, { "camera_move", L_camera_move },
         { "camera_track", L_camera_track }, { "camera_game", L_camera_game },
@@ -1412,6 +1515,7 @@ void InstallMissions(const std::wstring& mods)
 {
     CloseScript();
     g_SabersAway.clear();
+    g_PlayersMusicVolume = -1;
     if (!g_MusicServed.empty()) // the last start's own track: the disc's again
         kernel::SetDiscFileOverride(g_MusicServed, L"");
     g_MusicServed.clear();
