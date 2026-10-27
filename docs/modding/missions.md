@@ -41,6 +41,15 @@ master=ICinDrallig, -150 -300 0, ally
 maul=IMaul, 0 300 180, enemy
 ```
 
+The objectives are the game's own (the HUD's "NEW OBJECTIVE:", the pause screen's Objectives), named in
+`[Objectives]` as `name=text` (at most 49):
+
+```ini
+[Objectives]
+maul=Defeat Darth Maul
+survive=Survive the waves
+```
+
 Places characters can be sent to (see `walk` below) are named in `[Markers]`, as `name=x z`:
 
 ```ini
@@ -89,7 +98,7 @@ function main()
     wait(4)
     say("qg_mindful")
   end)
-  objective("Defeat Darth Maul")
+  objective("maul")
   wait_until(function() return not alive(maul) end)
   complete("The Sith is defeated")
 end
@@ -100,7 +109,7 @@ with `fail()` when the player falls:
 
 ```lua
 function main()
-  objective("Survive")
+  objective("survive")
   timer("TIME")                                   -- counts up
   for wave = 1, 10 do
     counter("WAVE", wave)
@@ -135,7 +144,7 @@ level is safe to use: functions on it do nothing, `alive()` and `exists()` are f
 | `paused()` | true while the game is paused |
 | `complete([text])` | the mission is complete: the end shows, then the main menu |
 | `fail([text])` | the mission is failed: the end shows, then the mission starts again |
-| `on_player_defeated()` | define it to decide what the player's defeat does (default: `fail("You were defeated")`); the player is kept standing with 1 health while it runs |
+| `on_player_defeated()` | define it to decide what the player's defeat does (it runs once, the player kept standing with 1 health); without it the player's defeat is the game's own (its Game Over screen: Restart or Quit) |
 | `log(text)` | writes to the game's log (`logs\swrots.log`), for testing |
 
 ### Characters
@@ -162,6 +171,7 @@ level is safe to use: functions on it do nothing, `alive()` and `exists()` are f
 | `marker(name)` | a marker's x, z |
 | `hold(on)` | everyone holds still and the player's controls are held (as in cutscenes) |
 | `kill(c)` | defeats it at once |
+| `boss(c)` | it is the mission's boss, as a story duel's: its health bar with its portrait on the HUD (the game's player 2); `boss(nil)`: none |
 | `set_player(c)` | the player becomes that character where it stands (its class and health); the character itself leaves, and the character the player was stays where it stood, on the player's side: returns true and that character (e.g. `local _, master = set_player(padawan)`) |
 | `class_of(c)` | its class's name |
 
@@ -196,7 +206,8 @@ Heights are from the floor; `look` is the height on the character the camera loo
 | `say(id)` | a line of `lines.ini`, waiting until it is over |
 | `speak(speaker, text [, seconds])` | a line written in the script, waiting until it is over |
 | `subtitle(speaker, text [, seconds])` / `line(id)` | the same without waiting (they return the line's length) |
-| `objective(text)` | the objective, top left (empty: none) |
+| `objective(name)` | an objective of `[Objectives]` becomes the new one: the game's own "NEW OBJECTIVE:" and the pause screen's Objectives list |
+| `objective_done(name)` | it is completed |
 | `title(text [, smaller, seconds])` | a big title in the middle |
 | `notice(text [, seconds])` | a notice, upper middle |
 | `timer(label [, seconds])` | a timer at the top: counting down from `seconds`, or up |

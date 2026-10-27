@@ -1070,6 +1070,23 @@ bool BuildDevMapLevel(std::vector<uint8_t>& level, std::string& report, const De
             keptObjects.push_back(std::move(o));
         }
         say(", %zu characters placed", layout->characters.size());
+        for (const DevMapObject& placed : layout->objects) {
+            Object o;
+            o.cls = placed.className;
+            Writer id, name, transform;
+            id.U32(placed.id);
+            name.String(placed.className + "_dev" + std::to_string(placed.id - kDevMapFirstId));
+            const float c = std::cos(placed.yaw), s = std::sin(placed.yaw);
+            const float m[12] = { c, 0, -s, 0, 1, 0, s, 0, c, placed.x, float(kFloorY + placed.y), placed.z };
+            transform.Raw(m, sizeof m);
+            o.props = { { "ID", id.out }, { "Name", name.out }, { "Transform", transform.out } };
+            for (const auto& [key, bytes] : placed.properties)
+                o.props.push_back({ key, bytes });
+            o.tail.assign(8, 0);
+            keptObjects.push_back(std::move(o));
+        }
+        if (!layout->objects.empty())
+            say(", %zu objects placed", layout->objects.size());
     }
     Writer section;
     section.U32(kLevelVersion);

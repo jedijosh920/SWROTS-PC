@@ -25,6 +25,15 @@ struct DevMapCharacter {
     float x, z, yaw;
     std::string costume;   // its costume ("Mesh Choice", e.g. "hordeBattleDroid": the battle droid's first has no body)
 };
+// Any other object of the game placed in the level: its class, id, place (y from the floor) and its own properties
+// beside ID, Name and Transform (name, the property's bytes as the level file holds them), e.g. a mission's
+// objective (ITriggerObjective, "ID string").
+struct DevMapObject {
+    std::string className;
+    uint32_t id;
+    float x, y, z, yaw;
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> properties;
+};
 // A box of collision (a box brush): its centre (y from the floor), half extents and turn about the up axis.
 struct DevMapBox {
     float cx, cy, cz, hx, hy, hz, yaw;
@@ -59,6 +68,7 @@ struct DevMapLayout {
     // one each, with ids from kDevMapFirstMarkerId on; arrived within `markerReach`.
     std::vector<std::pair<float, float>> markers;
     float markerReach = 175.0f;
+    std::vector<DevMapObject> objects;
 };
 // The ids of the objects the dev map adds for a duel.
 constexpr uint32_t kDevMapDuelId = 0x00300100;

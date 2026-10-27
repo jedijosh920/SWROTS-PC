@@ -33,6 +33,7 @@
 #include "game/freecam.h"
 #include "game/game.h"
 #include "game/hvv.h"
+#include "game/menus.h"
 #include "input/controls.h"
 #include "kernel/kernel.h"
 
@@ -54,6 +55,15 @@ constexpr uint32_t kPlace = 0x1F4;               // object vfunc, thiscall (cons
 constexpr uint32_t kInstantKillSlot = 0xC8;      // ICharacter vfunc, thiscall (0): an instant kill
 constexpr uintptr_t kPlaySequence = 0x150E30;    // ICharacter, thiscall (sequence, 0, 0, 0, speed)
 constexpr uint32_t kObjectById = 0x000A31F0;     // cdecl (id): a level object by its id
+// Objectives ([Objectives]): the game's own triggers, placed in the level
+constexpr uint32_t kObjectiveFirstId = kDevMapFirstId + 0x200;
+constexpr uint32_t kTriggerObjectiveVtable = 0x0058BD10;
+constexpr uint32_t kTriggerFire = 0xA4; // a trigger object's vfunc: it fires
+// The game manager's players (docs/research/coop.md): their number and an instance id per slot; a story duel's
+// boss is its player 2 (its health bar on the HUD)
+constexpr uint32_t kGameManager = 0x007EB964;
+constexpr uint32_t kManagerPlayerCount = 0x1E4;
+constexpr uint32_t kManagerPlayerIds = 0x2A4;
 // Walking: the game's own goto (as Battlefront's AI uses it) to the level's goto markers (ICharacterGoto)
 constexpr uintptr_t kCharacterGoto = 0x00151400;  // ICharacter, thiscall (marker, may fight on the way)
 constexpr uintptr_t kExecutingGoto = 0x001513E0;  // ICharacter, thiscall (marker): still on its way
@@ -211,6 +221,7 @@ struct Marker {
     float x = 0, z = 0; // the map's coordinates
 };
 std::vector<Marker> g_Markers;
+std::vector<std::string> g_Objectives; // [Objectives]' names, in order (ids kObjectiveFirstId on)
 float g_PlayersMusicVolume = -1; // volumemusic before music_volume() changed it (put back at the end); -1: unchanged
 std::string g_MusicServed; // the disc's music file the mission's own track is served for
 std::vector<Handle> g_Handles; // index 0 unused
@@ -710,6 +721,24 @@ int L_marker(lua_State* L)
     return 0;
 }
 
+// boss(c): the character is the mission's boss, as the story duels' (Dooku, Grievous): the game manager's player 2
+// slot (its health bar on the HUD); boss(nil): none.
+int L_boss(lua_State* L)
+{
+    uint8_t* manager = *reinterpret_cast<uint8_t**>(uintptr_t(kGameManager));
+    uint8_t* c = lua_isnoneornil(L, 1) ? nullptr : CheckCharacter(L, 1);
+    if (!manager)
+        return 0;
+    if (c) {
+        At<uint32_t>(manager, kManagerPlayerIds + 4) = At<uint32_t>(c, 4);
+        At<int>(manager, kManagerPlayerCount) = 2;
+    } else {
+        At<uint32_t>(manager, kManagerPlayerIds + 4) = 0;
+        At<int>(manager, kManagerPlayerCount) = 1;
+    }
+    return 0;
+}
+
 int L_kill(lua_State* L)
 {
     if (uint8_t* c = CheckCharacter(L, 1)) {
@@ -981,12 +1010,44 @@ int L_fade(lua_State* L, double to)
 int L_fade_out(lua_State* L) { return L_fade(L, 1.0); }
 int L_fade_in(lua_State* L) { return L_fade(L, 0.0); }
 
+// The game's own objectives (ITriggerObjective, placed in the level for mission.ini's [Objectives], their texts the
+// port's own ids): a trigger's first firing (vfunc +0xA4, 0x13FBD0) makes its objective the new one (the HUD's
+// "NEW OBJECTIVE:", the pause screen's list), its second completes it.
+uint8_t* ObjectiveObject(const char* name)
+{
+    for (size_t k = 0; k < g_Objectives.size(); ++k)
+        if (_stricmp(g_Objectives[k].c_str(), name) == 0) {
+            uint8_t* o = reinterpret_cast<uint8_t*(__cdecl*)(uint32_t)>(uintptr_t(kObjectById))(kObjectiveFirstId + uint32_t(k));
+            if (o && At<uint32_t>(o, 0) != kTriggerObjectiveVtable)
+                LOG_WARN("Mission: objective %s: object 0x%X is a %s", name, kObjectiveFirstId + uint32_t(k), VirtualTypeName(o));
+            else if (!o)
+                LOG_WARN("Mission: objective %s: no object 0x%X in the level", name, kObjectiveFirstId + uint32_t(k));
+            return o && At<uint32_t>(o, 0) == kTriggerObjectiveVtable ? o : nullptr;
+        }
+    return nullptr;
+}
+
+// objective(name): [Objectives]' objective becomes the new one; objective_done(name): it is completed
 int L_objective(lua_State* L)
 {
-    g_Hud.objective = luaL_optstring(L, 1, "");
-    g_ObjectiveAt = Now();
-    if (!g_Hud.objective.empty())
-        LOG_INFO("Mission: objective: %s", g_Hud.objective.c_str());
+    const char* name = luaL_checkstring(L, 1);
+    uint8_t* o = ObjectiveObject(name);
+    if (!o) {
+        LOG_WARN("Mission: objective: no objective %s in [Objectives]", name);
+        return 0;
+    }
+    Virtual<void(__fastcall*)(uint8_t*, void*)>(o, kTriggerFire)(o, nullptr);
+    LOG_INFO("Mission: objective: %s", name);
+    return 0;
+}
+
+int L_objective_done(lua_State* L)
+{
+    const char* name = luaL_checkstring(L, 1);
+    if (uint8_t* o = ObjectiveObject(name)) {
+        Virtual<void(__fastcall*)(uint8_t*, void*)>(o, kTriggerFire)(o, nullptr);
+        LOG_INFO("Mission: objective done: %s", name);
+    }
     return 0;
 }
 
@@ -1321,7 +1382,7 @@ void Register(lua_State* L)
         { "alive", L_alive }, { "exists", L_exists }, { "health", L_health }, { "set_health", L_set_health },
         { "max_health", L_max_health }, { "invincible", L_invincible }, { "position", L_position },
         { "distance", L_distance }, { "place", L_place }, { "face", L_face }, { "side", L_side }, { "ai", L_ai },
-        { "attack", L_attack }, { "hold", L_hold }, { "play", L_play }, { "moves", L_moves }, { "saber", L_saber }, { "kill", L_kill },
+        { "attack", L_attack }, { "hold", L_hold }, { "play", L_play }, { "moves", L_moves }, { "saber", L_saber }, { "kill", L_kill }, { "boss", L_boss }, { "objective_done", L_objective_done },
         { "go", L_go }, { "going", L_going }, { "marker", L_marker },
         { "sound", L_sound }, { "stop_sounds", L_stop_sounds }, { "get_var", L_get_var },
         { "music_volume", L_music_volume },
@@ -1421,15 +1482,21 @@ void RunThreads()
 // die (that would end the level with its own Game Over).
 bool PlayerFatal(uint8_t* character)
 {
+    // The player's defeat is the game's own (its death, then its Game Over screen: Restart or Quit), unless the
+    // script takes it (on_player_defeated: the player stays up with a little health and the script goes on).
     if (!g_Active || !g_Woken || character != PlayerObject())
         return false;
-    At<float>(character, kCharacterHealth) = 1;
-    if (g_EndAt > 0)
+    if (g_EndAt > 0) {
+        At<float>(character, kCharacterHealth) = 1;
         return true;
-    if (!g_PlayerDefeatedHandled && g_Lua) {
-        g_PlayerDefeatedHandled = true;
+    }
+    if (g_PlayerDefeatedHandled)
+        return false;
+    if (g_Lua) {
         lua_getglobal(g_Lua, "on_player_defeated");
         if (lua_isfunction(g_Lua, -1)) {
+            g_PlayerDefeatedHandled = true;
+            At<float>(character, kCharacterHealth) = 1;
             lua_State* co = lua_newthread(g_Lua);
             lua_insert(g_Lua, -2);
             lua_xmove(g_Lua, co, 1);
@@ -1438,9 +1505,8 @@ bool PlayerFatal(uint8_t* character)
         }
         lua_pop(g_Lua, 1);
     }
-    At<uint8_t>(character, kCharacterInvincible) = 1;
-    End(false, "You were defeated");
-    return true;
+    LOG_INFO("Mission: the player fell (the game's own Game Over)");
+    return false;
 }
 
 double Towards(double from, double to, double start, double length)
@@ -1637,6 +1703,30 @@ void InstallMissions(const std::wstring& mods)
         ToWorld(p[0], p[1], wx, wz);
         g_Markers.push_back({ name, p[0], p[1] });
         layout.markers.push_back({ wx, wz });
+    }
+    // objectives: name=text, each the game's own objective trigger with a text id of the port's own
+    g_Objectives.clear();
+    for (const std::string& name : Keys(ini, L"Objectives")) {
+        const std::string text = Profile(ini, L"Objectives", std::wstring(name.begin(), name.end()).c_str(), L"");
+        // the objective manager takes a level's objectives from the string table at the level's start:
+        // IDS_OBJECTIVES_<level>_00.._99 (0x13FF40; the dev map's level is Grievous Survival's), from 51 on here
+        char textId[64];
+        std::snprintf(textId, sizeof textId, "IDS_OBJECTIVES_U107_UTA_GrievousSurvival_%02zu", 51 + g_Objectives.size());
+        SetMenuText(textId, std::wstring(text.begin(), text.end()));
+        DevMapObject o;
+        o.className = "ITriggerObjective";
+        o.id = kObjectiveFirstId + uint32_t(g_Objectives.size());
+        o.x = layout.startX;
+        o.z = layout.startZ;
+        o.y = 100;
+        o.yaw = 0;
+        std::vector<uint8_t> idString;
+        const uint32_t n = uint32_t(strlen(textId));
+        idString.insert(idString.end(), reinterpret_cast<const uint8_t*>(&n), reinterpret_cast<const uint8_t*>(&n) + 4);
+        idString.insert(idString.end(), textId, textId + n);
+        o.properties.push_back({ "ID string", idString });
+        layout.objects.push_back(o);
+        g_Objectives.push_back(name);
     }
     SetDevMapLayout(layout);
     SetPlayerClass(nullptr);
