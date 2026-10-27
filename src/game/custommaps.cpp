@@ -334,7 +334,8 @@ void ApplyCustomMap(const CustomMap& map, DevMapLayout& layout)
     std::copy(std::begin(map.characterAmbient), std::end(map.characterAmbient), layout.characterAmbient);
     layout.lightScale = map.lightScale;
     layout.bakedLight = map.bakedLight;
-    layout.music = map.music;
+    if (layout.music.empty()) // (a mission's own music comes first)
+        layout.music = map.music;
     layout.boxes.clear();
     for (const DevMapBox& b : map.boxes) {
         DevMapBox w = b;

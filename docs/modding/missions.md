@@ -32,6 +32,8 @@ Description=Obi-Wan and a Jedi Master against Darth Maul
 Map=                             ; a custom map's id (mods\maps\<id>); empty or left out: the developer map's floor
 Player=IObiwan                   ; the player's character (a class: the game's or a custom character's)
 PlayerAt=0 -300 0                ; where the player starts: x z (the map's coordinates) and the heading (degrees)
+Music=mus_ingamebattle28_lp      ; its music (optional): one of the game's music slots; mus_<slot>.hwx in the
+                                 ; mission's folder plays in its place (see replacing-music.md); else the map's
 
 [Cast]
 ; name=Class, x z heading, side[, costume]

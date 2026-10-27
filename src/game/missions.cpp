@@ -210,6 +210,7 @@ struct Marker {
     float x = 0, z = 0; // the map's coordinates
 };
 std::vector<Marker> g_Markers;
+std::string g_MusicServed; // the disc's music file the mission's own track is served for
 std::vector<Handle> g_Handles; // index 0 unused
 bool g_Woken = false;
 uint64_t g_InLevelAt = 0;
@@ -1388,6 +1389,9 @@ void InstallMissions(const std::wstring& mods)
 {
     CloseScript();
     g_SabersAway.clear();
+    if (!g_MusicServed.empty()) // the last start's own track: the disc's again
+        kernel::SetDiscFileOverride(g_MusicServed, L"");
+    g_MusicServed.clear();
     g_Mods = mods;
     g_Active = false;
     g_Info = nullptr;
@@ -1480,6 +1484,18 @@ void InstallMissions(const std::wstring& mods)
         ToWorld(m.x, m.z, wx, wz);
         layout.characters.push_back({ m.className, m.placedId, wx, wz, m.yaw + MapYaw(), m.costume });
         g_Cast.push_back(m);
+    }
+    // its music: Music=<a slot of the game's sound table>, the game's own track, or <slot>.hwx in the mission's folder
+    // (in the slot's format, as a custom map's) played in its place for this start
+    layout.music = Profile(ini, L"Mission", L"Music");
+    for (char& ch : layout.music)
+        ch = char(std::tolower(static_cast<unsigned char>(ch)));
+    if (!layout.music.empty()) {
+        const std::wstring track = g_Folder + L"\\" + std::wstring(layout.music.begin(), layout.music.end()) + L".hwx";
+        if (GetFileAttributesW(track.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            g_MusicServed = "\\audio\\xbox\\" + layout.music + ".hwx";
+            kernel::SetDiscFileOverride(g_MusicServed, track);
+        }
     }
     // the places characters can be sent to: the level's goto markers, one each (reached closer than Battlefront's posts)
     g_Markers.clear();
