@@ -50,6 +50,14 @@ maul=Defeat Darth Maul
 survive=Survive the waves
 ```
 
+Tips are the game's own too (its tip box, shown after an objective's banner), in `[Tips]` as `name=text`, with
+`| seconds` for how long it shows (default 6):
+
+```ini
+[Tips]
+block=Hold the block button to deflect Maul's attacks | 6
+```
+
 Places characters can be sent to (see `walk` below) are named in `[Markers]`, as `name=x z`:
 
 ```ini
@@ -201,7 +209,8 @@ Heights are from the floor; `look` is the height on the character the camera loo
 | Function | |
 |---|---|
 | `cutscene(fn)` | runs `fn` as a cutscene: bars, the game's HUD hidden, everyone held; the player skips it with A or Start (its `wait`s and `say`s then end at once; `wait_until` does not) |
-| `letterbox(on)` | the cutscene bars on their own |
+| `letterbox(on [, seconds])` | the game's own cutscene bars slide in or out (0.5 s); while they are in, the game counts it a cutscene (its HUD hidden) |
+| `tip(name)` | a tip of `[Tips]` shows |
 | `fade_out(seconds)` / `fade_in(seconds)` | to black and back |
 | `say(id)` | a line of `lines.ini`, waiting until it is over |
 | `speak(speaker, text [, seconds])` | a line written in the script, waiting until it is over |

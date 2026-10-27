@@ -59,6 +59,9 @@ constexpr uint32_t kObjectById = 0x000A31F0;     // cdecl (id): a level object b
 constexpr uint32_t kObjectiveFirstId = kDevMapFirstId + 0x200;
 constexpr uint32_t kTriggerObjectiveVtable = 0x0058BD10;
 constexpr uint32_t kTriggerFire = 0xA4; // a trigger object's vfunc: it fires
+// Tips ([Tips]): the game's own (IVaderTip, its text a string table id), placed in the level
+constexpr uint32_t kTipFirstId = kDevMapFirstId + 0x280;
+constexpr uint32_t kVaderTipVtable = 0x005CBBA0;
 // The game manager's players (docs/research/coop.md): their number and an instance id per slot; a story duel's
 // boss is its player 2 (its health bar on the HUD)
 constexpr uint32_t kGameManager = 0x007EB964;
@@ -222,6 +225,7 @@ struct Marker {
 };
 std::vector<Marker> g_Markers;
 std::vector<std::string> g_Objectives; // [Objectives]' names, in order (ids kObjectiveFirstId on)
+std::vector<std::string> g_Tips;       // [Tips]' names, in order (ids kTipFirstId on)
 float g_PlayersMusicVolume = -1; // volumemusic before music_volume() changed it (put back at the end); -1: unchanged
 std::string g_MusicServed; // the disc's music file the mission's own track is served for
 std::vector<Handle> g_Handles; // index 0 unused
@@ -989,13 +993,23 @@ int L_camera_game(lua_State*)
 }
 
 // --- The screen ------------------------------------------------------------------------------------------------------
+// The game's own cutscene bars (ILetterBox, [0x69226C]; its "set", thiscall (on, seconds, size), as the game's
+// cinematics call it: 0.5 s, 0.125 of the screen): they slide in and out; while they are in, the game counts it a
+// cutscene (0xA3720: its HUD hidden).
+constexpr uint32_t kLetterBox = 0x0069226C;
+constexpr uintptr_t kLetterBoxSet = 0x0012DF30;
+
+void GameLetterbox(bool on, float seconds)
+{
+    uint8_t* box = *reinterpret_cast<uint8_t**>(uintptr_t(kLetterBox));
+    if (!box || !(At<uint32_t>(box, 0xC) & 0x40000))
+        return;
+    reinterpret_cast<void(__fastcall*)(uint8_t*, void*, bool, float, float)>(kLetterBoxSet)(box, nullptr, on, seconds, 0.125f);
+}
+
 int L_letterbox(lua_State* L)
 {
-    const double now = Now();
-    const double current = g_BarsTo; // (eased toward it)
-    g_BarsFrom = current;
-    g_BarsTo = lua_toboolean(L, 1) ? 1.0 : 0.0;
-    g_BarsStart = g_Skip ? now - 1 : now;
+    GameLetterbox(lua_toboolean(L, 1) != 0, g_Skip ? 0.05f : float(luaL_optnumber(L, 2, 0.5)));
     return 0;
 }
 
@@ -1038,6 +1052,26 @@ int L_objective(lua_State* L)
     }
     Virtual<void(__fastcall*)(uint8_t*, void*)>(o, kTriggerFire)(o, nullptr);
     LOG_INFO("Mission: objective: %s", name);
+    return 0;
+}
+
+// tip(name): a tip of [Tips] shows, as the game's own tips do
+int L_tip(lua_State* L)
+{
+    const char* name = luaL_checkstring(L, 1);
+    for (size_t k = 0; k < g_Tips.size(); ++k) {
+        if (_stricmp(g_Tips[k].c_str(), name) != 0)
+            continue;
+        uint8_t* t = reinterpret_cast<uint8_t*(__cdecl*)(uint32_t)>(uintptr_t(kObjectById))(kTipFirstId + uint32_t(k));
+        if (t && At<uint32_t>(t, 0) == kVaderTipVtable) {
+            Virtual<void(__fastcall*)(uint8_t*, void*)>(t, kTriggerFire)(t, nullptr);
+            LOG_INFO("Mission: tip: %s", name);
+        } else {
+            LOG_WARN("Mission: tip %s: its object is not in the level", name);
+        }
+        return 0;
+    }
+    LOG_WARN("Mission: tip: no tip %s in [Tips]", name);
     return 0;
 }
 
@@ -1382,7 +1416,7 @@ void Register(lua_State* L)
         { "alive", L_alive }, { "exists", L_exists }, { "health", L_health }, { "set_health", L_set_health },
         { "max_health", L_max_health }, { "invincible", L_invincible }, { "position", L_position },
         { "distance", L_distance }, { "place", L_place }, { "face", L_face }, { "side", L_side }, { "ai", L_ai },
-        { "attack", L_attack }, { "hold", L_hold }, { "play", L_play }, { "moves", L_moves }, { "saber", L_saber }, { "kill", L_kill }, { "boss", L_boss }, { "objective_done", L_objective_done },
+        { "attack", L_attack }, { "hold", L_hold }, { "play", L_play }, { "moves", L_moves }, { "saber", L_saber }, { "kill", L_kill }, { "boss", L_boss }, { "objective_done", L_objective_done }, { "tip", L_tip },
         { "go", L_go }, { "going", L_going }, { "marker", L_marker },
         { "sound", L_sound }, { "stop_sounds", L_stop_sounds }, { "get_var", L_get_var },
         { "music_volume", L_music_volume },
@@ -1520,7 +1554,11 @@ void UpdateHud()
     const double now = Now();
     g_Hud.active = g_Active && g_Woken;
     g_Hud.paused = GamePaused();
-    g_Hud.letterbox = float(Towards(g_BarsFrom, g_BarsTo, g_BarsStart, 0.5));
+    // the bars are the game's own (GameLetterbox): the port's screen only notes them (nothing of its own shows under them)
+    {
+        uint8_t* box = *reinterpret_cast<uint8_t**>(uintptr_t(kLetterBox));
+        g_Hud.letterbox = box && (At<uint32_t>(box, 0xC) & 0x40000) && At<int>(box, 0x1E8) != 0 ? 1.0f : 0.0f;
+    }
     g_Hud.fade = float(Towards(g_FadeFrom, g_FadeTo, g_FadeStart, g_FadeLength));
     g_Hud.objectiveFlash = float(std::clamp(1.0 - (now - g_ObjectiveAt) / 3.0, 0.0, 1.0));
     const auto alpha = [&](double at, double until) {
@@ -1728,6 +1766,37 @@ void InstallMissions(const std::wstring& mods)
         layout.objects.push_back(o);
         g_Objectives.push_back(name);
     }
+    // tips: name=text [| seconds], each the game's own tip (IVaderTip: its text id, "Time to show tip")
+    g_Tips.clear();
+    for (const std::string& name : Keys(ini, L"Tips")) {
+        std::string text = Profile(ini, L"Tips", std::wstring(name.begin(), name.end()).c_str(), L"");
+        float seconds = 6.0f;
+        if (const size_t bar = text.find('|'); bar != std::string::npos) {
+            seconds = std::strtof(text.c_str() + bar + 1, nullptr);
+            text.erase(bar);
+            while (!text.empty() && text.back() == ' ')
+                text.pop_back();
+        }
+        char textId[48];
+        std::snprintf(textId, sizeof textId, "IDS_TIPS_PORT_%zu", g_Tips.size() + 1);
+        SetMenuText(textId, std::wstring(text.begin(), text.end()));
+        DevMapObject o;
+        o.className = "IVaderTip";
+        o.id = kTipFirstId + uint32_t(g_Tips.size());
+        o.x = layout.startX;
+        o.z = layout.startZ;
+        o.y = 100;
+        o.yaw = 0;
+        std::vector<uint8_t> idString, time(4);
+        const uint32_t n = uint32_t(strlen(textId));
+        idString.insert(idString.end(), reinterpret_cast<const uint8_t*>(&n), reinterpret_cast<const uint8_t*>(&n) + 4);
+        idString.insert(idString.end(), textId, textId + n);
+        std::memcpy(time.data(), &seconds, 4);
+        o.properties.push_back({ "Text (string table ID)", idString });
+        o.properties.push_back({ "Time to show tip", time });
+        layout.objects.push_back(o);
+        g_Tips.push_back(name);
+    }
     SetDevMapLayout(layout);
     SetPlayerClass(nullptr);
     SetPlayerClass(g_PlayerClass.c_str(), false);
@@ -1754,6 +1823,12 @@ void MissionFrame()
         if (now - g_InLevelAt < 500)
             return;
         g_Woken = true;
+        // the tips join the level (a placed object is updated and drawn once active, vfunc +0xB4)
+        for (size_t k = 0; k < g_Tips.size(); ++k) {
+            uint8_t* t = reinterpret_cast<uint8_t*(__cdecl*)(uint32_t)>(uintptr_t(kObjectById))(kTipFirstId + uint32_t(k));
+            if (t && At<uint32_t>(t, 0) == kVaderTipVtable)
+                Virtual<void(__fastcall*)(uint8_t*, void*)>(t, kActivate)(t, nullptr);
+        }
         // the cast joins the level, on its sides
         for (const CastMember& m : g_Cast) {
             uint8_t* placed = nullptr;

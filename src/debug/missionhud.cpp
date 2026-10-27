@@ -73,12 +73,8 @@ void DrawMissionHud()
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float u = std::max(0.5f, vp->Size.y / 720.0f);
     const float x0 = vp->Pos.x, y0 = vp->Pos.y, w = vp->Size.x, hgt = vp->Size.y;
-    // the cutscene's bars
-    const float bar = hgt * 0.12f * h.letterbox;
-    if (bar > 0.5f) {
-        draw->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + w, y0 + bar), IM_COL32(0, 0, 0, 255));
-        draw->AddRectFilled(ImVec2(x0, y0 + hgt - bar), ImVec2(x0 + w, y0 + hgt), IM_COL32(0, 0, 0, 255));
-    }
+    // the cutscene's bars are the game's own (its letterbox, about 12.5% of the screen): text keeps clear of them
+    const float bar = hgt * 0.125f * h.letterbox;
     // the objective (top left), outside cutscenes
     if (!h.objective.empty() && h.letterbox < 0.05f && h.ending.empty()) {
         const float y = y0 + 24 * u;
