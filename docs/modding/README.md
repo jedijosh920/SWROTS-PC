@@ -15,6 +15,8 @@ No PAK rebuilding or disc image editing is needed.
 - [Adding versus fighters](adding-versus-fighters.md): giving a character its own versus select-screen slot
 - [Custom characters](custom-characters.md): a character class of a mod's own (its body, costume, saber colour,
   name and side; another class's moves), dropped into `mods\characters\`
+- [Converting a playermodel](converting-playermodels.md): a Jedi Academy or Movie Duels player model turned into
+  a custom character's body — the skeleton targets, the conversion pipeline and the tools in `tools/characters/`
 - [Custom maps](custom-maps.md): a map of a mod's own (a model and collision boxes) on the developer map, for
   Heroes vs Villains or walking around, dropped into `mods\maps\`
 - [How loading works](how-loading-works.md): level PAKs, load order and what the port does to allow overrides
