@@ -1,11 +1,14 @@
-// Other duelists' moves for custom characters on Serra Keto's class (see revan.h).
+// Other duelists' moves for custom characters on Serra Keto's or Mace Windu's class (see revan.h).
 //
 // The game's own per-character sequence substitution (0x173AB0 cdecl (A, B), in a character's script turn: when the
 // character's script asks for A, B plays; each class's Init makes its own, e.g. Count Dooku's grapple throws instead of
-// the generic ones) gives such a character other moves while Serra keeps hers:
+// the generic ones) gives a custom character another duelist's move while its base keeps the rest of its moves:
 //   - Lightning=1: ForceStun (+0x120C), ForceStun_Alt (+0x120E) and ForceGrasp_Stun (+0x11D2), which Serra's rules
-//     offer on the stun button, become ForceLightning (+0x11F0), ForceLightning_Alt (+0x11F2) and ForceGrasp_Lightning
-//     (+0x11D0), every Jedi class's own (the lightning network is the IJedi's); its lightning enabled (inst +0x2DD).
+//     offer on the stun button, become ForceLightning (+0x11F0) and ForceLightning_Alt (+0x11F2); on Serra, her
+//     ForceGrasp_Stun (+0x11D2) also becomes ForceGrasp_Lightning (+0x11D0). Every Jedi class has these sequences
+//     (the lightning network is the IJedi's); its lightning enabled (inst +0x2DD). Mace's own rules offer ForceStun
+//     and its alternate, so the same mapping gives a Mace-based custom fighter lightning without changing his other
+//     rules or moves.
 //   - Grapples=IDooku: her grab (Serra_Grab_Attempt, +0x17C6) becomes the generic one (Grab_Attempt +0x1120, its hold
 //     Grab_GB_Human), whose throws (Grab_KD_GB_Human +0x112A, Grab_Launch_GB_Human +0x112C) become Dooku's knock-down
 //     and launch, made here as sequences of the port's (Dooku's own, 0x371840 / 0x371A00, write his script instance's
@@ -48,6 +51,10 @@ constexpr uint32_t kScriptInstance = 0x006964C0;
 constexpr uint32_t kSetup = 0x006965D8;
 constexpr uint32_t kSerraRulesCall = 0x00479228;          // call 0x479240: cdecl (instance, class object)
 constexpr uint32_t kSerraRules = 0x00479240;
+constexpr uint32_t kMaceRulesCall = 0x00424CC8;           // call 0x424CE0: cdecl (instance, class object)
+constexpr uint32_t kMaceRules = 0x00424CE0;
+constexpr uint32_t kCinRulesCall = 0x00352C78;            // call 0x352C90: cdecl (instance, class object)
+constexpr uint32_t kCinRules = 0x00352C90;
 constexpr uint32_t kSubstitute = 0x00173AB0;              // cdecl (record A, record B)
 constexpr uint32_t kRecordOf = 0x001F53E0;                // cdecl (handle) -> the class's record
 constexpr uint32_t kHeldFrames = 0x00177FF0, kPressed = 0x00178070;
@@ -126,7 +133,9 @@ bool PlaySequence(uint8_t* character, const char* name)
 
 bool Wants(const CustomCharacter& c)
 {
-    return _stricmp(c.base.c_str(), "ISerra") == 0 && (c.lightning || !c.grapples.empty() || c.forceStorm);
+    return (_stricmp(c.base.c_str(), "ISerra") == 0 && (c.lightning || !c.grapples.empty() || c.forceStorm)) ||
+        (_stricmp(c.base.c_str(), "IMace") == 0 && c.lightning) ||
+        (_stricmp(c.base.c_str(), "ICinDrallig") == 0 && c.lightning);
 }
 
 bool DookuGrapples(const CustomCharacter& c)
@@ -387,7 +396,9 @@ void RevanTurn(uint8_t* inst, uint8_t* classObject)
             if (custom->lightning) {
                 Substitute(classObject, kForceStun, At<uint16_t>(classObject, kForceLightning), "ForceStun -> ForceLightning");
                 Substitute(classObject, kForceStunAlt, At<uint16_t>(classObject, kForceLightningAlt), "ForceStun_Alt -> ForceLightning_Alt");
-                Substitute(classObject, kForceGraspStun, At<uint16_t>(classObject, kForceGraspLightning), "ForceGrasp_Stun -> ForceGrasp_Lightning");
+                if (_stricmp(custom->base.c_str(), "ISerra") == 0)
+                    Substitute(classObject, kForceGraspStun, At<uint16_t>(classObject, kForceGraspLightning),
+                        "ForceGrasp_Stun -> ForceGrasp_Lightning");
                 inst[kInstanceLightningOn] = 1;
             }
             if (DookuGrapples(*custom) && g_KDHandle && g_LaunchHandle) {
@@ -438,6 +449,24 @@ void __cdecl SerraRulesHook(uint8_t* inst, uint8_t* classObject)
     }
 }
 
+void __cdecl MaceRulesHook(uint8_t* inst, uint8_t* classObject)
+{
+    reinterpret_cast<void(__cdecl*)(uint8_t*, uint8_t*)>(uintptr_t(kMaceRules))(inst, classObject);
+    __try {
+        RevanTurn(inst, classObject);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+void __cdecl CinRulesHook(uint8_t* inst, uint8_t* classObject)
+{
+    reinterpret_cast<void(__cdecl*)(uint8_t*, uint8_t*)>(uintptr_t(kCinRules))(inst, classObject);
+    __try {
+        RevanTurn(inst, classObject);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
 // Dooku's lightning and grapple sounds for Serra's event tree: what she never plays.
 bool DookuSoundEntry(const std::string& kind, const std::string& key)
 {
@@ -466,6 +495,37 @@ void AddDookuSounds(std::vector<uint8_t>& data)
     const size_t before = data.size();
     if (AppendEventEntries(data, donor, &DookuSoundEntry))
         LOG_INFO("Revan: Serra's event tree gets Dooku's lightning and grapple sounds (%zu -> %zu bytes)", before, data.size());
+}
+
+// Mace does not load Force Lightning's event-tree entries. Add only Dooku's lightning sound definitions and the
+// sequences that play them; his grapple sounds are not used by a Mace-based character.
+bool MaceLightningSoundEntry(const std::string& kind, const std::string& key)
+{
+    std::string k = key;
+    for (char& ch : k)
+        ch = char(tolower(static_cast<unsigned char>(ch)));
+    static const char* const kLoads[] = { "for_lightning", "force_lightning_lp", "for_force_shockwave" };
+    static const char* const kSequences[] = { "seq:forcelightning_loop", "seq:forcelightningb", "seq:forcelightningl",
+        "seq:forcelightningr", "seq:forcelightningb_alt", "seq:forcelightningl_alt", "seq:forcelightningr_alt",
+        "seq:forcegrasp_lightning" };
+    if (kind == "CharEvent_LoadSound")
+        return std::any_of(std::begin(kLoads), std::end(kLoads), [&](const char* s) { return k == s; });
+    if (kind == "CharEvent_Sequence")
+        return std::any_of(std::begin(kSequences), std::end(kSequences), [&](const char* s) { return k == s; });
+    return false;
+}
+
+void AddMaceLightningSounds(std::vector<uint8_t>& data)
+{
+    std::vector<uint8_t> donor;
+    if (!ReadDiscResource("meshes\\chars\\common\\s_dooku.xbl_xml", donor) &&
+        !ReadDiscResource("meshes\\chars\\common\\s_dooku.xml", donor)) {
+        LOG_WARN("Revan: Dooku's Force Lightning sounds are not on the disc; Mace's lightning stays quieter");
+        return;
+    }
+    const size_t before = data.size();
+    if (AppendEventEntries(data, donor, &MaceLightningSoundEntry))
+        LOG_INFO("Revan: Mace's event tree gets Force Lightning sounds (%zu -> %zu bytes)", before, data.size());
 }
 
 // Dooku's grapple rows (the computer offers moves by their rows) in Serra's attack table: the names she lacks.
@@ -500,6 +560,86 @@ void AddDookuRows(std::vector<uint8_t>& data)
     data.insert(data.end(), added.begin(), added.end());
 }
 
+// Mace's computer fighter gets the same Force Lightning attack rows as Vader. The row is harmless to Mace itself:
+// his own rules never offer a ForceLightning sequence; only a custom character with Lightning=1 substitutes it.
+void AddMaceLightningRows(std::vector<uint8_t>& data)
+{
+    std::vector<uint8_t> donor;
+    if (!ReadDiscResource("meshes\\chars\\common\\a_vader.csv", donor))
+        return;
+    const std::string own(data.begin(), data.end()), theirs(donor.begin(), donor.end());
+    std::string added;
+    int count = 0;
+    size_t at = 0;
+    while (at < theirs.size()) {
+        size_t end = theirs.find('\n', at);
+        if (end == std::string::npos)
+            end = theirs.size();
+        std::string line = theirs.substr(at, end - at);
+        at = end + 1;
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        const std::string name = line.substr(0, line.find(','));
+        if (name.empty() || (_strnicmp(name.c_str(), "ForceLightning", 14) != 0 &&
+                _strnicmp(name.c_str(), "ForceGrasp_Lightning", 20) != 0))
+            continue;
+        if (own.find("\n" + name + ",") != std::string::npos || own.rfind(name + ",", 0) == 0)
+            continue;
+        added += line + "\r\n";
+        ++count;
+    }
+    if (!data.empty() && data.back() != '\n')
+        data.insert(data.end(), { '\r', '\n' });
+    data.insert(data.end(), added.begin(), added.end());
+    LOG_INFO("Revan: Mace's attack table gets %d Force Lightning rows from Vader", count);
+}
+
+// Cin Drallig (like Mace) does not load Force Lightning's event-tree entries or attack rows; give both from Dooku/Vader.
+void AddCinLightningSounds(std::vector<uint8_t>& data)
+{
+    std::vector<uint8_t> donor;
+    if (!ReadDiscResource("meshes\\chars\\common\\s_dooku.xbl_xml", donor) &&
+        !ReadDiscResource("meshes\\chars\\common\\s_dooku.xml", donor)) {
+        LOG_WARN("Revan: Dooku's Force Lightning sounds are not on the disc; Cin Drallig's lightning stays quieter");
+        return;
+    }
+    const size_t before = data.size();
+    if (AppendEventEntries(data, donor, &MaceLightningSoundEntry))
+        LOG_INFO("Revan: Cin Drallig's event tree gets Force Lightning sounds (%zu -> %zu bytes)", before, data.size());
+}
+
+void AddCinLightningRows(std::vector<uint8_t>& data)
+{
+    std::vector<uint8_t> donor;
+    if (!ReadDiscResource("meshes\\chars\\common\\a_vader.csv", donor))
+        return;
+    const std::string own(data.begin(), data.end()), theirs(donor.begin(), donor.end());
+    std::string added;
+    int count = 0;
+    size_t at = 0;
+    while (at < theirs.size()) {
+        size_t end = theirs.find('\n', at);
+        if (end == std::string::npos)
+            end = theirs.size();
+        std::string line = theirs.substr(at, end - at);
+        at = end + 1;
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        const std::string name = line.substr(0, line.find(','));
+        if (name.empty() || (_strnicmp(name.c_str(), "ForceLightning", 14) != 0 &&
+                _strnicmp(name.c_str(), "ForceGrasp_Lightning", 20) != 0))
+            continue;
+        if (own.find("\n" + name + ",") != std::string::npos || own.rfind(name + ",", 0) == 0)
+            continue;
+        added += line + "\r\n";
+        ++count;
+    }
+    if (!data.empty() && data.back() != '\n')
+        data.insert(data.end(), { '\r', '\n' });
+    data.insert(data.end(), added.begin(), added.end());
+    LOG_INFO("Revan: Cin Drallig's attack table gets %d Force Lightning rows from Vader", count);
+}
+
 } // namespace
 
 void InstallRevan()
@@ -508,20 +648,57 @@ void InstallRevan()
     g_Strikes.clear();
     g_KDHandle = g_LaunchHandle = g_StormHandle = 0;
     const auto& customs = CustomCharacters();
-    if (std::none_of(customs.begin(), customs.end(), [](const CustomCharacter& c) { return Wants(c); }))
+    const bool hasSerra = std::any_of(customs.begin(), customs.end(), [](const CustomCharacter& c) {
+        return _stricmp(c.base.c_str(), "ISerra") == 0 && Wants(c);
+    });
+    const bool hasMaceLightning = std::any_of(customs.begin(), customs.end(), [](const CustomCharacter& c) {
+        return _stricmp(c.base.c_str(), "IMace") == 0 && c.lightning;
+    });
+    const bool hasCinLightning = std::any_of(customs.begin(), customs.end(), [](const CustomCharacter& c) {
+        return _stricmp(c.base.c_str(), "ICinDrallig") == 0 && c.lightning;
+    });
+    if (!hasSerra && !hasMaceLightning && !hasCinLightning)
         return;
-    uint8_t call[5] = { 0xE8 };
-    const int32_t rel = int32_t(kSerraRules) - int32_t(kSerraRulesCall + 5);
-    std::memcpy(call + 1, &rel, 4);
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kSerraRulesCall)), call, 5) != 0) {
-        LOG_WARN("Revan: unexpected code at Serra's rules; no other moves for her class's custom characters");
-        return;
+    if (hasSerra) {
+        uint8_t call[5] = { 0xE8 };
+        const int32_t rel = int32_t(kSerraRules) - int32_t(kSerraRulesCall + 5);
+        std::memcpy(call + 1, &rel, 4);
+        if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kSerraRulesCall)), call, 5) == 0) {
+            PatchCall(kSerraRulesCall, reinterpret_cast<const void*>(&SerraRulesHook), 5);
+        } else {
+            LOG_WARN("Revan: unexpected code at Serra's rules; no other moves for Serra-based custom characters");
+        }
     }
-    PatchCall(kSerraRulesCall, reinterpret_cast<const void*>(&SerraRulesHook), 5);
-    AddClassSequences(&RevanSequences);
-    RegisterResourcePatch("meshes\\chars\\common\\s_serra.xml", &AddDookuSounds);
-    if (std::any_of(customs.begin(), customs.end(), [](const CustomCharacter& c) { return DookuGrapples(c); }))
-        RegisterResourcePatch("meshes\\chars\\common\\a_serra.csv", &AddDookuRows);
+    if (hasMaceLightning) {
+        uint8_t call[5] = { 0xE8 };
+        const int32_t rel = int32_t(kMaceRules) - int32_t(kMaceRulesCall + 5);
+        std::memcpy(call + 1, &rel, 4);
+        if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kMaceRulesCall)), call, 5) == 0) {
+            PatchCall(kMaceRulesCall, reinterpret_cast<const void*>(&MaceRulesHook), 5);
+            RegisterResourcePatch("meshes\\chars\\common\\s_mace.xml", &AddMaceLightningSounds);
+            RegisterResourcePatch("meshes\\chars\\common\\a_mace.csv", &AddMaceLightningRows);
+        } else {
+            LOG_WARN("Revan: unexpected code at Mace's rules; Force Lightning is unavailable on Mace-based custom characters");
+        }
+    }
+    if (hasCinLightning) {
+        uint8_t call[5] = { 0xE8 };
+        const int32_t rel = int32_t(kCinRules) - int32_t(kCinRulesCall + 5);
+        std::memcpy(call + 1, &rel, 4);
+        if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kCinRulesCall)), call, 5) == 0) {
+            PatchCall(kCinRulesCall, reinterpret_cast<const void*>(&CinRulesHook), 5);
+            RegisterResourcePatch("meshes\\chars\\common\\s_cindrallig.xml", &AddCinLightningSounds);
+            RegisterResourcePatch("meshes\\chars\\common\\a_cindrallig.csv", &AddCinLightningRows);
+        } else {
+            LOG_WARN("Revan: unexpected code at Cin Drallig's rules; Force Lightning is unavailable on Cin-based custom characters");
+        }
+    }
+    if (hasSerra) {
+        AddClassSequences(&RevanSequences);
+        RegisterResourcePatch("meshes\\chars\\common\\s_serra.xml", &AddDookuSounds);
+        if (std::any_of(customs.begin(), customs.end(), [](const CustomCharacter& c) { return DookuGrapples(c); }))
+            RegisterResourcePatch("meshes\\chars\\common\\a_serra.csv", &AddDookuRows);
+    }
 }
 
 void RevanFrame()
