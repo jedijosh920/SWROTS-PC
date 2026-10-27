@@ -92,7 +92,20 @@ const CustomCharacter* CustomCharacterOf(const uint8_t* character);
 // The next line `speaker` starts for `event` (three letters, e.g. "TKE": an event its speaker code has entries for)
 // says `lineId` instead (a line of the mounted dialogue archives, e.g. "CLC013"), for the next few seconds; the event is
 // then asked as usual (the script's SayEvent, 0x17ACC0, in the character's script turn).
-void ForceNextLine(const uint8_t* speaker, const char* event, const char* lineId);
+void ForceNextLine(const uint8_t* speaker, const char* event, const char* lineId, unsigned milliseconds = 3000);
+// Lines of the port's own added to the generic dialogue archive (as the custom characters' voices): an id (letters
+// and digits, under 32), its voice (headerless Xbox ADPCM, mono, 22050 Hz) and its subtitle. The archive is rebuilt.
+struct VoiceLineSource {
+    std::string id;
+    std::wstring file;
+    std::wstring text;
+};
+void AddVoiceLines(const std::vector<VoiceLineSource>& lines);
+// The character says a line of the archives now (its subtitle "SPEAKER: text" and its voice, the game's own): false
+// when the dialogue engine did not take it (another line playing).
+bool SayLine(uint8_t* speaker, const char* lineId);
+// While quiet, the dialogue engine starts no line but the ones SayLine/ForceNextLine ask for (a mission's cutscene).
+void SetDialogueQuiet(bool quiet);
 
 // The duel cameras' name of the duelist whose intro a custom character plays (Intro=), or null for the base's.
 const char* IntroCameras(const CustomCharacter& custom);

@@ -78,18 +78,23 @@ Coordinates are the map's own (the ones its `map.ini` uses; on the developer map
 
 ```ini
 [Lines]
-qg_mindful=QUI-GON|Be mindful, Obi-Wan.
-obi_handle=OBI-WAN|We'll handle this.
+qg_mindful=quigon|Be mindful of your feelings, Obi-Wan.   ; speaker|text
+obi_handle=player|We'll handle this.
 
 [Seconds]
-qg_mindful=2.5          ; how long the line shows (optional: from its length)
+qg_mindful=2.5          ; how long the line lasts (optional: its voice's length, else from the text's)
 
 [Voice]
-qg_mindful=qg_mindful.wav   ; its voice: a WAV in the mission's folder (16-bit PCM)
+obi_handle=obi_handle.wav   ; its voice: a WAV in the mission's folder (16-bit PCM; any rate, mono or stereo)
 ```
 
-`say("qg_mindful")` shows the line as a subtitle (the speaker's name above it) and waits until it is over. Dialogue is
-written once here and used by id, so voices can be added later without touching the script.
+A line's speaker is a character of the cast (by its `[Cast]` name) or `player`. The line is then the game's own
+dialogue: `say("qg_mindful")` has that character say it, with the game's subtitle (its speaker name and the text,
+"QUI-GON: Be mindful...", shown with the game's subtitles on: a mission turns them on while it runs) and its voice in
+the game's mix (the port adds the mission's lines to the game's dialogue archive, the voices made into its format in
+`cache\voice\missions\`). A line without a voice is silent and shows for as long as `[Seconds]` (or its text) says.
+During a cutscene the characters say nothing but the mission's lines. A line whose speaker is no character (any other
+name) shows as the port's own subtitle. `say(id, c)` has another character say it.
 
 ## mission.lua
 
@@ -212,7 +217,7 @@ Heights are from the floor; `look` is the height on the character the camera loo
 | `letterbox(on [, seconds])` | the game's own cutscene bars slide in or out (0.5 s); while they are in, the game counts it a cutscene (its HUD hidden) |
 | `tip(name)` | a tip of `[Tips]` shows |
 | `fade_out(seconds)` / `fade_in(seconds)` | to black and back |
-| `say(id)` | a line of `lines.ini`, waiting until it is over |
+| `say(id [, c])` | a line of `lines.ini` said by its speaker (or `c`), waiting until it is over (and, while another line is being said, until that one ends) |
 | `speak(speaker, text [, seconds])` | a line written in the script, waiting until it is over |
 | `subtitle(speaker, text [, seconds])` / `line(id)` | the same without waiting (they return the line's length) |
 | `objective(name)` | an objective of `[Objectives]` becomes the new one: the game's own "NEW OBJECTIVE:" and the pause screen's Objectives list |
@@ -233,8 +238,7 @@ Heights are from the floor; `look` is the height on the character the camera loo
 | `stop_sounds()` | stops the mission's sounds |
 | `music_volume(f)` | the music at `f` times the player's own music volume (0 silent, 1 as set), e.g. under a dramatic moment; put back at the mission's end |
 
-A line of `lines.ini` with a `[Voice]` file plays it when shown (`say`, `line`), and lasts as long as the voice
-unless `[Seconds]` says otherwise.
+A line of `lines.ini` with a `[Voice]` file is said with it (see lines.ini above).
 
 ### The game
 

@@ -64,7 +64,7 @@ constexpr char kSingleHilt[] = "Meshes\\Weapons\\LsaberKnight\\LsaberKnight";
 constexpr char kDoubleHilt[] = "Meshes\\Weapons\\Lsaberjdbrute\\Lsaberjdbrute";
 
 std::vector<CustomCharacter> g_Customs;
-std::wstring g_Mods;
+std::wstring g_Mods, g_GameData, g_Cache;
 
 // A custom class's info, for this start's base info.
 struct Proxy {
@@ -224,24 +224,41 @@ struct ForcedLine {
     char event[4] = {};
     const char* id = nullptr; // pooled
     ULONGLONG until = 0;
+    // the entry given the line: it keeps it until the time is up (a queued entry is started later, reading its line
+    // then), then gets its own back
+    const char** swapped = nullptr;
+    const char* own = nullptr;
 };
 ForcedLine g_Forced;
 
+void EndForcedLine()
+{
+    if (g_Forced.swapped)
+        *g_Forced.swapped = g_Forced.own;
+    g_Forced = {};
+}
+
+bool g_OnlyForced = false; // a mission's cutscene: no line but the ones it asks for (SetDialogueQuiet)
+
 int __fastcall StartEntryHook(uint8_t* engine, void*, uint8_t* speaker, int entry, int a, int b, int c)
 {
+    if (g_OnlyForced && !(speaker && speaker == g_Forced.speaker && g_Forced.id && GetTickCount64() < g_Forced.until))
+        return 0;
     if (speaker && speaker == g_Forced.speaker && entry >= 0 && g_Forced.id && GetTickCount64() < g_Forced.until) {
         uint8_t* e = *reinterpret_cast<uint8_t**>(engine + kDialogueEntries) + size_t(entry) * kDialogueEntrySize;
         const char* name = *reinterpret_cast<const char**>(e + 0x14);
         if (name && _strnicmp(name, g_Forced.event, 3) == 0) {
-            const char*& id = *reinterpret_cast<const char**>(e + 0x10);
-            const char* own = id;
-            id = g_Forced.id;
-            const int result = g_StartEntry(engine, nullptr, speaker, entry, a, b, c);
-            id = own;
-            if (result) {
-                LOG_INFO("Custom characters: says %s (%s)", g_Forced.id, name);
-                g_Forced = {};
+            const char** id = reinterpret_cast<const char**>(e + 0x10);
+            if (g_Forced.swapped != id) {
+                if (g_Forced.swapped) // another entry of the event: the first one's line back
+                    *g_Forced.swapped = g_Forced.own;
+                g_Forced.swapped = id;
+                g_Forced.own = *id;
+                *id = g_Forced.id;
             }
+            const int result = g_StartEntry(engine, nullptr, speaker, entry, a, b, c);
+            if (result)
+                LOG_INFO("Custom characters: says %s (%s)", g_Forced.id, name);
             return result;
         }
     }
@@ -900,6 +917,8 @@ void PruneMade()
 
 void CustomCharactersFrame()
 {
+    if (g_Forced.id && GetTickCount64() >= g_Forced.until) // a forced line's time is up: its entry's own line back
+        EndForcedLine();
     PruneMade(); // those taken away (a match's fighters after a respawn) out
     __try {
         for (uint8_t* c : g_Made) {
@@ -1474,6 +1493,8 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
     g_LineTurns.clear();
     g_SpeakerTexts.clear();
     g_Mods = mods;
+    g_GameData = gameData;
+    g_Cache = cache;
     ReadCharacters(mods);
     g_PictureCopies.clear();
     AddBuiltInCharacters();
@@ -1633,15 +1654,56 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
         LOG_WARN("Custom characters: the subtitles' speaker name is not as expected; custom characters keep the base's");
 }
 
-void ForceNextLine(const uint8_t* speaker, const char* event, const char* lineId)
+void AddVoiceLines(const std::vector<VoiceLineSource>& lines)
+{
+    if (lines.empty())
+        return;
+    for (const VoiceLineSource& line : lines) {
+        std::string id = line.id;
+        for (char& ch : id)
+            ch = char(toupper(static_cast<unsigned char>(ch)));
+        bool known = false;
+        for (const VoiceLine& v : g_VoiceLines)
+            known |= v.id == id;
+        if (!known)
+            g_VoiceLines.push_back({ id, line.file, line.text });
+    }
+    BuildVoiceArchive(g_Mods, g_GameData, g_Cache);
+}
+
+// A character says a line of the dialogue archives now: the line forced on the next entry of an event its speaker
+// has lines for, and the event asked of the character (its vfunc +0x458, what the scripts' SayEvent 0x17ACC0 calls).
+bool SayLine(uint8_t* speaker, const char* lineId)
+{
+    if (!speaker || !lineId)
+        return false;
+    static const char* const kEvents[] = { "FSE", "TNT", "BAT", "KIL" };
+    for (const char* event : kEvents) {
+        ForceNextLine(speaker, event, lineId, 8000);
+        using SayFn = int(__fastcall*)(uint8_t*, void*, const char*, const char*, int, int, int);
+        const int result = (*reinterpret_cast<SayFn* const*>(speaker))[0x458 / 4](speaker, nullptr, event, "", 1, 0, 0);
+        if (result) // the line was said or queued (the forced line stays for its time)
+            return true;
+    }
+    EndForcedLine();
+    return false;
+}
+
+void SetDialogueQuiet(bool quiet)
+{
+    g_OnlyForced = quiet;
+}
+
+void ForceNextLine(const uint8_t* speaker, const char* event, const char* lineId, unsigned milliseconds)
 {
     const char* id = PooledString(lineId);
     if (!speaker || !event || !id)
         return;
+    EndForcedLine();
     g_Forced.speaker = speaker;
     strncpy_s(g_Forced.event, event, 3);
     g_Forced.id = id;
-    g_Forced.until = GetTickCount64() + 3000;
+    g_Forced.until = GetTickCount64() + milliseconds;
 }
 
 const char* IntroCameras(const CustomCharacter& custom)

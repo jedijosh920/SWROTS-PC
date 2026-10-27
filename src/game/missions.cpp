@@ -191,7 +191,9 @@ struct CastMember {
 
 struct Line {
     std::string speaker, text, voice;
-    float seconds = 0; // 0: from the text's length
+    float seconds = 0;     // 0: from the text's length (or its voice's)
+    std::string lineId;    // its line in the game's dialogue archive (RegisterDialogue), e.g. "MSN003"
+    double length = 0;     // how long it lasts
 };
 
 // A character the script holds: an object and its instance id (+4), to tell it is still the same one.
@@ -226,6 +228,7 @@ struct Marker {
 std::vector<Marker> g_Markers;
 std::vector<std::string> g_Objectives; // [Objectives]' names, in order (ids kObjectiveFirstId on)
 std::vector<std::string> g_Tips;       // [Tips]' names, in order (ids kTipFirstId on)
+std::string g_PlayersSubtitles; // the subtitles setting before the mission turned them on
 float g_PlayersMusicVolume = -1; // volumemusic before music_volume() changed it (put back at the end); -1: unchanged
 std::string g_MusicServed; // the disc's music file the mission's own track is served for
 std::vector<Handle> g_Handles; // index 0 unused
@@ -338,6 +341,114 @@ const float* Position(uint8_t* c) { return reinterpret_cast<const float*>(c + kC
 
 bool Alive(uint8_t* c) { return c && At<float>(c, kCharacterHealth) > 0 && !c[kCharacterDead]; }
 
+// A WAV file's samples (16-bit PCM, mono or stereo, interleaved); false for anything else.
+bool ReadWav(const std::wstring& path, std::vector<int16_t>& samples, unsigned& channels, unsigned& rate)
+{
+    std::vector<uint8_t> data;
+    if (FILE* f = _wfopen(path.c_str(), L"rb")) {
+        uint8_t buffer[65536];
+        size_t n;
+        while ((n = fread(buffer, 1, sizeof buffer, f)) > 0)
+            data.insert(data.end(), buffer, buffer + n);
+        fclose(f);
+    }
+    if (data.size() < 12 || std::memcmp(data.data(), "RIFF", 4) != 0 || std::memcmp(data.data() + 8, "WAVE", 4) != 0)
+        return false;
+    uint16_t format = 0, chans = 0, bits = 0;
+    uint32_t hz = 0;
+    const uint8_t* pcm = nullptr;
+    uint32_t pcmBytes = 0;
+    for (size_t at = 12; at + 8 <= data.size();) {
+        uint32_t size;
+        std::memcpy(&size, data.data() + at + 4, 4);
+        const size_t body = at + 8;
+        if (body + size > data.size())
+            size = uint32_t(data.size() - body);
+        if (std::memcmp(data.data() + at, "fmt ", 4) == 0 && size >= 16) {
+            std::memcpy(&format, data.data() + body, 2);
+            std::memcpy(&chans, data.data() + body + 2, 2);
+            std::memcpy(&hz, data.data() + body + 4, 4);
+            std::memcpy(&bits, data.data() + body + 14, 2);
+        } else if (std::memcmp(data.data() + at, "data", 4) == 0) {
+            pcm = data.data() + body;
+            pcmBytes = size;
+        }
+        at = body + size + (size & 1);
+    }
+    if (format != 1 || bits != 16 || (chans != 1 && chans != 2) || !hz || !pcm)
+        return false;
+    samples.resize(pcmBytes / 2);
+    std::memcpy(samples.data(), pcm, samples.size() * 2);
+    channels = chans;
+    rate = hz;
+    return true;
+}
+
+// Mono samples as the game's dialogue lines are: headerless Xbox ADPCM (IMA), blocks of 36 bytes (the first sample and
+// the step index, then 8 words of 8 four-bit codes: 65 samples), as tools/audio/hwx.py's encoder for one channel.
+std::vector<uint8_t> XboxAdpcm(const std::vector<int16_t>& mono)
+{
+    static const int kStep[89] = { 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60,
+        66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494, 544, 598,
+        658, 724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327, 3660,
+        4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818, 18500,
+        20350, 22385, 24623, 27086, 29794, 32767 };
+    static const int kIndex[16] = { -1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8 };
+    std::vector<uint8_t> out;
+    int index = 0;
+    const size_t blocks = (mono.size() + 64) / 65;
+    for (size_t b = 0; b < blocks; ++b) {
+        auto sample = [&](size_t i) { return i < mono.size() ? int(mono[i]) : 0; };
+        int pred = sample(b * 65);
+        const int16_t first = int16_t(pred);
+        out.insert(out.end(), reinterpret_cast<const uint8_t*>(&first), reinterpret_cast<const uint8_t*>(&first) + 2);
+        out.push_back(uint8_t(index));
+        out.push_back(0);
+        for (int group = 0; group < 8; ++group) {
+            uint32_t code = 0;
+            for (int j = 0; j < 8; ++j) {
+                const int target = sample(b * 65 + 1 + group * 8 + j);
+                const int step = kStep[index];
+                int delta = target - pred;
+                int n = delta < 0 ? 8 : 0;
+                delta = std::abs(delta);
+                int diff = step >> 3;
+                if (delta >= step) { n |= 4; delta -= step; diff += step; }
+                if (delta >= step >> 1) { n |= 2; delta -= step >> 1; diff += step >> 1; }
+                if (delta >= step >> 2) { n |= 1; diff += step >> 2; }
+                pred = std::clamp(n & 8 ? pred - diff : pred + diff, -32768, 32767);
+                index = std::clamp(index + kIndex[n], 0, 88);
+                code |= uint32_t(n) << (4 * j);
+            }
+            out.insert(out.end(), reinterpret_cast<const uint8_t*>(&code), reinterpret_cast<const uint8_t*>(&code) + 4);
+        }
+    }
+    return out;
+}
+
+// A WAV (any rate) as a dialogue line: mono, 22050 Hz (linear resampling), Xbox ADPCM. Empty when it is no WAV.
+std::vector<uint8_t> DialogueVoice(const std::wstring& wav)
+{
+    std::vector<int16_t> samples;
+    unsigned channels = 0, rate = 0;
+    if (!ReadWav(wav, samples, channels, rate))
+        return {};
+    const size_t frames = samples.size() / channels;
+    const size_t outFrames = size_t(double(frames) * 22050.0 / rate);
+    std::vector<int16_t> mono(outFrames);
+    for (size_t i = 0; i < outFrames; ++i) {
+        const double at = double(i) * rate / 22050.0;
+        const size_t i0 = std::min(frames - 1, size_t(at));
+        const size_t i1 = std::min(frames - 1, i0 + 1);
+        const double f = at - double(i0);
+        double v = 0;
+        for (unsigned c = 0; c < channels; ++c)
+            v += (1 - f) * samples[i0 * channels + c] + f * samples[i1 * channels + c];
+        mono[i] = int16_t(std::clamp(v / channels, -32768.0, 32767.0));
+    }
+    return XboxAdpcm(mono);
+}
+
 void ReadLines()
 {
     g_Lines.clear();
@@ -357,6 +468,47 @@ void ReadLines()
         g_Lines[id] = line;
     }
     LOG_INFO("Missions: %zu dialogue lines", g_Lines.size());
+}
+
+double LineSeconds(const std::string& text);
+
+// The lines as the game's own dialogue: each a line of the generic dialogue archive ("MSN001"..., customchars.h
+// AddVoiceLines), its voice from [Voice] (a WAV, made mono 22050 Hz Xbox ADPCM in cache\voice\missions\) or silence
+// as long as the line shows, its subtitle its text.
+void RegisterDialogue()
+{
+    if (g_Lines.empty())
+        return;
+    wchar_t exe[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring folder = exe;
+    folder = folder.substr(0, folder.find_last_of(L'\\')) + L"\\cache\\voice";
+    CreateDirectoryW(folder.c_str(), nullptr);
+    folder += L"\\missions";
+    CreateDirectoryW(folder.c_str(), nullptr);
+    std::vector<VoiceLineSource> sources;
+    int n = 0;
+    for (auto& [id, line] : g_Lines) {
+        char lineId[16];
+        std::snprintf(lineId, sizeof lineId, "MSN%03d", ++n);
+        std::vector<uint8_t> voice;
+        if (!line.voice.empty())
+            voice = DialogueVoice(g_Folder + L"\\" + std::wstring(line.voice.begin(), line.voice.end()));
+        if (!line.voice.empty() && voice.empty())
+            LOG_WARN("Missions: line %s's voice %s is not a 16-bit PCM WAV", id.c_str(), line.voice.c_str());
+        const double voiceSeconds = double(voice.size() / 36 * 65) / 22050.0;
+        line.length = line.seconds > 0 ? line.seconds : voice.empty() ? LineSeconds(line.text) : voiceSeconds + 0.3;
+        if (voice.empty()) // silence as long as the line shows: the dialogue keeps its subtitle up for its line
+            voice = XboxAdpcm(std::vector<int16_t>(size_t(line.length * 22050.0), 0));
+        const std::wstring path = folder + L"\\" + std::wstring(lineId, lineId + strlen(lineId)) + L".xadpcm";
+        if (FILE* f = _wfopen(path.c_str(), L"wb")) {
+            fwrite(voice.data(), 1, voice.size(), f);
+            fclose(f);
+        }
+        line.lineId = lineId;
+        sources.push_back({ lineId, path, std::wstring(line.text.begin(), line.text.end()) });
+    }
+    AddVoiceLines(sources);
 }
 
 // --- The script's functions ----------------------------------------------------------------------------------------
@@ -1120,45 +1272,12 @@ int L_subtitle(lua_State* L)
 // cannot be played.
 double PlayMissionSound(const std::string& file, float volume)
 {
-    std::vector<uint8_t> data;
-    if (FILE* f = _wfopen((g_Folder + L"\\" + std::wstring(file.begin(), file.end())).c_str(), L"rb")) {
-        uint8_t buffer[65536];
-        size_t n;
-        while ((n = fread(buffer, 1, sizeof buffer, f)) > 0)
-            data.insert(data.end(), buffer, buffer + n);
-        fclose(f);
-    }
-    if (data.size() < 12 || std::memcmp(data.data(), "RIFF", 4) != 0 || std::memcmp(data.data() + 8, "WAVE", 4) != 0) {
-        LOG_WARN("Mission: sound %s: not a WAV file in the mission's folder", file.c_str());
+    std::vector<int16_t> samples;
+    unsigned channels = 0, rate = 0;
+    if (!ReadWav(g_Folder + L"\\" + std::wstring(file.begin(), file.end()), samples, channels, rate)) {
+        LOG_WARN("Mission: sound %s: not a 16-bit PCM WAV (mono or stereo) in the mission's folder", file.c_str());
         return 0;
     }
-    uint16_t format = 0, channels = 0, bits = 0;
-    uint32_t rate = 0;
-    const uint8_t* pcm = nullptr;
-    uint32_t pcmBytes = 0;
-    for (size_t at = 12; at + 8 <= data.size();) {
-        uint32_t size;
-        std::memcpy(&size, data.data() + at + 4, 4);
-        const size_t body = at + 8;
-        if (body + size > data.size())
-            size = uint32_t(data.size() - body);
-        if (std::memcmp(data.data() + at, "fmt ", 4) == 0 && size >= 16) {
-            std::memcpy(&format, data.data() + body, 2);
-            std::memcpy(&channels, data.data() + body + 2, 2);
-            std::memcpy(&rate, data.data() + body + 4, 4);
-            std::memcpy(&bits, data.data() + body + 14, 2);
-        } else if (std::memcmp(data.data() + at, "data", 4) == 0) {
-            pcm = data.data() + body;
-            pcmBytes = size;
-        }
-        at = body + size + (size & 1);
-    }
-    if (format != 1 || bits != 16 || (channels != 1 && channels != 2) || !rate || !pcm) {
-        LOG_WARN("Mission: sound %s: only 16-bit PCM WAV, mono or stereo", file.c_str());
-        return 0;
-    }
-    std::vector<int16_t> samples(pcmBytes / 2);
-    std::memcpy(samples.data(), pcm, samples.size() * 2);
     const double seconds = double(samples.size()) / channels / rate;
     if (!audio::PlayPortSound(std::move(samples), channels, rate, volume)) {
         LOG_WARN("Mission: sound %s could not be played (no audio)", file.c_str());
@@ -1181,6 +1300,22 @@ int L_stop_sounds(lua_State*)
     return 0;
 }
 
+// A line's speaker: a character of the cast by its name, or "player"; null for anyone else (the line is the port's
+// subtitle then).
+uint8_t* SpeakerOf(const std::string& name)
+{
+    if (_stricmp(name.c_str(), "player") == 0)
+        return PlayerObject();
+    for (const CastMember& m : g_Cast) {
+        if (_stricmp(m.name.c_str(), name.c_str()) != 0)
+            continue;
+        for (uint8_t* c : LevelCharacters())
+            if (At<uint32_t>(c, 4) == m.placedId)
+                return c;
+    }
+    return nullptr;
+}
+
 // line(id): a line of lines.ini shown (its voice played once voices are supported); returns its length
 int L_line(lua_State* L)
 {
@@ -1192,6 +1327,39 @@ int L_line(lua_State* L)
         return 1;
     }
     const Line& line = it->second;
+    // the game's own: the speaker (a character of the cast, "player", or the one given) says it, its subtitle
+    // "SPEAKER: text" and its voice the game's
+    // line(id [, speaker, fallback]): -1 when the dialogue engine is busy (say() asks again on the next frames);
+    // with fallback, the port's own subtitle then
+    uint8_t* speaker = !lua_isnoneornil(L, 2) ? CheckCharacter(L, 2) : SpeakerOf(line.speaker);
+    if (speaker && !line.lineId.empty()) {
+        // (a held scene has the game's "AI disabled" on, which keeps characters quiet: off for the line's start)
+        // and the game's letterbox makes it a cutscene (0xA3720), in which characters say nothing of their own: both
+        // off for the line's start
+        uint8_t* options = GameOptions();
+        const uint8_t aiOff = options ? options[kOptionsAiDisabled] : 0;
+        if (options)
+            options[kOptionsAiDisabled] = 0;
+        uint8_t* box = *reinterpret_cast<uint8_t**>(uintptr_t(kLetterBox));
+        const bool boxed = box && (At<uint32_t>(box, 0xC) & 0x40000);
+        const int boxState = boxed ? At<int>(box, 0x1E8) : 0;
+        if (boxed)
+            At<int>(box, 0x1E8) = 0;
+        const bool said = SayLine(speaker, line.lineId.c_str());
+        if (boxed)
+            At<int>(box, 0x1E8) = boxState;
+        if (options)
+            options[kOptionsAiDisabled] = aiOff;
+        if (said) {
+            LOG_INFO("Mission: %s says %s: %s", line.speaker.c_str(), line.lineId.c_str(), line.text.c_str());
+            lua_pushnumber(L, line.length);
+            return 1;
+        }
+        if (!lua_toboolean(L, 3)) {
+            lua_pushnumber(L, -1);
+            return 1;
+        }
+    }
     g_Hud.speaker = line.speaker;
     g_Hud.line = line.text;
     double seconds = line.seconds > 0 ? line.seconds : LineSeconds(line.text);
@@ -1315,6 +1483,7 @@ int L_cutscene_state(lua_State* L)
 {
     const bool on = lua_toboolean(L, 1) != 0;
     g_InCutscene = on;
+    SetDialogueQuiet(on); // no barks in a cutscene: only its own lines
     if (on) {
         g_Skip = false;
         input::TakeHeldPress(); // a press from before does not skip it
@@ -1341,6 +1510,8 @@ void End(bool ok, const std::string& detail)
     g_Hud.ending = ok ? "MISSION COMPLETE" : "MISSION FAILED";
     g_Hud.endingDetail = detail;
     Hold(true); // everyone stops for the end
+    if (!g_PlayersSubtitles.empty()) // the player's own subtitles setting back
+        debug::WriteGameVariable("subtitles", g_PlayersSubtitles);
     if (g_PlayersMusicVolume >= 0) { // the player's own music volume back
         char text[32];
         std::snprintf(text, sizeof text, "%.3f", g_PlayersMusicVolume);
@@ -1391,7 +1562,15 @@ function walk(c, where, timeout)
   wait(0.1)
   return wait_until(function() return not going(c, where) end, timeout or 20)
 end
-function say(id) wait(line(id)) end
+function say(id, who)
+  local seconds, from = line(id, who), time()
+  while seconds < 0 and time() - from < 4 do -- another line is being said: when it ends
+    coroutine.yield()
+    seconds = line(id, who)
+  end
+  if seconds < 0 then seconds = line(id, who, true) end
+  wait(seconds)
+end
 function speak(speaker, text, seconds) wait(subtitle(speaker, text, seconds)) end
 function cutscene(fn)
   _cutscene_state(true)
@@ -1620,6 +1799,7 @@ void InstallMissions(const std::wstring& mods)
     CloseScript();
     g_SabersAway.clear();
     g_PlayersMusicVolume = -1;
+    g_PlayersSubtitles.clear();
     if (!g_MusicServed.empty()) // the last start's own track: the disc's again
         kernel::SetDiscFileOverride(g_MusicServed, L"");
     g_MusicServed.clear();
@@ -1634,6 +1814,7 @@ void InstallMissions(const std::wstring& mods)
     g_Hud = MissionHud{};
     g_Shot = Shot{};
     g_Held = g_Skip = g_InCutscene = false;
+    SetDialogueQuiet(false);
     g_FadeFrom = g_FadeTo = g_FadeStart = g_FadeLength = 0;
     g_BarsFrom = g_BarsTo = g_BarsStart = 0;
     g_ObjectiveAt = -10;
@@ -1801,6 +1982,7 @@ void InstallMissions(const std::wstring& mods)
     SetPlayerClass(nullptr);
     SetPlayerClass(g_PlayerClass.c_str(), false);
     ReadLines();
+    RegisterDialogue();
     SetFatalHitGuard(&PlayerFatal);
     SetCameraDirector(&Director);
     g_Active = true;
@@ -1823,6 +2005,14 @@ void MissionFrame()
         if (now - g_InLevelAt < 500)
             return;
         g_Woken = true;
+        // the lines' subtitles: the game's own, on for the mission (the player's setting put back at its end)
+        {
+            std::string value;
+            if (debug::ReadGameVariable("subtitles", value)) {
+                g_PlayersSubtitles = value;
+                debug::WriteGameVariable("subtitles", "true");
+            }
+        }
         // the tips join the level (a placed object is updated and drawn once active, vfunc +0xB4)
         for (size_t k = 0; k < g_Tips.size(); ++k) {
             uint8_t* t = reinterpret_cast<uint8_t*(__cdecl*)(uint32_t)>(uintptr_t(kObjectById))(kTipFirstId + uint32_t(k));
