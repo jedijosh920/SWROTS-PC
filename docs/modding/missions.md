@@ -158,6 +158,8 @@ level is safe to use: functions on it do nothing, `alive()` and `exists()` are f
 |---|---|
 | `play(c, move [, speed])` | plays one of its moves by name: intros (`<Name>_Intro`), idles (`Idle_Flavor_v1`), falls (`Death`), reactions; false when it has none of that name |
 | `moves(c)` | the names of its moves, as a table (`log(table.concat(moves(c), ","))` lists them) |
+| `saber(c, on [, seconds])` | its sabers lit or put away, as the game's cinematics do: the blade grows or shrinks over `seconds` (default 0.4) with the saber's sound; 0 at once, silent. A saber put away stays away (also while it fights) until `saber(c, true)`; false when it has none |
+| `saber(c)` | whether one of its sabers is lit |
 
 ### Camera
 

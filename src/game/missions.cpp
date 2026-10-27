@@ -22,6 +22,7 @@
 #include "lua.hpp"
 
 #include "core/log.h"
+#include "core/patch.h"
 #include "debug/console.h"
 #include "game/characters.h"
 #include "game/coop.h"
@@ -52,7 +53,15 @@ constexpr uint32_t kPlace = 0x1F4;               // object vfunc, thiscall (cons
 constexpr uint32_t kInstantKillSlot = 0xC8;      // ICharacter vfunc, thiscall (0): an instant kill
 constexpr uintptr_t kPlaySequence = 0x150E30;    // ICharacter, thiscall (sequence, 0, 0, 0, speed)
 constexpr uint32_t kObjectById = 0x000A31F0;     // cdecl (id): a level object by its id
-// The ids of the cast placed in the level (after the dev map's own and Heroes vs Villains')
+// Sabers: the character's weapon slots, and what the cinematics' ToggleSaber event (0x24A490) calls on a saber
+constexpr uint32_t kCharacterWeapons = 0x1080;   // 4 slots, 0x20 apart: the weapon object, or null
+constexpr uint32_t kSaberVtables[] = { 0x005B1FF0, 0x005B2620, 0x005B2C90, 0x005B32F8, 0x005B3958 };
+constexpr uintptr_t kSaberExtend = 0x286080;     // ILightSaber, thiscall (float seconds): lit, its sound if seconds > 0
+constexpr uintptr_t kSaberRetract = 0x2860E0;    // ILightSaber, thiscall (float seconds): put away
+constexpr uint32_t kSaberLit = 0x801;            // byte on the saber
+constexpr uint32_t kScriptSaberOnCall = 0x2BC586; // the script native SaberOn's call of kSaberExtend (5 bytes)
+
+std::vector<uint8_t*> g_SabersAway; // sabers the mission put away: the class scripts may not light them// The ids of the cast placed in the level (after the dev map's own and Heroes vs Villains')
 constexpr uint32_t kCastFirstId = kDevMapFirstId + 0x100;
 
 template <typename T> T& At(uint8_t* p, uint32_t offset) { return *reinterpret_cast<T*>(p + offset); }
@@ -603,6 +612,41 @@ int L_moves(lua_State* L)
     return 1;
 }
 
+// The character's sabers (every hand's), for the script's saber(); none for a character without one.
+std::vector<uint8_t*> Sabers(uint8_t* c)
+{
+    std::vector<uint8_t*> sabers;
+    for (uint32_t slot = 0; c && slot < 4; ++slot)
+        if (uint8_t* w = At<uint8_t*>(c, kCharacterWeapons + slot * 0x20))
+            if (std::find(std::begin(kSaberVtables), std::end(kSaberVtables), At<uint32_t>(w, 0)) != std::end(kSaberVtables))
+                sabers.push_back(w);
+    return sabers;
+}
+
+// saber(c, on [, seconds]): its sabers lit or put away, as the game's cinematics do (the blade grows or shrinks over
+// `seconds`, with the sound; 0: at once, silent); saber(c): whether one is lit
+int L_saber(lua_State* L)
+{
+    const std::vector<uint8_t*> sabers = Sabers(CheckCharacter(L, 1));
+    if (lua_isnoneornil(L, 2)) {
+        bool lit = false;
+        for (uint8_t* s : sabers)
+            lit = lit || At<uint8_t>(s, kSaberLit) != 0;
+        lua_pushboolean(L, lit);
+        return 1;
+    }
+    const bool on = lua_toboolean(L, 2) != 0;
+    const float seconds = float(std::max(0.0, luaL_optnumber(L, 3, 0.4)));
+    for (uint8_t* s : sabers) {
+        g_SabersAway.erase(std::remove(g_SabersAway.begin(), g_SabersAway.end(), s), g_SabersAway.end());
+        if (!on)
+            g_SabersAway.push_back(s);
+        reinterpret_cast<void(__fastcall*)(uint8_t*, void*, float)>(on ? kSaberExtend : kSaberRetract)(s, nullptr, seconds);
+    }
+    lua_pushboolean(L, !sabers.empty());
+    return 1;
+}
+
 int L_kill(lua_State* L)
 {
     if (uint8_t* c = CheckCharacter(L, 1)) {
@@ -1089,7 +1133,7 @@ void Register(lua_State* L)
         { "alive", L_alive }, { "exists", L_exists }, { "health", L_health }, { "set_health", L_set_health },
         { "max_health", L_max_health }, { "invincible", L_invincible }, { "position", L_position },
         { "distance", L_distance }, { "place", L_place }, { "face", L_face }, { "side", L_side }, { "ai", L_ai },
-        { "attack", L_attack }, { "hold", L_hold }, { "play", L_play }, { "moves", L_moves }, { "kill", L_kill },
+        { "attack", L_attack }, { "hold", L_hold }, { "play", L_play }, { "moves", L_moves }, { "saber", L_saber }, { "kill", L_kill },
         { "class_of", L_class_of }, { "set_player", L_set_player },
         { "camera_fixed", L_camera_fixed }, { "camera_orbit", L_camera_orbit }, { "camera_move", L_camera_move },
         { "camera_track", L_camera_track }, { "camera_game", L_camera_game },
@@ -1264,9 +1308,22 @@ bool StartMission(const std::string& id, std::string& error)
     return true;
 }
 
+namespace {
+
+// The class scripts light a saber that is out of their hands' way again at once (their state updates call the script
+// native SaberOn, 0x2BC540, e.g. Cin Drallig's at 0x352F7C): one the mission put away stays put away until it lights it.
+void __fastcall ScriptSaberOn(uint8_t* saber, void*, float seconds)
+{
+    if (std::find(g_SabersAway.begin(), g_SabersAway.end(), saber) == g_SabersAway.end())
+        reinterpret_cast<void(__fastcall*)(uint8_t*, void*, float)>(kSaberExtend)(saber, nullptr, seconds);
+}
+
+} // namespace
+
 void InstallMissions(const std::wstring& mods)
 {
     CloseScript();
+    g_SabersAway.clear();
     g_Mods = mods;
     g_Active = false;
     g_Info = nullptr;
@@ -1296,6 +1353,7 @@ void InstallMissions(const std::wstring& mods)
         LOG_WARN("Missions: this start's mission %s is not installed", id.c_str());
         return;
     }
+    PatchCall(kScriptSaberOnCall, reinterpret_cast<const void*>(&ScriptSaberOn), 5);
     g_Folder = mods + L"\\" + std::wstring(g_Info->folder.begin(), g_Info->folder.end());
     const std::wstring ini = g_Folder + L"\\mission.ini";
     // the script
