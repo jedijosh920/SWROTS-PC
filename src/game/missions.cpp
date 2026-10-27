@@ -53,6 +53,10 @@ constexpr uint32_t kPlace = 0x1F4;               // object vfunc, thiscall (cons
 constexpr uint32_t kInstantKillSlot = 0xC8;      // ICharacter vfunc, thiscall (0): an instant kill
 constexpr uintptr_t kPlaySequence = 0x150E30;    // ICharacter, thiscall (sequence, 0, 0, 0, speed)
 constexpr uint32_t kObjectById = 0x000A31F0;     // cdecl (id): a level object by its id
+// Walking: the game's own goto (as Battlefront's AI uses it) to the level's goto markers (ICharacterGoto)
+constexpr uintptr_t kCharacterGoto = 0x00151400;  // ICharacter, thiscall (marker, may fight on the way)
+constexpr uintptr_t kExecutingGoto = 0x001513E0;  // ICharacter, thiscall (marker): still on its way
+constexpr uint32_t kGotoMarkerVtable = 0x00598970;
 // Sabers: the character's weapon slots, and what the cinematics' ToggleSaber event (0x24A490) calls on a saber
 constexpr uint32_t kCharacterWeapons = 0x1080;   // 4 slots, 0x20 apart: the weapon object, or null
 constexpr uint32_t kSaberVtables[] = { 0x005B1FF0, 0x005B2620, 0x005B2C90, 0x005B32F8, 0x005B3958 };
@@ -200,6 +204,12 @@ const MissionInfo* g_Info = nullptr;
 std::string g_PlayerClass;
 std::vector<CastMember> g_Cast;
 std::map<std::string, Line> g_Lines;
+// mission.ini's [Markers]: places characters walk to (the level's goto markers, kDevMapFirstMarkerId on, in order)
+struct Marker {
+    std::string name;
+    float x = 0, z = 0; // the map's coordinates
+};
+std::vector<Marker> g_Markers;
 std::vector<Handle> g_Handles; // index 0 unused
 bool g_Woken = false;
 uint64_t g_InLevelAt = 0;
@@ -645,6 +655,54 @@ int L_saber(lua_State* L)
     }
     lua_pushboolean(L, !sabers.empty());
     return 1;
+}
+
+// A marker of mission.ini's [Markers] by name: the level's object, or null.
+uint8_t* MarkerObject(const char* name)
+{
+    for (size_t k = 0; k < g_Markers.size(); ++k)
+        if (_stricmp(g_Markers[k].name.c_str(), name) == 0) {
+            uint8_t* m = reinterpret_cast<uint8_t*(__cdecl*)(uint32_t)>(uintptr_t(kObjectById))(kDevMapFirstMarkerId + uint32_t(k));
+            return m && At<uint32_t>(m, 0) == kGotoMarkerVtable ? m : nullptr;
+        }
+    return nullptr;
+}
+
+// go(c, marker [, fight]): it walks (runs) to a marker of [Markers] its own way, round what is in the way; with fight,
+// it fights what it meets on the way. False when there is no such marker.
+int L_go(lua_State* L)
+{
+    uint8_t* c = CheckCharacter(L, 1);
+    const char* name = luaL_checkstring(L, 2);
+    uint8_t* marker = MarkerObject(name);
+    if (!marker)
+        LOG_WARN("Mission: go: no marker %s", name);
+    if (c && marker)
+        reinterpret_cast<void(__fastcall*)(uint8_t*, void*, uint8_t*, bool)>(kCharacterGoto)(c, nullptr, marker, lua_toboolean(L, 3) != 0);
+    lua_pushboolean(L, c && marker);
+    return 1;
+}
+
+// going(c, marker): it is still on its way there
+int L_going(lua_State* L)
+{
+    uint8_t* c = CheckCharacter(L, 1);
+    uint8_t* marker = MarkerObject(luaL_checkstring(L, 2));
+    lua_pushboolean(L, c && marker && reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint8_t*)>(kExecutingGoto)(c, nullptr, marker));
+    return 1;
+}
+
+// marker(name): its x, z (nil when there is none)
+int L_marker(lua_State* L)
+{
+    const char* name = luaL_checkstring(L, 1);
+    for (const Marker& m : g_Markers)
+        if (_stricmp(m.name.c_str(), name) == 0) {
+            lua_pushnumber(L, m.x);
+            lua_pushnumber(L, m.z);
+            return 2;
+        }
+    return 0;
 }
 
 int L_kill(lua_State* L)
@@ -1108,6 +1166,11 @@ function wait_until(condition, timeout)
   end
   return true
 end
+function walk(c, where, timeout)
+  if not go(c, where) then return false end
+  wait(0.1)
+  return wait_until(function() return not going(c, where) end, timeout or 20)
+end
 function say(id) wait(line(id)) end
 function speak(speaker, text, seconds) wait(subtitle(speaker, text, seconds)) end
 function cutscene(fn)
@@ -1134,6 +1197,7 @@ void Register(lua_State* L)
         { "max_health", L_max_health }, { "invincible", L_invincible }, { "position", L_position },
         { "distance", L_distance }, { "place", L_place }, { "face", L_face }, { "side", L_side }, { "ai", L_ai },
         { "attack", L_attack }, { "hold", L_hold }, { "play", L_play }, { "moves", L_moves }, { "saber", L_saber }, { "kill", L_kill },
+        { "go", L_go }, { "going", L_going }, { "marker", L_marker },
         { "class_of", L_class_of }, { "set_player", L_set_player },
         { "camera_fixed", L_camera_fixed }, { "camera_orbit", L_camera_orbit }, { "camera_move", L_camera_move },
         { "camera_track", L_camera_track }, { "camera_game", L_camera_game },
@@ -1416,6 +1480,20 @@ void InstallMissions(const std::wstring& mods)
         ToWorld(m.x, m.z, wx, wz);
         layout.characters.push_back({ m.className, m.placedId, wx, wz, m.yaw + MapYaw(), m.costume });
         g_Cast.push_back(m);
+    }
+    // the places characters can be sent to: the level's goto markers, one each (reached closer than Battlefront's posts)
+    g_Markers.clear();
+    layout.markerReach = 80.0f;
+    for (const std::string& name : Keys(ini, L"Markers")) {
+        const std::vector<float> p = Numbers(Profile(ini, L"Markers", std::wstring(name.begin(), name.end()).c_str(), L""));
+        if (p.size() < 2) {
+            LOG_WARN("Missions: marker %s has no x z", name.c_str());
+            continue;
+        }
+        float wx, wz;
+        ToWorld(p[0], p[1], wx, wz);
+        g_Markers.push_back({ name, p[0], p[1] });
+        layout.markers.push_back({ wx, wz });
     }
     SetDevMapLayout(layout);
     SetPlayerClass(nullptr);

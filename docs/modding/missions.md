@@ -39,6 +39,14 @@ master=ICinDrallig, -150 -300 0, ally
 maul=IMaul, 0 300 180, enemy
 ```
 
+Places characters can be sent to (see `walk` below) are named in `[Markers]`, as `name=x z`:
+
+```ini
+[Markers]
+gate=0 120
+pit=0 600
+```
+
 The cast are placed in the level before it loads, so they come with their classes' sounds, as Heroes vs Villains'
 fighters do (characters spawned later by the script have none). The script finds them with `cast("<name>")`. A side
 is `ally` (on the player's side), `enemy`, `neutral` (attacks no one until hit) or `riot` (everyone's enemy); left
@@ -147,6 +155,9 @@ level is safe to use: functions on it do nothing, `alive()` and `exists()` are f
 | `side(c, "ally" / "enemy" / "neutral" / "riot")` | changes its side |
 | `ai(c, on)` | its AI on or off (off: it stands still) |
 | `attack(c, target)` | its AI goes after that target |
+| `walk(c, marker [, timeout])` | it runs to a marker of `[Markers]` its own way (as the game's AI goes to places) and the script waits until it is there (true) or `timeout` seconds (default 20) passed (false); works in cutscenes too |
+| `go(c, marker [, fight])` / `going(c, marker)` | the same without waiting (with `fight`, it fights what it meets on the way); whether it is still on its way |
+| `marker(name)` | a marker's x, z |
 | `hold(on)` | everyone holds still and the player's controls are held (as in cutscenes) |
 | `kill(c)` | defeats it at once |
 | `set_player(c)` | the player becomes that character where it stands (its class and health); the character itself leaves |
