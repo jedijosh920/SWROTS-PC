@@ -55,6 +55,8 @@ constexpr uint32_t kMaceRulesCall = 0x00424CC8;           // call 0x424CE0: cdec
 constexpr uint32_t kMaceRules = 0x00424CE0;
 constexpr uint32_t kCinRulesCall = 0x00352C78;            // call 0x352C90: cdecl (instance, class object)
 constexpr uint32_t kCinRules = 0x00352C90;
+constexpr uint32_t kAnakinRulesCall = 0x00324BB8;         // call 0x324BD0: cdecl (instance, class object)
+constexpr uint32_t kAnakinRules = 0x00324BD0;
 constexpr uint32_t kSubstitute = 0x00173AB0;              // cdecl (record A, record B)
 constexpr uint32_t kRecordOf = 0x001F53E0;                // cdecl (handle) -> the class's record
 constexpr uint32_t kHeldFrames = 0x00177FF0, kPressed = 0x00178070;
@@ -135,7 +137,8 @@ bool Wants(const CustomCharacter& c)
 {
     return (_stricmp(c.base.c_str(), "ISerra") == 0 && (c.lightning || !c.grapples.empty() || c.forceStorm)) ||
         (_stricmp(c.base.c_str(), "IMace") == 0 && c.lightning) ||
-        (_stricmp(c.base.c_str(), "ICinDrallig") == 0 && c.lightning);
+        (_stricmp(c.base.c_str(), "ICinDrallig") == 0 && c.lightning) ||
+        (_stricmp(c.base.c_str(), "IAnakin") == 0 && c.lightning);
 }
 
 bool DookuGrapples(const CustomCharacter& c)
@@ -467,6 +470,15 @@ void __cdecl CinRulesHook(uint8_t* inst, uint8_t* classObject)
     }
 }
 
+void __cdecl AnakinRulesHook(uint8_t* inst, uint8_t* classObject)
+{
+    reinterpret_cast<void(__cdecl*)(uint8_t*, uint8_t*)>(uintptr_t(kAnakinRules))(inst, classObject);
+    __try {
+        RevanTurn(inst, classObject);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
 // Dooku's lightning and grapple sounds for Serra's event tree: what she never plays.
 bool DookuSoundEntry(const std::string& kind, const std::string& key)
 {
@@ -640,6 +652,53 @@ void AddCinLightningRows(std::vector<uint8_t>& data)
     LOG_INFO("Revan: Cin Drallig's attack table gets %d Force Lightning rows from Vader", count);
 }
 
+// Anakin's event tree has the loop and shockwave sounds but not the cast entries: take both from Dooku.
+void AddAnakinLightningSounds(std::vector<uint8_t>& data)
+{
+    std::vector<uint8_t> donor;
+    if (!ReadDiscResource("meshes\\chars\\common\\s_dooku.xbl_xml", donor) &&
+        !ReadDiscResource("meshes\\chars\\common\\s_dooku.xml", donor)) {
+        LOG_WARN("Revan: Dooku's Force Lightning sounds are not on the disc; Anakin's lightning stays quieter");
+        return;
+    }
+    const size_t before = data.size();
+    if (AppendEventEntries(data, donor, &MaceLightningSoundEntry))
+        LOG_INFO("Revan: Anakin's event tree gets Force Lightning sounds (%zu -> %zu bytes)", before, data.size());
+}
+
+// Anakin's attack table already lists ForceLightning rows; this only fills in what a given disc lacks.
+void AddAnakinLightningRows(std::vector<uint8_t>& data)
+{
+    std::vector<uint8_t> donor;
+    if (!ReadDiscResource("meshes\\chars\\common\\a_vader.csv", donor))
+        return;
+    const std::string own(data.begin(), data.end()), theirs(donor.begin(), donor.end());
+    std::string added;
+    int count = 0;
+    size_t at = 0;
+    while (at < theirs.size()) {
+        size_t end = theirs.find('\n', at);
+        if (end == std::string::npos)
+            end = theirs.size();
+        std::string line = theirs.substr(at, end - at);
+        at = end + 1;
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        const std::string name = line.substr(0, line.find(','));
+        if (name.empty() || (_strnicmp(name.c_str(), "ForceLightning", 14) != 0 &&
+                _strnicmp(name.c_str(), "ForceGrasp_Lightning", 20) != 0))
+            continue;
+        if (own.find("\n" + name + ",") != std::string::npos || own.rfind(name + ",", 0) == 0)
+            continue;
+        added += line + "\r\n";
+        ++count;
+    }
+    if (!data.empty() && data.back() != '\n')
+        data.insert(data.end(), { '\r', '\n' });
+    data.insert(data.end(), added.begin(), added.end());
+    LOG_INFO("Revan: Anakin's attack table gets %d Force Lightning rows from Vader", count);
+}
+
 } // namespace
 
 void InstallRevan()
@@ -657,7 +716,10 @@ void InstallRevan()
     const bool hasCinLightning = std::any_of(customs.begin(), customs.end(), [](const CustomCharacter& c) {
         return _stricmp(c.base.c_str(), "ICinDrallig") == 0 && c.lightning;
     });
-    if (!hasSerra && !hasMaceLightning && !hasCinLightning)
+    const bool hasAnakinLightning = std::any_of(customs.begin(), customs.end(), [](const CustomCharacter& c) {
+        return _stricmp(c.base.c_str(), "IAnakin") == 0 && c.lightning;
+    });
+    if (!hasSerra && !hasMaceLightning && !hasCinLightning && !hasAnakinLightning)
         return;
     if (hasSerra) {
         uint8_t call[5] = { 0xE8 };
@@ -691,6 +753,18 @@ void InstallRevan()
             RegisterResourcePatch("meshes\\chars\\common\\a_cindrallig.csv", &AddCinLightningRows);
         } else {
             LOG_WARN("Revan: unexpected code at Cin Drallig's rules; Force Lightning is unavailable on Cin-based custom characters");
+        }
+    }
+    if (hasAnakinLightning) {
+        uint8_t call[5] = { 0xE8 };
+        const int32_t rel = int32_t(kAnakinRules) - int32_t(kAnakinRulesCall + 5);
+        std::memcpy(call + 1, &rel, 4);
+        if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kAnakinRulesCall)), call, 5) == 0) {
+            PatchCall(kAnakinRulesCall, reinterpret_cast<const void*>(&AnakinRulesHook), 5);
+            RegisterResourcePatch("meshes\\chars\\common\\s_anakin.xml", &AddAnakinLightningSounds);
+            RegisterResourcePatch("meshes\\chars\\common\\a_anakin.csv", &AddAnakinLightningRows);
+        } else {
+            LOG_WARN("Revan: unexpected code at Anakin's rules; Force Lightning is unavailable on Anakin-based custom characters");
         }
     }
     if (hasSerra) {

@@ -58,7 +58,7 @@ constexpr int kFighterCount = 9;
 constexpr int kRandomSlot = 9;
 constexpr int kFirstExtraSlot = 10;
 // Custom characters (customchars.h) with their select pictures join the extras, up to this many in all.
-constexpr int kMaxExtras = 8;
+constexpr int kMaxExtras = 11;
 
 // This start's extras: Yoda, then the custom characters; their texts (owned here: the strings live for the session).
 std::vector<ExtraFighter> g_Extras;

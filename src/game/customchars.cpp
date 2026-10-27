@@ -1419,9 +1419,18 @@ void BuildVoiceArchive(const std::wstring& gameData, const std::wstring& cache)
             archive.insert(archive.end(), line.begin(), line.end());
             ++added;
         }
-        if (0x20 + records.size() * 0x2C > firstData) {
-            LOG_WARN("Custom characters: the dialogue archive has no room for %zu more lines", added);
-            return;
+        // The directory occupies the gap before the first line. Some retail dialogue archives leave too little
+        // room there for a mod's records; make room by moving the data section forward, preserving the alignment
+        // the archive's existing offsets use, and update every record that points into it (including our additions).
+        const size_t tableEnd = 0x20 + records.size() * 0x2C;
+        if (tableEnd > firstData) {
+            const size_t shift = ((tableEnd - firstData + 2047) / 2048) * 2048;
+            archive.insert(archive.begin() + firstData, shift, 0);
+            for (Record& record : records)
+                if (record.offset >= firstData)
+                    record.offset += uint32_t(shift);
+            firstData += uint32_t(shift);
+            LOG_INFO("Custom characters: expanded the dialogue directory by %zu bytes for %zu lines", shift, added);
         }
         archive.resize((archive.size() + 2047) & ~size_t(2047), 0);
         std::sort(records.begin(), records.end(), [](const Record& a, const Record& b) { return _stricmp(a.name.c_str(), b.name.c_str()) < 0; });
