@@ -93,7 +93,8 @@ dialogue: `say("qg_mindful")` has that character say it, with the game's subtitl
 "QUI-GON: Be mindful...", shown with the game's subtitles on: a mission turns them on while it runs) and its voice in
 the game's mix (the port adds the mission's lines to the game's dialogue archive, the voices made into its format in
 `cache\voice\missions\`). A line without a voice is silent and shows for as long as `[Seconds]` (or its text) says.
-During a cutscene the characters say nothing but the mission's lines. A line whose speaker is no character (any other
+During a cutscene the characters say nothing but the mission's lines. A speaker with no lines of its own in the level
+(Palpatine's are his own levels') says it through another character's dialogue, under its own name. A line whose speaker is no character (any other
 name) shows as the port's own subtitle. `say(id, c)` has another character say it.
 
 ## mission.lua

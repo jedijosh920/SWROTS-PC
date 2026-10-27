@@ -1300,6 +1300,24 @@ int L_stop_sounds(lua_State*)
     return 0;
 }
 
+// A speaker name lent for a line (a character without lines of its own says it through another's entry).
+constexpr uint32_t kSpeakerName = 0xA04; // the character's subtitle name (a text handle, ICharacter::Init 0x15BC56)
+struct LentName {
+    uint8_t* character = nullptr;
+    uint32_t own = 0;
+    double until = 0;
+};
+LentName g_LentName;
+
+void RestoreLentName()
+{
+    if (g_LentName.character)
+        for (uint8_t* c : LevelCharacters())
+            if (c == g_LentName.character)
+                At<uint32_t>(c, kSpeakerName) = g_LentName.own;
+    g_LentName = {};
+}
+
 // A line's speaker: a character of the cast by its name, or "player"; null for anyone else (the line is the port's
 // subtitle then).
 uint8_t* SpeakerOf(const std::string& name)
@@ -1345,12 +1363,30 @@ int L_line(lua_State* L)
         const int boxState = boxed ? At<int>(box, 0x1E8) : 0;
         if (boxed)
             At<int>(box, 0x1E8) = 0;
-        const bool said = SayLine(speaker, line.lineId.c_str());
+        RestoreLentName(); // a name lent for the last line: back before anyone says the next
+        int said = SayLine(speaker, line.lineId.c_str());
+        if (said < 0) {
+            // its speaker has no lines in this level (Palpatine's are his levels' own): another character's entry says
+            // it under the speaker's name (the subtitle's name, +0xA04, lent for the line's time)
+            for (uint8_t* proxy : LevelCharacters()) {
+                if (proxy == speaker || !Alive(proxy))
+                    continue;
+                RestoreLentName();
+                g_LentName = { proxy, At<uint32_t>(proxy, kSpeakerName), Now() + line.length + 0.5 };
+                At<uint32_t>(proxy, kSpeakerName) = At<uint32_t>(speaker, kSpeakerName);
+                said = SayLine(proxy, line.lineId.c_str());
+                if (said > 0)
+                    break;
+                RestoreLentName();
+                if (said == 0)
+                    break; // busy: asked again later
+            }
+        }
         if (boxed)
             At<int>(box, 0x1E8) = boxState;
         if (options)
             options[kOptionsAiDisabled] = aiOff;
-        if (said) {
+        if (said > 0) {
             LOG_INFO("Mission: %s says %s: %s", line.speaker.c_str(), line.lineId.c_str(), line.text.c_str());
             lua_pushnumber(L, line.length);
             return 1;
@@ -1815,6 +1851,7 @@ void InstallMissions(const std::wstring& mods)
     g_Shot = Shot{};
     g_Held = g_Skip = g_InCutscene = false;
     SetDialogueQuiet(false);
+    g_LentName = {};
     g_FadeFrom = g_FadeTo = g_FadeStart = g_FadeLength = 0;
     g_BarsFrom = g_BarsTo = g_BarsStart = 0;
     g_ObjectiveAt = -10;
@@ -1994,6 +2031,8 @@ void MissionFrame()
 {
     if (!g_Active)
         return;
+    if (g_LentName.character && Now() > g_LentName.until) // a lent speaker name back
+        RestoreLentName();
     UpdateHud();
     uint8_t* player = PlayerObject();
     if (!player)

@@ -239,6 +239,7 @@ void EndForcedLine()
 }
 
 bool g_OnlyForced = false; // a mission's cutscene: no line but the ones it asks for (SetDialogueQuiet)
+int g_ForcedAsked = 0;      // the dialogue engine's starts of an entry for the forced speaker's event (SayLine)
 
 int __fastcall StartEntryHook(uint8_t* engine, void*, uint8_t* speaker, int entry, int a, int b, int c)
 {
@@ -248,6 +249,7 @@ int __fastcall StartEntryHook(uint8_t* engine, void*, uint8_t* speaker, int entr
         uint8_t* e = *reinterpret_cast<uint8_t**>(engine + kDialogueEntries) + size_t(entry) * kDialogueEntrySize;
         const char* name = *reinterpret_cast<const char**>(e + 0x14);
         if (name && _strnicmp(name, g_Forced.event, 3) == 0) {
+            ++g_ForcedAsked;
             const char** id = reinterpret_cast<const char**>(e + 0x10);
             if (g_Forced.swapped != id) {
                 if (g_Forced.swapped) // another entry of the event: the first one's line back
@@ -1673,20 +1675,23 @@ void AddVoiceLines(const std::vector<VoiceLineSource>& lines)
 
 // A character says a line of the dialogue archives now: the line forced on the next entry of an event its speaker
 // has lines for, and the event asked of the character (its vfunc +0x458, what the scripts' SayEvent 0x17ACC0 calls).
-bool SayLine(uint8_t* speaker, const char* lineId)
+int SayLine(uint8_t* speaker, const char* lineId)
 {
     if (!speaker || !lineId)
-        return false;
-    static const char* const kEvents[] = { "FSE", "TNT", "BAT", "KIL" };
+        return 0;
+    static const char* const kEvents[] = { "FSE", "TNT", "BAT", "KIL", "TKE", "HIT", "SCM" };
+    int asked = 0;
     for (const char* event : kEvents) {
         ForceNextLine(speaker, event, lineId, 8000);
+        g_ForcedAsked = 0;
         using SayFn = int(__fastcall*)(uint8_t*, void*, const char*, const char*, int, int, int);
         const int result = (*reinterpret_cast<SayFn* const*>(speaker))[0x458 / 4](speaker, nullptr, event, "", 1, 0, 0);
+        asked += g_ForcedAsked;
         if (result) // the line was said or queued (the forced line stays for its time)
-            return true;
+            return 1;
     }
     EndForcedLine();
-    return false;
+    return asked ? 0 : -1; // refused (another line on), or none of these events has an entry for its speaker
 }
 
 void SetDialogueQuiet(bool quiet)
