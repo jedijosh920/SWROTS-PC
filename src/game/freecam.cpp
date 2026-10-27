@@ -114,6 +114,7 @@ CameraAdjuster g_Adjuster = nullptr;
 CameraAdjuster g_Director = nullptr;
 bool g_Adjusted = false;            // g_ShownView was adjusted last time
 float g_GameFov = 0.0f;             // the field of view the game gave the renderer (below)
+float g_FovOverride = 0.0f;         // a director's own field of view (SetCameraFov), 0: the game's
 bool g_HaveGameFov = false;
 Matrix g_FlownView = {};            // this frame's flown placement
 Vec3 g_Position = {};
@@ -195,7 +196,9 @@ void __fastcall SetTransformHook(void* camera, void* edx, const Matrix* transfor
             g_ShownView = *transform;
         g_Adjusted = false;
         bool adjusted = transform && !again && g_Adjuster && g_Adjuster(&g_ShownView.m[0][0], g_HaveGameFov ? g_GameFov : 0.0f);
-        if (transform && !again && g_Director && g_Director(&g_ShownView.m[0][0], g_HaveGameFov ? g_GameFov : 0.0f))
+        // a director places the camera outright (nothing builds on the last placement): it places it every time, the
+        // game's repeated placement too (a held scene repeats it every frame: the director's shots would stop)
+        if (transform && g_Director && g_Director(&g_ShownView.m[0][0], g_HaveGameFov ? g_GameFov : 0.0f))
             adjusted = true;
         if (adjusted) {
             g_Adjusted = true;
@@ -277,7 +280,7 @@ char __fastcall RenderFovHook(void* renderer, void* edx, float fov)
     if (!g_Flying) {
         g_GameFov = fov;
         g_HaveGameFov = true;
-        return g_OriginalRenderFov(renderer, edx, fov);
+        return g_OriginalRenderFov(renderer, edx, g_FovOverride > 0 ? g_FovOverride : fov);
     }
     return g_OriginalRenderFov(renderer, edx, g_HaveGameFov ? g_GameFov : fov);
 }
@@ -300,6 +303,11 @@ bool GameRenderedView(float view[16], float& fov)
     std::memcpy(view, g_RenderedView.m, sizeof(g_RenderedView.m));
     fov = g_HaveGameFov ? g_GameFov : 0.0f;
     return true;
+}
+
+void SetCameraFov(float radians)
+{
+    g_FovOverride = radians;
 }
 
 void SetCameraDirector(CameraAdjuster director)

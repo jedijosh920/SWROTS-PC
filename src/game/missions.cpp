@@ -208,7 +208,7 @@ struct Shot {
     int target = 0;        // handle
     float eye[3] = {}, look[3] = {};
     float from[3] = {}, to[3] = {};
-    float radius = 0, height = 0, fromDeg = 0, toDeg = 0, lookHeight = 90;
+    float radius = 0, height = 0, fromDeg = 0, toDeg = 0, lookHeight = 50;
     float seconds = 1;
     double startedAt = 0;
     float facing[2] = { 0, 1 }; // the target's facing (x, z) when the shot started
@@ -1100,12 +1100,12 @@ int L_camera_orbit(lua_State* L)
     Shot s;
     s.kind = ShotKind::Orbit;
     s.target = CheckHandle(L, 1);
-    s.radius = float(luaL_optnumber(L, 2, 300));
-    s.height = float(luaL_optnumber(L, 3, 120));
+    s.radius = float(luaL_optnumber(L, 2, 200));
+    s.height = float(luaL_optnumber(L, 3, 55));
     s.fromDeg = float(luaL_optnumber(L, 4, 0));
     s.toDeg = float(luaL_optnumber(L, 5, 90));
     s.seconds = float(luaL_optnumber(L, 6, 5));
-    s.lookHeight = float(luaL_optnumber(L, 7, 90));
+    s.lookHeight = float(luaL_optnumber(L, 7, 50));
     StartShot(s);
     return 0;
 }
@@ -1120,7 +1120,7 @@ int L_camera_move(lua_State* L)
         s.to[k] = float(luaL_optnumber(L, 5 + k, s.from[k]));
     }
     s.seconds = float(luaL_optnumber(L, 8, 4));
-    s.lookHeight = float(luaL_optnumber(L, 9, 90));
+    s.lookHeight = float(luaL_optnumber(L, 9, 50));
     StartShot(s);
     return 0;
 }
@@ -1132,13 +1132,23 @@ int L_camera_track(lua_State* L)
     for (int k = 0; k < 3; ++k)
         s.eye[k] = float(luaL_checknumber(L, 1 + k));
     s.target = CheckHandle(L, 4);
-    s.lookHeight = float(luaL_optnumber(L, 5, 90));
+    s.lookHeight = float(luaL_optnumber(L, 5, 50));
     StartShot(s);
+    return 0;
+}
+
+// camera_fov(degrees): the lens (the field of view) until camera_game(); nil or 0: the game's (the levels' own is
+// about 80 degrees)
+int L_camera_fov(lua_State* L)
+{
+    const double degrees = std::clamp(luaL_optnumber(L, 1, 0), 0.0, 150.0);
+    SetCameraFov(degrees > 0 ? float(degrees * 3.14159265 / 180.0) : 0.0f);
     return 0;
 }
 
 int L_camera_game(lua_State*)
 {
+    SetCameraFov(0);
     g_Shot = Shot{};
     RefocusCameraOnPlayer();
     return 0;
@@ -1613,6 +1623,7 @@ function cutscene(fn)
   hold(true)
   hud(false)
   letterbox(true)
+  camera_fov(35) -- a film's lens (the levels' own is wide)
   local ok, err = pcall(fn)
   letterbox(false)
   camera_game()
@@ -1637,7 +1648,7 @@ void Register(lua_State* L)
         { "music_volume", L_music_volume },
         { "class_of", L_class_of }, { "set_player", L_set_player },
         { "camera_fixed", L_camera_fixed }, { "camera_orbit", L_camera_orbit }, { "camera_move", L_camera_move },
-        { "camera_track", L_camera_track }, { "camera_game", L_camera_game },
+        { "camera_track", L_camera_track }, { "camera_game", L_camera_game }, { "camera_fov", L_camera_fov },
         { "letterbox", L_letterbox }, { "fade_out", L_fade_out }, { "fade_in", L_fade_in },
         { "objective", L_objective }, { "title", L_title }, { "notice", L_notice }, { "subtitle", L_subtitle },
         { "line", L_line }, { "timer", L_timer }, { "timer_value", L_timer_value }, { "timer_stop", L_timer_stop },
@@ -1830,6 +1841,24 @@ void __fastcall ScriptSaberOn(uint8_t* saber, void*, float seconds)
 
 } // namespace
 
+// The game's own restart of the mission (the pause screen's Restart Mission, the Game Over screen's Restart) launches
+// the level it runs (Grievous Survival's, which the dev map is built from) with its own arguments: the mission's
+// are added again, so the restart is the mission's, not the bonus mission's.
+void MissionRestartLaunch(std::string& arguments)
+{
+    if (!g_Active || !g_Info)
+        return;
+    std::string lower = " " + arguments + " ";
+    for (char& c : lower)
+        c = char(tolower(static_cast<unsigned char>(c)));
+    if (lower.find(" map:u107_uta_grievoussurvival ") == std::string::npos || lower.find(" mission:") != std::string::npos) {
+        LOG_INFO("Missions: the game launches '%s' (left as it is)", arguments.substr(0, 160).c_str());
+        return;
+    }
+    arguments += " devmap:1 mission:" + g_Info->id + (g_Info->map.empty() ? "" : " custommap:" + g_Info->map);
+    LOG_INFO("Missions: the restart is %s's", g_Info->id.c_str());
+}
+
 void InstallMissions(const std::wstring& mods)
 {
     CloseScript();
@@ -1849,9 +1878,11 @@ void InstallMissions(const std::wstring& mods)
     g_InLevelAt = 0;
     g_Hud = MissionHud{};
     g_Shot = Shot{};
+    SetCameraFov(0);
     g_Held = g_Skip = g_InCutscene = false;
     SetDialogueQuiet(false);
     g_LentName = {};
+    g_LevelCharFade = -1;
     g_FadeFrom = g_FadeTo = g_FadeStart = g_FadeLength = 0;
     g_BarsFrom = g_BarsTo = g_BarsStart = 0;
     g_ObjectiveAt = -10;
@@ -1871,6 +1902,7 @@ void InstallMissions(const std::wstring& mods)
         return;
     }
     PatchCall(kScriptSaberOnCall, reinterpret_cast<const void*>(&ScriptSaberOn), 5);
+    kernel::SetLaunchFilter(&MissionRestartLaunch);
     g_Folder = mods + L"\\" + std::wstring(g_Info->folder.begin(), g_Info->folder.end());
     const std::wstring ini = g_Folder + L"\\mission.ini";
     // the script
@@ -2027,10 +2059,32 @@ void InstallMissions(const std::wstring& mods)
         g_PlayerClass.c_str(), g_Cast.size());
 }
 
+// The level's "Allow char fade?" (ILevelProperties [0x68F720] +0xC8): the game fades characters that look near the
+// camera (by their size on screen: a long lens makes far ones "near"), which empties a cutscene's close shots: off
+// while a shot of the mission's is on, the level's own again for the game's camera.
+constexpr uint32_t kLevelProperties = 0x0068F720;
+constexpr uint32_t kAllowCharFade = 0xC8;
+int g_LevelCharFade = -1; // the level's own setting while a shot has it off; -1: untouched
+
+void KeepCharactersInShot(bool shot)
+{
+    uint8_t* properties = *reinterpret_cast<uint8_t**>(uintptr_t(kLevelProperties));
+    if (!properties)
+        return;
+    if (shot && g_LevelCharFade < 0) {
+        g_LevelCharFade = At<uint8_t>(properties, kAllowCharFade);
+        At<uint8_t>(properties, kAllowCharFade) = 0;
+    } else if (!shot && g_LevelCharFade >= 0) {
+        At<uint8_t>(properties, kAllowCharFade) = uint8_t(g_LevelCharFade);
+        g_LevelCharFade = -1;
+    }
+}
+
 void MissionFrame()
 {
     if (!g_Active)
         return;
+    KeepCharactersInShot(g_Shot.kind != ShotKind::None);
     if (g_LentName.character && Now() > g_LentName.until) // a lent speaker name back
         RestoreLentName();
     UpdateHud();

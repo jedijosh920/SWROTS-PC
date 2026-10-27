@@ -72,7 +72,7 @@ is `ally` (on the player's side), `enemy`, `neutral` (attacks no one until hit) 
 out, the class's own.
 
 Coordinates are the map's own (the ones its `map.ini` uses; on the developer map, units from the middle of the floor),
-`x` and `z` across the floor, heights (`y`) from the floor up. A character is about 180 units tall.
+`x` and `z` across the floor, heights (`y`) from the floor up. A character is about 90 units tall (its chest about 50, its eyes about 75).
 
 ## lines.ini
 
@@ -106,7 +106,7 @@ The script defines `main()`, which the port runs once the level is ready. Waitin
 function main()
   local maul = cast("maul")
   cutscene(function()                 -- bars, everyone holds still, the player can skip it
-    camera_orbit(maul, 300, 120, -40, 40, 4)
+    camera_orbit(maul, 200, 55, -40, 40, 4)
     title("DUEL OF THE FATES", "Theed, Naboo", 3)
     play(maul, "Maul_Intro")
     wait(4)
@@ -200,7 +200,7 @@ level is safe to use: functions on it do nothing, `alive()` and `exists()` are f
 
 ### Camera
 
-Heights are from the floor; `look` is the height on the character the camera looks at (default 90, the chest).
+Heights are from the floor; `look` is the height on the character the camera looks at (default 50, the chest). A cutscene uses a 35 degree lens (the levels' own is about 80): a close shot is a narrow lens from a little way off, e.g. `camera_fov(25)` and `camera_move(c, 20, 70, 150, 15, 68, 130, 2, 62)` for a head-and-shoulders shot.
 
 | Function | |
 |---|---|
@@ -208,7 +208,8 @@ Heights are from the floor; `look` is the height on the character the camera loo
 | `camera_move(c, x1, y1, z1 [, x2, y2, z2, seconds, look])` | from one place by the character to another, in its own frame at the start: `x` to its right, `y` up, `z` ahead of it |
 | `camera_track(x, y, z, c [, look])` | stands at a point of the map and follows the character |
 | `camera_fixed(x, y, z, tx, ty, tz)` | stands at a point of the map and looks at another |
-| `camera_game()` | the game's own camera again (cutscenes end with it) |
+| `camera_fov(degrees)` | the lens (field of view) until `camera_game()`; without a number, the game's |
+| `camera_game()` | the game's own camera and lens again (cutscenes end with it) |
 
 ### Screen
 

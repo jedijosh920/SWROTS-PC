@@ -403,16 +403,21 @@ void StartRebootTest(unsigned seconds)
         CloseHandle(thread);
 }
 
-static LaunchFilter g_LaunchFilter = nullptr;
-void SetLaunchFilter(LaunchFilter filter) { g_LaunchFilter = filter; }
+static std::vector<LaunchFilter> g_LaunchFilters;
+void SetLaunchFilter(LaunchFilter filter)
+{
+    if (filter && std::find(g_LaunchFilters.begin(), g_LaunchFilters.end(), filter) == g_LaunchFilters.end())
+        g_LaunchFilters.push_back(filter);
+}
 
 void XBAPI HalReturnToFirmware(ULONG Routine)
 {
-    if (Routine == 2 && LaunchDataPage && g_LaunchFilter) {
+    if (Routine == 2 && LaunchDataPage && !g_LaunchFilters.empty()) {
         char* text = static_cast<char*>(LaunchDataPage) + 0x400;
         std::string arguments(text, strnlen(text, 3072));
         const std::string before = arguments;
-        g_LaunchFilter(arguments);
+        for (LaunchFilter filter : g_LaunchFilters)
+            filter(arguments);
         if (arguments != before) {
             std::memset(text, 0, 3072);
             std::memcpy(text, arguments.data(), std::min<size_t>(arguments.size(), 3071));
