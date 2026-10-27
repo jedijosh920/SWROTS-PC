@@ -27,6 +27,12 @@ licensed under the GPL v3.0 or later.
 Included in `third_party/imgui/` (version 1.91.9b) with its licence text in
 [third_party/imgui/LICENSE.txt](third_party/imgui/LICENSE.txt).
 
+## Lua
+
+<https://www.lua.org> -- MIT License, Copyright (C) 1994-2023 Lua.org, PUC-Rio.
+Included in `third_party/lua/` (version 5.4.6, the library only: without `lua.c` and `luac.c`) with its licence text
+in [third_party/lua/LICENSE.txt](third_party/lua/LICENSE.txt). It runs the scripts of missions and modes.
+
 ## Microsoft Windows components
 
 The port uses Direct3D 9, the Direct3D shader compiler, XAudio2, XInput and other components that

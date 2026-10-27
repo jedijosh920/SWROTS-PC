@@ -25,6 +25,8 @@
 - [Custom characters](modding/custom-characters.md): new fighters from `mods\characters` (model, voice, sabers,
   Force, intro), in Versus, Heroes vs Villains and the debug menu
 - [Custom maps](modding/custom-maps.md): new maps from `mods\maps` for Versus, Heroes vs Villains and Battlefront
+- [Missions and modes](modding/missions.md): missions and game modes of your own from `mods\missions`, scripted
+  in Lua (cutscenes, cameras, dialogue, objectives, timers, spawning)
 - [How loading works](modding/how-loading-works.md): level archives and what the port changes
 - [File formats](modding/file-formats.md): PAK, STX, MSH and more
 

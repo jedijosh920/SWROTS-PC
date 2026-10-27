@@ -23,6 +23,7 @@
 #include "game/custommaps.h"
 #include "game/devmap.h"
 #include "game/hvv.h"
+#include "game/missions.h"
 #include "game/versus.h"
 #include "kernel/kernel.h"
 
@@ -269,6 +270,7 @@ void Help(uint8_t* console)
     Print(LineKind::Output, "                           or a custom map on it (mods/maps; now: %s)", CustomMapList().c_str());
     Print(LineKind::Output, "  versus <class> <class> [map <map>] [rounds <n>]  a Versus duel (you, the computer) on the");
     Print(LineKind::Output, "                           developer map or a custom map");
+    Print(LineKind::Output, "  mission [<id>]           start a mission of mods\\missions (no id: list them)");
     Print(LineKind::Output, "  hvv [<classes>] [heroes <n>] [player <n>] [lives <n>] [health <n>] [intro on|off] [map <map>]");
     Print(LineKind::Output, "                           Heroes vs Villains: 2-16 classes, heroes then villains (half each");
     Print(LineKind::Output, "                           unless `heroes` says); hvv board on|off; hvv end (ends it now)");
@@ -1018,7 +1020,7 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         command != "infiniteforce" && command != "memory" && command != "team" &&
         command != "findrefs" && command != "despawn" && command != "characters" && command != "scale" &&
         command != "screenshot" && command != "coop" &&
-        command != "devmap" && command != "hvv" && command != "versus")
+        command != "devmap" && command != "hvv" && command != "versus" && command != "mission")
         return false;
     Print(LineKind::Output, "> %s", line.c_str());
     if (command == "duelist") {
@@ -1121,6 +1123,21 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         }
         Print(LineKind::Output, "  starting a duel...");
         game::StartDuel(first, second, map, rounds, game::ProfileSessionArguments());
+    } else if (command == "mission") {
+        // mission [<id>]: starts a mission of mods\missions\<id> (missions.h); no id: lists them
+        if (words.size() < 2) {
+            if (game::Missions().empty())
+                Print(LineKind::Output, "  no missions in mods\\missions");
+            for (const game::MissionInfo& m : game::Missions())
+                Print(LineKind::Output, "  %s: %s%s%s", m.id.c_str(), m.name.c_str(), m.map.empty() ? "" : " (map ",
+                    m.map.empty() ? "" : (m.map + ")").c_str());
+            return true;
+        }
+        std::string error;
+        if (game::StartMission(words[1], error))
+            Print(LineKind::Output, "  starting the mission...");
+        else
+            Print(LineKind::Error, "%s", error.c_str());
     } else if (command == "devmap") {
         // devmap [<map>]: the floor, or a custom map (mods/maps/<map>/map.ini)
         if (words.size() > 1 && !game::FindCustomMap(words[1])) {
@@ -1223,7 +1240,7 @@ void RunQueuedConsoleCommands()
             // and gone while a level loads).
             const std::vector<std::string> words = Words(line);
             static const char* const kStandalone[] = { "player", "variants", "meshes", "restart", "autorestart",
-                "duelist", "freecam", "saber", "spawn", "peek", "infiniteforce", "memory", "team", "findrefs", "despawn", "characters", "scale", "screenshot", "coop", "devmap", "hvv", "versus", "clear", "cls" };
+                "duelist", "freecam", "saber", "spawn", "peek", "infiniteforce", "memory", "team", "findrefs", "despawn", "characters", "scale", "screenshot", "coop", "devmap", "hvv", "versus", "mission", "clear", "cls" };
             const bool standalone = !words.empty() && std::any_of(std::begin(kStandalone), std::end(kStandalone),
                 [&](const char* c) { return _stricmp(words[0].c_str(), c) == 0; });
             if (standalone) {

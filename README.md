@@ -51,6 +51,9 @@ Things the Xbox release never had:
   sabers, Force powers and intro (`mods\characters`), and new maps for Versus, Heroes vs Villains and Battlefront
   (`mods\maps`). The game is unchanged without them. See [custom characters](docs/modding/custom-characters.md)
   and [custom maps](docs/modding/custom-maps.md).
+- **Missions and modes of your own.** A mission folder in `mods\missions` holds a short Lua script with
+  cutscenes, camera shots, dialogue subtitles, objectives, timers, spawning and its own ending; modes such as
+  survival are written the same way. See [missions and modes](docs/modding/missions.md).
 - **Keyboard and mouse button prompts**: the game's prompts show your keys after you use the keyboard or mouse.
 - **Play story levels as anyone, in any costume or body.** Vader in Order 66, Anakin without his
   robe in the Jedi Temple, a 501st clone trooper, Obi-Wan in Anakin's duel outfit: pick a class, a

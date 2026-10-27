@@ -23,9 +23,11 @@
 #include "game/devmap.h"
 #include "game/freecam.h"
 #include "game/hvv.h"
+#include "game/missions.h"
 #include "game/hvvmenu.h"
 #include "debug/gamefont.h"
 #include "debug/hvvhud.h"
+#include "debug/missionhud.h"
 #include "game/game.h"
 #include "imgui.h"
 #include "kernel/kernel.h"
@@ -1057,7 +1059,8 @@ void HvvTab()
 
 bool OverlayShown()
 {
-    return g_Ready && (game::HvvActive() || !game::CodyHelpers().empty()); // HvV's screen, Cody's clones' marks
+    // HvV's screen, Cody's clones' marks, a mission's screen
+    return g_Ready && (game::HvvActive() || !game::CodyHelpers().empty() || game::MissionActive());
 }
 
 void RenderMenu()
@@ -1092,6 +1095,7 @@ void RenderMenu()
     }
     ImGui::NewFrame();
     DrawHvvHud();
+    DrawMissionHud();
     if (g_Open)
         BuildMenu();
     ImGui::Render();
@@ -1108,6 +1112,7 @@ void MenuAfterFrame()
     game::CodyFrame();
     game::RevanFrame();
     game::HvvFrame();
+    game::MissionFrame();
 }
 
 } // namespace swrots::debug

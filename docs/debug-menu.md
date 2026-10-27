@@ -42,6 +42,7 @@ Up/Down recall earlier commands.
 | `despawn` | removes the characters you spawned in this level (the Characters tab's Remove spawned) |
 | `restart` | restarts the running mission (as the pause menu's Restart Mission does) |
 | `versus <class> <class> [map <map>] [rounds <n>]` | a Versus duel, you against the computer, on the developer map or a [custom map](modding/custom-maps.md#in-versus) |
+| `mission [<id>]` | starts a [mission of `mods\missions`](modding/missions.md); without an id, lists them |
 | `devmap [<map>]` | the game restarts into the developer map: an empty, lit, flat floor under the sky with nothing on it but you, to test anything (see the [Game tab](#game-tab)); with a map's name, a [custom map](modding/custom-maps.md) on it |
 | `hvv [<classes>] [heroes <n>] [player <n>] [lives <n>] [health <n>] [intro on\|off] [map <map>]` | Heroes vs Villains: heroes against villains (2 to 16 classes, half each unless `heroes` says) on the developer map or a custom map, with lives and a scoreboard ([how to play it](research/heroes-vs-villains.md#playing-it)) |
 | `autorestart [on\|off]` | whether a `player` change applies at once during a mission: live, or by restarting it (on by default) |
