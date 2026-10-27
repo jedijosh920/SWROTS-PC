@@ -53,7 +53,8 @@ Intro=IVader             ; whose Versus intro and outro it plays (optional; the 
                          ; IMace, IObiwan, IOldObiwan, ISerra or IVader
 IntroAnimation=GBguard_Atk_CombinedV1_Call ; its Versus intro is this animation of its base's instead (optional;
 IntroSpeed=1.2           ; the Jedi Brute's twirl), at this speed (optional; 1)
-Lightning=1              ; on Serra Keto's class (Base=ISerra): Force lightning instead of her stun (optional)
+Lightning=1              ; on Serra Keto's class (Base=ISerra), Mace Windu's class (Base=IMace) or Cin Drallig's
+                         ; class (Base=ICinDrallig): Force lightning instead of their stun (optional)
 Grapples=IDooku          ; on Serra Keto's class: Count Dooku's grapple throws instead of hers (optional)
 ForceStorm=1             ; on Serra Keto's class: the Force Storm special (optional; see "Other duelists' moves")
 Side=Hero                ; Hero or Villain: its side in Heroes vs Villains by default
@@ -165,6 +166,17 @@ are added to Serra's event tree (entries she never plays) and his grapple rows t
 The storm's strikes are the game's own explosion objects with its electric explosion and Force shock effects: a column
 of lightning comes down on each enemy, then hits ("Electrified" damage, every class's hit reaction).
 
+On Mace Windu's class (`Base=IMace`), `Lightning=1` maps his `ForceStun` and alternate to `ForceLightning` and its
+alternate. Mace's other rules and attacks stay his. The port hooks Mace's rules after his normal call (0x424CC8), enables
+the shared Jedi lightning sequences, and adds the lightning sound entries and attack-table rows his class lacks. The
+computer can then choose lightning from Mace's attack table. Mace has no stun-grip rule to replace, so this option does
+not add Serra's lightning-grip variant.
+
+On Cin Drallig's class (`Base=ICinDrallig`), `Lightning=1` maps his `ForceStun` and alternate to `ForceLightning` and
+its alternate, the same way. The port hooks Cin Drallig's rules after his normal call (0x352C78), enables the shared
+Jedi lightning sequences, and adds the lightning sound entries and attack-table rows his class lacks. The computer can
+then choose lightning from Cin Drallig's attack table.
+
 ## How it works
 
 `src/game/customchars.cpp`. The game creates a character of a class through the class registry's lookup (0xE9B60,
@@ -198,8 +210,8 @@ mods\interfc\front_end\s_selduel_fb_<costume>_v1.stx     its full body, player 1
 mods\interfc\front_end\s_selduel_fb_<costume>_v2.stx     player 2's (optional)
 ```
 
-(`<costume>` in lower case, e.g. `s_selduel_lukehead.stx`.) Any number of custom characters get their slots (up to
-seven after Yoda). The full bodies show under the strip and on the arena screen, as the game's fighters'; without
+(`<costume>` in lower case, e.g. `s_selduel_lukehead.stx`.) Custom characters with these portraits get their slots
+(up to seven after Yoda). The full bodies show under the strip and on the arena screen, as the game's fighters'; without
 them the arena screen shows the bust in the full body's frame.
 
 The menus use only pictures read with the shared PAK (`res_null.pak`; a picture under `mods\` that no PAK has is
