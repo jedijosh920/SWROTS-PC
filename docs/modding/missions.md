@@ -152,7 +152,7 @@ level is safe to use: functions on it do nothing, `alive()` and `exists()` are f
 | `invincible(c, on)` | no damage while on |
 | `position(c)` | x, z, height |
 | `distance(a, b)` | between two characters, across the floor |
-| `place(c, x, z [, heading])` | moves it there |
+| `place(c, x, z [, heading, height])` | moves it there; with a height above the floor it falls from there (below it, it falls away: a pit) |
 | `face(c, other)` | turns it toward another |
 | `side(c, "ally" / "enemy" / "neutral" / "riot")` | changes its side |
 | `ai(c, on)` | its AI on or off (off: it stands still) |
@@ -162,7 +162,7 @@ level is safe to use: functions on it do nothing, `alive()` and `exists()` are f
 | `marker(name)` | a marker's x, z |
 | `hold(on)` | everyone holds still and the player's controls are held (as in cutscenes) |
 | `kill(c)` | defeats it at once |
-| `set_player(c)` | the player becomes that character where it stands (its class and health); the character itself leaves |
+| `set_player(c)` | the player becomes that character where it stands (its class and health); the character itself leaves, and the character the player was stays where it stood, on the player's side: returns true and that character (e.g. `local _, master = set_player(padawan)`) |
 | `class_of(c)` | its class's name |
 
 ### Moves

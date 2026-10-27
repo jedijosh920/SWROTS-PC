@@ -523,8 +523,10 @@ int L_place(lua_State* L)
 {
     if (uint8_t* c = CheckCharacter(L, 1)) {
         float m[16];
+        // place(c, x, z [, heading, height]): a height above the floor (it falls from there), or below it (a pit's
+        // fall: nothing stops it)
         Transform(float(luaL_checknumber(L, 2)), float(luaL_checknumber(L, 3)),
-            float(luaL_optnumber(L, 4, 0)) * 3.14159265f / 180.0f, m);
+            float(luaL_optnumber(L, 4, 0)) * 3.14159265f / 180.0f, m, float(luaL_optnumber(L, 5, 2.0)));
         Virtual<void(__fastcall*)(uint8_t*, void*, const float*)>(c, kPlace)(c, nullptr, m);
     }
     return 0;
@@ -737,11 +739,16 @@ int L_set_player(lua_State* L)
         lua_pushboolean(L, c == player);
         return 1;
     }
-    float m[16];
+    float m[16], was[16];
     std::memcpy(m, c + kCharacterTransform, sizeof m);
+    std::memcpy(was, player + kCharacterTransform, sizeof was);
     const float health = At<float>(c, kCharacterHealth), most = At<float>(c, kCharacterMaxHealth);
+    const float wasHealth = At<float>(player, kCharacterHealth), wasMost = At<float>(player, kCharacterMaxHealth);
     const CustomCharacter* custom = CustomCharacterOf(c);
     const std::string className = custom ? custom->className : name;
+    const char* wasName = VirtualTypeName(player);
+    const CustomCharacter* wasCustom = CustomCharacterOf(player);
+    const std::string wasClass = wasCustom ? wasCustom->className : (wasName ? wasName : "");
     // the character goes; the player stands where it stood, then changes into its class
     lua_settop(L, 1);
     L_remove(L);
@@ -755,9 +762,25 @@ int L_set_player(lua_State* L)
         At<float>(now, kCharacterMaxHealth) = most;
         At<float>(now, kCharacterHealth) = std::max(1.0f, health);
     }
+    // the character the player was stays behind where it stood, on the player's side (returned)
+    uint8_t* left = nullptr;
+    if (ok && !wasClass.empty()) {
+        std::string spawnError;
+        left = SpawnCharacterAt(wasClass.c_str(), "", "", "", SpawnSide::Ally, was, spawnError);
+        if (left) {
+            At<float>(left, kCharacterMaxHealth) = wasMost;
+            At<float>(left, kCharacterHealth) = std::max(1.0f, wasHealth);
+        } else {
+            LOG_WARN("Mission: set_player: the player's %s could not stay: %s", wasClass.c_str(), spawnError.c_str());
+        }
+    }
     InvalidateLevelCharacters();
     lua_pushboolean(L, ok);
-    return 1;
+    if (left)
+        lua_pushinteger(L, AddHandle(left));
+    else
+        lua_pushnil(L);
+    return 2;
 }
 
 // --- Cameras: shots the port places the game's camera at (freecam.h's director) -----------------------------------

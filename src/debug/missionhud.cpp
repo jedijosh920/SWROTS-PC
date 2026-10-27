@@ -89,8 +89,8 @@ void DrawMissionHud()
             ly += 24 * u;
         }
     }
-    // the timer (top centre) and counters (top right)
-    if (h.timerShown && h.ending.empty()) {
+    // the timer (top centre) and counters (top right), outside cutscenes
+    if (h.timerShown && h.ending.empty() && h.letterbox < 0.05f) {
         const int seconds = int(h.timerSeconds + 0.999f);
         char text[32];
         std::snprintf(text, sizeof text, "%d:%02d", seconds / 60, seconds % 60);
@@ -99,7 +99,7 @@ void DrawMissionHud()
             Text(draw, x0 + w / 2, y, 14 * u, Faded(kGold, 0.9f), h.timerLabel, 0.5f);
         Text(draw, x0 + w / 2, y + (h.timerLabel.empty() ? 0 : 18 * u), 32 * u, seconds <= 10 ? kRed : kWhite, text, 0.5f);
     }
-    if (h.ending.empty()) {
+    if (h.ending.empty() && h.letterbox < 0.05f) {
         float y = y0 + std::max(bar, 0.0f) + 22 * u;
         for (const auto& [label, value] : h.counters) {
             Text(draw, x0 + w - 28 * u, y, 14 * u, Faded(kGold, 0.9f), label, 1.0f);
