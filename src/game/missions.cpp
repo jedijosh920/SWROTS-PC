@@ -1266,6 +1266,44 @@ int L_marker(lua_State* L)
     return 0;
 }
 
+// The fields' colour (mission.ini FieldColour=r g b, e.g. Theed's red lasers): their two textures (the separatist
+// door field's, DXT5 64x64 / 128x32, which the Jedi Temple field model names) recoloured as they load, the glow's
+// brightness kept and its hot core whiter; none: the game's own blue.
+bool g_FieldTinted = false;
+float g_FieldTint[3] = {};
+
+void TintFieldTexture(std::vector<uint8_t>& data)
+{
+    constexpr size_t kPixels = 0x184;
+    if (!g_FieldTinted || data.size() < kPixels || std::memcmp(data.data(), "STX", 4) != 0 || data[0x3C] != 0x52)
+        return;
+    const auto unpack = [](uint16_t c, float rgb[3]) {
+        rgb[0] = float((c >> 11) & 31) * 255.0f / 31.0f;
+        rgb[1] = float((c >> 5) & 63) * 255.0f / 63.0f;
+        rgb[2] = float(c & 31) * 255.0f / 31.0f;
+    };
+    const auto pack = [](const float rgb[3]) {
+        const auto q = [](float v, int bits) { return std::clamp(int(v * float((1 << bits) - 1) / 255.0f + 0.5f), 0, (1 << bits) - 1); };
+        return uint16_t(q(rgb[0], 5) << 11 | q(rgb[1], 6) << 5 | q(rgb[2], 5));
+    };
+    // DXT5 blocks: 8 bytes of alpha, then the colour block (always four colours: its two end colours can be recoloured
+    // in place)
+    for (size_t at = kPixels; at + 16 <= data.size(); at += 16)
+        for (size_t end = 0; end < 2; ++end) {
+            uint8_t* c = &data[at + 8 + end * 2];
+            float rgb[3];
+            unpack(uint16_t(c[0] | c[1] << 8), rgb);
+            const float light = std::max({ rgb[0], rgb[1], rgb[2] }) / 255.0f;
+            const float core = std::clamp((light - 0.92f) * 3.0f, 0.0f, 0.2f); // the brightest a little whiter
+            float out[3];
+            for (int k = 0; k < 3; ++k)
+                out[k] = std::min(255.0f, g_FieldTint[k] * light * (1 - core) + 255.0f * light * core);
+            const uint16_t v = pack(out);
+            c[0] = uint8_t(v);
+            c[1] = uint8_t(v >> 8);
+        }
+}
+
 // field(name, on): a force field of [Fields] on (lit, blocking) or off (fading away, open)
 int L_field(lua_State* L)
 {
@@ -2306,6 +2344,7 @@ void InstallMissions(const std::wstring& mods)
     g_EndDone = false;
     g_PlayerDefeatedHandled = false;
     g_AnimationCount = 0;
+    g_FieldTinted = false;
     g_AnimControls.clear();
     g_Actors.clear();
     g_Walkers.clear();
@@ -2514,6 +2553,16 @@ void InstallMissions(const std::wstring& mods)
     // force fields: name=x z heading [scale] [off] (heading 0: the field across the z axis, closing the way along z;
     // 50 wide, 100 high at scale 1). Drawn as a static with its light record, its collision from its own bound.
     g_Fields.clear();
+    {
+        const std::vector<float> tint = Numbers(Profile(ini, L"Mission", L"FieldColour"));
+        g_FieldTinted = tint.size() >= 3;
+        for (int k = 0; k < 3 && g_FieldTinted; ++k)
+            g_FieldTint[k] = std::clamp(tint[size_t(k)], 0.0f, 255.0f);
+        for (const char* folder : { "s_m02b_forcefield_smdoor", "s_forcefield_lghallway" })
+            for (const char* texture : { "shield_door_static1", "sh_shield01_white" })
+                RegisterResourcePatch(std::string("meshes\\props\\interactiveitems\\forcefields\\separatist\\") + folder +
+                    "\\" + texture + ".stx", &TintFieldTexture);
+    }
     for (const std::string& name : Keys(ini, L"Fields")) {
         const std::string text = Profile(ini, L"Fields", std::wstring(name.begin(), name.end()).c_str(), L"");
         const std::vector<float> p = Numbers(text);

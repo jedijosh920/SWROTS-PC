@@ -69,7 +69,8 @@ pit=0 600
 Force fields (the game's own laser door field from the Jedi Temple: drawn from both sides, it blocks characters while
 on) are named in `[Fields]`, as `name=x z heading [scale] [off]`: at heading 0 the field stands across the z axis
 (closing the way along z), 50 units wide and 100 high at scale 1 (2.75 is a wide door); `off` makes it start switched
-off. `field(name, on)` switches it (below).
+off. `field(name, on)` switches it (below). Their colour is the game's blue unless `[Mission]` names another as
+`FieldColour=r g b` (0-255, e.g. `255 25 15` for red lasers): the field's textures are recoloured for that mission.
 
 ```ini
 [Fields]
