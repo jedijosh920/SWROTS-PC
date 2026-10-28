@@ -229,6 +229,7 @@ std::vector<Marker> g_Markers;
 std::vector<std::string> g_Objectives; // [Objectives]' names, in order (ids kObjectiveFirstId on)
 std::vector<std::string> g_Tips;       // [Tips]' names, in order (ids kTipFirstId on)
 std::string g_PlayersSubtitles; // the subtitles setting before the mission turned them on
+int g_LevelCharFade = -1;       // the level's "Allow char fade?" while a mission's shot has it off; -1: untouched
 float g_PlayersMusicVolume = -1; // volumemusic before music_volume() changed it (put back at the end); -1: unchanged
 std::string g_MusicServed; // the disc's music file the mission's own track is served for
 std::vector<Handle> g_Handles; // index 0 unused
@@ -2064,7 +2065,6 @@ void InstallMissions(const std::wstring& mods)
 // while a shot of the mission's is on, the level's own again for the game's camera.
 constexpr uint32_t kLevelProperties = 0x0068F720;
 constexpr uint32_t kAllowCharFade = 0xC8;
-int g_LevelCharFade = -1; // the level's own setting while a shot has it off; -1: untouched
 
 void KeepCharactersInShot(bool shot)
 {
