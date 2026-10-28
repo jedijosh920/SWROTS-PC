@@ -66,6 +66,11 @@ constexpr uint32_t kTriggerFire = 0xA4; // a trigger object's vfunc: it fires
 // Tips ([Tips]): the game's own (IVaderTip, its text a string table id), placed in the level
 constexpr uint32_t kTipFirstId = kDevMapFirstId + 0x280;
 constexpr uint32_t kVaderTipVtable = 0x005CBBA0;
+// Force fields ([Fields]): the game's own (IForceField, an IStatic: the Jedi Temple's door field), placed in the level;
+// vfunc +0xA4 (0x2778B0) lights it, +0xA8 (0x277910) fades it away
+constexpr uint32_t kFieldFirstId = kDevMapFirstId + 0x300;
+constexpr uint32_t kForceFieldVtable = 0x005AF710;
+constexpr uint32_t kFieldOn = 0xA4, kFieldOff = 0xA8;
 // The game manager's players (docs/research/coop.md): their number and an instance id per slot; a story duel's
 // boss is its player 2 (its health bar on the HUD)
 constexpr uint32_t kGameManager = 0x007EB964;
@@ -232,6 +237,7 @@ struct Marker {
 std::vector<Marker> g_Markers;
 std::vector<std::string> g_Objectives; // [Objectives]' names, in order (ids kObjectiveFirstId on)
 std::vector<std::string> g_Tips;       // [Tips]' names, in order (ids kTipFirstId on)
+std::vector<std::string> g_Fields;     // [Fields]' names, in order (ids kFieldFirstId on)
 std::string g_PlayersSubtitles; // the subtitles setting before the mission turned them on
 int g_LevelCharFade = -1;       // the level's "Allow char fade?" while a mission's shot has it off; -1: untouched
 float g_PlayersMusicVolume = -1; // volumemusic before music_volume() changed it (put back at the end); -1: unchanged
@@ -1260,6 +1266,30 @@ int L_marker(lua_State* L)
     return 0;
 }
 
+// field(name, on): a force field of [Fields] on (lit, blocking) or off (fading away, open)
+int L_field(lua_State* L)
+{
+    const char* name = luaL_checkstring(L, 1);
+    const bool on = lua_toboolean(L, 2) != 0;
+    for (size_t k = 0; k < g_Fields.size(); ++k) {
+        if (_stricmp(g_Fields[k].c_str(), name) != 0)
+            continue;
+        bool switched = false;
+        for (uint32_t side = 0; side < 2; ++side) { // its two halves (back to back)
+            uint8_t* f = ObjectById(kFieldFirstId + uint32_t(2 * k) + side);
+            if (!f || At<uint32_t>(f, 0) != kForceFieldVtable)
+                continue;
+            Virtual<void(__fastcall*)(uint8_t*, void*)>(f, on ? kFieldOn : kFieldOff)(f, nullptr);
+            switched = true;
+        }
+        lua_pushboolean(L, switched);
+        return 1;
+    }
+    LOG_WARN("Mission: field: no force field %s", name);
+    lua_pushboolean(L, 0);
+    return 1;
+}
+
 // boss(c): the character is the mission's boss, as the story duels' (Dooku, Grievous): the game manager's player 2
 // slot (its health bar on the HUD); boss(nil): none.
 int L_boss(lua_State* L)
@@ -2026,7 +2056,7 @@ void Register(lua_State* L)
         { "max_health", L_max_health }, { "invincible", L_invincible }, { "position", L_position },
         { "distance", L_distance }, { "place", L_place }, { "face", L_face }, { "side", L_side }, { "ai", L_ai },
         { "attack", L_attack }, { "hold", L_hold }, { "play", L_play }, { "play_anim", L_play_anim }, { "stop_anim", L_stop_anim }, { "actor", L_actor }, { "keep_body", L_keep_body }, { "anim_frames", L_anim_frames }, { "moves", L_moves }, { "saber", L_saber }, { "kill", L_kill }, { "boss", L_boss }, { "objective_done", L_objective_done }, { "tip", L_tip },
-        { "go", L_go }, { "going", L_going }, { "marker", L_marker },
+        { "go", L_go }, { "going", L_going }, { "marker", L_marker }, { "field", L_field },
         { "sound", L_sound }, { "stop_sounds", L_stop_sounds }, { "get_var", L_get_var },
         { "music_volume", L_music_volume },
         { "class_of", L_class_of }, { "set_player", L_set_player },
@@ -2480,6 +2510,48 @@ void InstallMissions(const std::wstring& mods)
         o.properties.push_back({ "Time to show tip", time });
         layout.objects.push_back(o);
         g_Tips.push_back(name);
+    }
+    // force fields: name=x z heading [scale] [off] (heading 0: the field across the z axis, closing the way along z;
+    // 50 wide, 100 high at scale 1). Drawn as a static with its light record, its collision from its own bound.
+    g_Fields.clear();
+    for (const std::string& name : Keys(ini, L"Fields")) {
+        const std::string text = Profile(ini, L"Fields", std::wstring(name.begin(), name.end()).c_str(), L"");
+        const std::vector<float> p = Numbers(text);
+        if (p.size() < 2) {
+            LOG_WARN("Missions: field %s has no x z", name.c_str());
+            continue;
+        }
+        DevMapObject o;
+        o.className = "IForceField";
+        ToWorld(p[0], p[1], o.x, o.z);
+        o.y = 0;
+        auto bytes = [](const void* v, size_t n) {
+            return std::vector<uint8_t>(static_cast<const uint8_t*>(v), static_cast<const uint8_t*>(v) + n);
+        };
+        std::vector<uint8_t> mesh;
+        for (const char* part : { "j_forcefield_smdoor", "props\\interactiveitems\\forcefields\\jeditemple\\j_forcefield_smdoor\\" }) {
+            const uint32_t n = uint32_t(strlen(part));
+            mesh.insert(mesh.end(), reinterpret_cast<const uint8_t*>(&n), reinterpret_cast<const uint8_t*>(&n) + 4);
+            mesh.insert(mesh.end(), part, part + n);
+        }
+        if (p.size() > 3) {
+            const float scale = p[3];
+            o.properties.push_back({ "Uniform scale", bytes(&scale, 4) });
+        }
+        const uint32_t one = 1, isOn = text.find("off") == std::string::npos ? 1 : 0;
+        o.properties.push_back({ "MeshName", mesh });
+        o.properties.push_back({ "Auto generate bound?", bytes(&one, 4) }); // its collision (none without)
+        o.properties.push_back({ "Is On?", bytes(&isOn, 4) });
+        o.lightMesh = "meshes\\props\\interactiveitems\\forcefields\\jeditemple\\j_forcefield_smdoor\\j_forcefield_smdoor";
+        o.lightParts = { 19, 49, 58, 17 }; // the model's vertices per part (143)
+        // the model is one-sided (seen from its front only, heading + 180 degrees): a field is two, back to back
+        const float yaw = (p.size() > 2 ? p[2] : 0) * 3.14159265f / 180.0f + MapYaw();
+        for (int side = 0; side < 2; ++side) {
+            o.id = kFieldFirstId + uint32_t(2 * g_Fields.size() + side);
+            o.yaw = yaw + float(side) * 3.14159265f;
+            layout.objects.push_back(o);
+        }
+        g_Fields.push_back(name);
     }
     SetDevMapLayout(layout);
     SetPlayerClass(nullptr);

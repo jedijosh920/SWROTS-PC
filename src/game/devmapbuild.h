@@ -33,6 +33,11 @@ struct DevMapObject {
     uint32_t id;
     float x, y, z, yaw;
     std::vector<std::pair<std::string, std::vector<uint8_t>>> properties;
+    // A static's model (IStatic and its kinds, e.g. a force field): its static light record (white, per vertex) is
+    // added to the level, its handle given as the object's __lighthandle. The model's path under meshes\ without
+    // extension ("meshes\<folder>\<name>"), its vertex count per part as the model has them.
+    std::string lightMesh;
+    std::vector<uint16_t> lightParts;
 };
 // A box of collision (a box brush): its centre (y from the floor), half extents and turn about the up axis.
 struct DevMapBox {
@@ -76,6 +81,7 @@ constexpr uint32_t kDevMapDuelId = 0x00300100;
 constexpr uint32_t kDevMapFirstId = 0x00300001;
 constexpr uint32_t kDevMapFirstBoxId = 0x00380001; // the collision boxes' brush handles
 constexpr uint32_t kDevMapFirstMarkerId = 0x00390001; // the layout's goto markers
+constexpr uint32_t kDevMapFirstLightHandle = 0x0000F000; // the layout's statics' light records
 // The floor's middle and its height (the characters stand there).
 constexpr float kDevMapMiddleX = 12750.0f, kDevMapMiddleZ = 8100.0f, kDevMapFloorY = -2557.5f;
 

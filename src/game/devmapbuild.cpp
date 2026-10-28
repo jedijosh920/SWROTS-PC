@@ -472,10 +472,12 @@ bool BuildDevMapLevel(std::vector<uint8_t>& level, std::string& report, const De
     }
     const size_t brushesEnd = r.p;
     std::vector<Instance> instances;
+    const size_t instancesCap = r.p, instancesCount = r.p + 4;
     for (uint32_t i = 0, n = r.Count(); i < n && r.ok; ++i) {
         instances.emplace_back();
         ReadInstance(r, instances.back());
     }
+    const size_t instancesEnd = r.p;
     Tree world;
     if (!ReadTree(r, &world) || !r.ok)
         return fail("the scene's world BSP");
@@ -1070,7 +1072,8 @@ bool BuildDevMapLevel(std::vector<uint8_t>& level, std::string& report, const De
             keptObjects.push_back(std::move(o));
         }
         say(", %zu characters placed", layout->characters.size());
-        for (const DevMapObject& placed : layout->objects) {
+        for (size_t k = 0; k < layout->objects.size(); ++k) {
+            const DevMapObject& placed = layout->objects[k];
             Object o;
             o.cls = placed.className;
             Writer id, name, transform;
@@ -1082,11 +1085,56 @@ bool BuildDevMapLevel(std::vector<uint8_t>& level, std::string& report, const De
             o.props = { { "ID", id.out }, { "Name", name.out }, { "Transform", transform.out } };
             for (const auto& [key, bytes] : placed.properties)
                 o.props.push_back({ key, bytes });
+            if (!placed.lightMesh.empty()) { // its static light record (below), by its light handle
+                Writer handle;
+                handle.U32(kDevMapFirstLightHandle + uint32_t(k));
+                o.props.push_back({ "__lighthandle", handle.out });
+            }
             o.tail.assign(8, 0);
             keptObjects.push_back(std::move(o));
         }
         if (!layout->objects.empty())
             say(", %zu objects placed", layout->objects.size());
+    }
+    // the static light records of the layout's objects drawn as statics (IStatic and its kinds, e.g. a force field):
+    // as the game's levels hold one (handle, mesh path, -1, handle, 1, colour, the vertex count, the light per
+    // vertex (white), the parts' vertex counts, two zeros). Without one a static is drawn with its model's own
+    // vertex colours (a force field's are clear: it is not seen).
+    Writer staticLights;
+    uint32_t lightRecords = 0;
+    for (size_t k = 0; layout && k < layout->objects.size(); ++k) {
+        const DevMapObject& placed = layout->objects[k];
+        if (placed.lightMesh.empty())
+            continue;
+        uint32_t vertices = 0;
+        for (uint16_t n : placed.lightParts)
+            vertices += n;
+        const uint32_t handle = kDevMapFirstLightHandle + uint32_t(k);
+        staticLights.U32(handle);
+        staticLights.String(placed.lightMesh);
+        const uint16_t own = 0xFFFF;
+        staticLights.Raw(&own, 2);
+        staticLights.U32(handle);
+        staticLights.U32(1);
+        staticLights.U32(0xFFFFFFFF);
+        staticLights.U32(vertices);
+        staticLights.U32(vertices);
+        for (uint32_t v = 0; v < vertices; ++v)
+            staticLights.U32(0xFFFFFFFF);
+        staticLights.U32(uint32_t(placed.lightParts.size()));
+        staticLights.U32(uint32_t(placed.lightParts.size()));
+        for (uint16_t n : placed.lightParts)
+            staticLights.Raw(&n, 2);
+        staticLights.U32(0);
+        staticLights.U32(0);
+        ++lightRecords;
+    }
+    if (lightRecords) {
+        uint32_t cap, count;
+        std::memcpy(&cap, d.data() + instancesCap, 4);
+        std::memcpy(&count, d.data() + instancesCount, 4);
+        PutU32(d, instancesCap, std::max(cap, count + lightRecords));
+        PutU32(d, instancesCount, count + lightRecords);
     }
     Writer section;
     section.U32(kLevelVersion);
@@ -1114,7 +1162,9 @@ bool BuildDevMapLevel(std::vector<uint8_t>& level, std::string& report, const De
             reinterpret_cast<const uint8_t*>(layout->bakedLight.data() + lightVertices));
     else
         out.insert(out.end(), size_t(lightVertices) * 4, 0xFF);
-    out.insert(out.end(), d.begin() + floorLight->lightEnd, d.begin() + portalsEnd);
+    out.insert(out.end(), d.begin() + floorLight->lightEnd, d.begin() + instancesEnd);
+    out.insert(out.end(), staticLights.out.begin(), staticLights.out.end());
+    out.insert(out.end(), d.begin() + instancesEnd, d.begin() + portalsEnd);
     out.insert(out.end(), added.out.begin(), added.out.end());
     out.insert(out.end(), d.begin() + portalsEnd, d.begin() + objectsAt);
     out.insert(out.end(), section.out.begin(), section.out.end());

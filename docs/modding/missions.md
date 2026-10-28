@@ -66,6 +66,16 @@ gate=0 120
 pit=0 600
 ```
 
+Force fields (the game's own laser door field from the Jedi Temple: drawn from both sides, it blocks characters while
+on) are named in `[Fields]`, as `name=x z heading [scale] [off]`: at heading 0 the field stands across the z axis
+(closing the way along z), 50 units wide and 100 high at scale 1 (2.75 is a wide door); `off` makes it start switched
+off. `field(name, on)` switches it (below).
+
+```ini
+[Fields]
+gate=0 0 0 2.75
+```
+
 Animations of other characters a character plays (`play_anim`, below) are named in `[Animations]`, as
 `<cast name, player or class>=<animation>, <animation>...`, the animations' file names without `.bnm` (any character's,
 from any level: the port loads them with the mission):
@@ -196,6 +206,7 @@ level is safe to use: functions on it do nothing, `alive()` and `exists()` are f
 | `walk(c, marker [, timeout])` | it runs to a marker of `[Markers]` its own way (as the game's AI goes to places) and the script waits until it is there (true) or `timeout` seconds (default 20) passed (false); works in cutscenes too, and for characters whose AI is off (actors): their AI is on for the way, off again once there |
 | `go(c, marker [, fight])` / `going(c, marker)` | the same without waiting (with `fight`, it fights what it meets on the way); whether it is still on its way |
 | `marker(name)` | a marker's x, z |
+| `field(name, on)` | a force field of `[Fields]` on (it lights up and blocks) or off (it fades away and lets through); a character the field stopped gives up its `go`/`walk`: send it again |
 | `hold(on)` | everyone holds still and the player's controls are held (as in cutscenes) |
 | `kill(c)` | defeats it at once |
 | `boss(c)` | it is the mission's boss, as a story duel's: its health bar with its portrait on the HUD (the game's player 2); `boss(nil)`: none |
