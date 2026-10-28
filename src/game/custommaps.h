@@ -32,6 +32,9 @@ struct CustomMap {
     // its light ([Lighting]): negative: the dev map's
     float ambient[3] = { -1, -1, -1 }, characterAmbient[3] = { -1, -1, -1 };
     float lightScale = 1.0f;
+    float playerAmbient[3] = { -1, -1, -1 }; // PlayerAmbient=, else CharacterAmbient's
+    float farClip = 0;                       // FarClip=; 0: the dev map's
+    std::vector<DevMapLayout::Light> lights; // [PointLights]: its own coordinates (y from its floor)
     std::vector<uint32_t> bakedLight; // a colour a vertex, from its Baked file
     std::string music;         // its track: a music slot of the game's (e.g. mus_m13_templebattle01_lp), empty: none
     std::wstring musicFile;    // the track's file (<map folder>\<slot>.hwx)

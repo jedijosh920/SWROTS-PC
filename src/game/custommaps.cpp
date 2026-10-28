@@ -164,6 +164,22 @@ bool ReadMap(const std::wstring& file, const std::string& id, CustomMap& m)
     };
     colour(L"Ambient", m.ambient);
     colour(L"CharacterAmbient", m.characterAmbient);
+    // the player is lit by an ambient of its own (the level's "Player-only additional ambient"): the characters'
+    // unless PlayerAmbient= says otherwise
+    std::copy(std::begin(m.characterAmbient), std::end(m.characterAmbient), m.playerAmbient);
+    colour(L"PlayerAmbient", m.playerAmbient);
+    v = Numbers(Profile(file, L"Lighting", L"FarClip"));
+    if (!v.empty() && v[0] > 0)
+        m.farClip = v[0];
+    // its own point lights ([PointLights] LightN=x y z range r g b intensity, y from its floor): they light the
+    // characters (the walls have the baked light)
+    for (int i = 1;; ++i) {
+        const std::wstring key = L"Light" + std::to_wstring(i);
+        const std::vector<float> l = Numbers(Profile(file, L"PointLights", key.c_str()));
+        if (l.size() < 8)
+            break;
+        m.lights.push_back({ l[0], l[1], l[2], l[3], { l[4], l[5], l[6] }, l[7] });
+    }
     v = Numbers(Profile(file, L"Lighting", L"Lights"));
     if (!v.empty() && v[0] >= 0)
         m.lightScale = v[0];
@@ -334,6 +350,16 @@ void ApplyCustomMap(const CustomMap& map, DevMapLayout& layout)
     std::copy(std::begin(map.characterAmbient), std::end(map.characterAmbient), layout.characterAmbient);
     layout.lightScale = map.lightScale;
     layout.bakedLight = map.bakedLight;
+    std::copy(std::begin(map.playerAmbient), std::end(map.playerAmbient), layout.playerAmbient);
+    layout.farClip = map.farClip;
+    layout.lights.clear();
+    for (const DevMapLayout::Light& l : map.lights) {
+        DevMapLayout::Light w = l;
+        CustomMapToWorld(map, l.x, l.z, w.x, w.z);
+        w.y = l.y - map.floor;
+        w.intensity = l.intensity * map.lightScale;
+        layout.lights.push_back(w);
+    }
     if (layout.music.empty()) // (a mission's own music comes first)
         layout.music = map.music;
     layout.boxes.clear();

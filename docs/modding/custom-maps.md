@@ -59,7 +59,13 @@ Ambient=0.10 0.09 0.08           ; the model's ambient light (the floor's is 0.8
 Baked=cantina_light.bin          ; its baked light: a colour a vertex (u32 0xAARRGGBB, the model's vertex order)
 BakedScale=0.5                   ; the baked light dimmed (below 1) or brightened
 CharacterAmbient=0.26 0.23 0.20  ; the characters' ambient light (the dev map's is 0.55)
-Lights=0.6                       ; the level's point lights' intensity, scaled
+Lights=0.6                       ; the point lights' intensity, scaled
+PlayerAmbient=0.3                ; the player's ambient light (left out: CharacterAmbient's)
+FarClip=8000                     ; how far the camera sees (the dev map's is 5000): a long map's far end
+
+[PointLights]                    ; optional: lights of its own (they light the characters), in place of the level's
+Light1=0 120 300 600 1 0.9 0.8 1.5 ; x y z range red green blue intensity (y from its floor)
+Light2=...                       ; numbered from 1, without gaps
 ```
 
 The map is turned and moved so that the middle between its two lines is the dev map's middle and the heroes face the
@@ -85,6 +91,11 @@ Without `[Lighting]` the model is lit by a bright ambient light alone, as the fl
 static entry takes it per vertex (its "ambient lighting only" turned off): a converted map can keep the lighting its
 first game baked. Dim it all to taste: the cantina uses its Battlefront II light at half, a low ambient and dimmer
 characters.
+
+The walls take the baked light; the characters are lit by the level's point lights and ambient light. Without
+`[PointLights]` those are the dev map's own lights, gathered round the middle of the floor: on a large map, characters
+far from them are lit from one side (light them with lamps of their own where the map's lamps are; short ranges, as
+the game's levels use). The player has an ambient light of its own (`PlayerAmbient=`, else the characters').
 
 ## Music
 

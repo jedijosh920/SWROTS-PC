@@ -59,6 +59,17 @@ struct DevMapLayout {
     std::vector<uint32_t> bakedLight;
     float characterAmbient[3] = { -1, -1, -1 };
     float lightScale = 1.0f;
+    // The player's own ambient (the level's "Player-only additional ambient": the player is lit by it and the point
+    // lights, not by the characters' ambient); negative: the level's.
+    float playerAmbient[3] = { -1, -1, -1 };
+    // Point lights of its own (world x, z; y from the floor) in the place of the level's (the cave's, moved to the
+    // middle); none: those.
+    struct Light {
+        float x, y, z, range, colour[3], intensity;
+    };
+    std::vector<Light> lights;
+    // How far the camera sees (the level's "Far Clip"); 0: the level's.
+    float farClip = 0;
     // Its music: a track of the game's sound table (e.g. "mus_m13_templebattle01_lp"), played from the start (one of
     // the level's music objects kept and pointed at it); empty: none.
     std::string music;

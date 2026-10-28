@@ -690,8 +690,55 @@ bool BuildDevMapLevel(std::vector<uint8_t>& level, std::string& report, const De
             std::memcpy(p.data.data(), &v, 4);
         }
     }
+    if (layout && !layout->lights.empty() && !lightGroups.empty()) {
+        // the map's own lights, each a copy of a plain one of the level's (no flags)
+        const std::vector<Property>* templ = &lightGroups[0];
+        for (const auto& g : lightGroups)
+            for (const Property& p : g) {
+                uint32_t f = 1;
+                if (p.name == "Flags" && p.data.size() >= 4)
+                    std::memcpy(&f, p.data.data(), 4);
+                if (f == 0 && templ == &lightGroups[0])
+                    templ = &g;
+            }
+        Groups own;
+        for (size_t i = 0; i < layout->lights.size(); ++i) {
+            const DevMapLayout::Light& l = layout->lights[i];
+            std::vector<Property> g = *templ;
+            const uint32_t id = 0x00200000 + uint32_t(i), range = uint32_t(std::max(1.0f, l.range));
+            const float y = float(kFloorY) + l.y;
+            for (Property& p : g) {
+                if (p.name == "__id" && p.data.size() >= 4)
+                    std::memcpy(p.data.data(), &id, 4);
+                else if (p.name == "__rng" && p.data.size() >= 4)
+                    std::memcpy(p.data.data(), &range, 4);
+                else if (p.name == "__intn" && p.data.size() >= 4)
+                    std::memcpy(p.data.data(), &l.intensity, 4);
+                else if (p.name == "__clr" && p.data.size() >= 12)
+                    std::memcpy(p.data.data(), l.colour, 12);
+                else if (p.name == "__x" && p.data.size() >= 4)
+                    std::memcpy(p.data.data(), &l.x, 4);
+                else if (p.name == "__y" && p.data.size() >= 4)
+                    std::memcpy(p.data.data(), &y, 4);
+                else if (p.name == "__z" && p.data.size() >= 4)
+                    std::memcpy(p.data.data(), &l.z, 4);
+            }
+            own.push_back(std::move(g));
+        }
+        lightGroups = std::move(own);
+        say("%zu lights of the map's; ", lightGroups.size());
+    } else {
+        say("%zu lights moved; ", lightGroups.size());
+    }
     lightList->data = WriteGroups(lightGroups);
-    say("%zu lights moved; ", lightGroups.size());
+    if (layout && layout->playerAmbient[0] >= 0) {
+        const float player[3] = { layout->playerAmbient[0], layout->playerAmbient[1], layout->playerAmbient[2] };
+        SetFloats(Find(properties->props, "Player-only additional ambient"), player);
+    }
+    if (layout && layout->farClip > 0) {
+        const float clip[1] = { layout->farClip };
+        SetFloats(Find(properties->props, "Far Clip"), clip);
+    }
 
     // space: the sector's box stretched (the world BSP, the sector's mesh and bounds, its portals, the scene's
     // bounds and the octree), with portals on every side (the sky is drawn only through them)
