@@ -67,6 +67,11 @@ bool DeclareGeneratedResource(const std::string& lowerName, int typeId);
 // game loads it when asked for. False when the level already has it or no PAK does.
 bool DeclareDiscResource(const std::string& lowerName);
 
+// Animations (file names, lower case, e.g. "anakin_atk_kill_lunge_humangr.bnm") another class's sequences play (a
+// mission's [Animations]): when a class asks for one its folder lacks, it is declared in that class's folder, as
+// another duelist's Versus intro is. Replaces the last list; every start of the game image.
+void SetBorrowedAnimations(std::vector<std::string> lowerFiles);
+
 // Declares and loads a generated resource in the current level now, for engine code that only
 // finds resources already loaded (a menu's pictures, by name). False when it did not load.
 bool LoadGeneratedResource(const std::string& lowerName, int typeId);

@@ -380,6 +380,7 @@ const PakIndex::Entry* FindElsewhere(const PakIndex* level, Find find, const Pak
 // StandInAnimation), under its own name: the engine finds animations by name.
 std::mutex g_AliasLock;
 std::unordered_map<std::string, std::string> g_Aliases;
+std::vector<std::string> g_Borrowed; // SetBorrowedAnimations' files
 
 std::string AliasOf(const std::string& wanted)
 {
@@ -1290,15 +1291,17 @@ bool AnimationLookupResolved(void* self, void* edx, void* script, void* classInf
             const size_t n = strlen(tail);
             return file.size() > n && file.compare(file.size() - n, n, tail) == 0;
         };
-        const bool duelAnimation = endsWith("_intro.bnm") || endsWith("_outro.bnm");
+        const bool duelAnimation = endsWith("_intro.bnm") || endsWith("_outro.bnm") ||
+            std::find(g_Borrowed.begin(), g_Borrowed.end(), file) != g_Borrowed.end();
         if (entry && !duelAnimation && LoadUndeclared(g_LevelScene, entry->name, *entry)) {
             ++resolved;
             continue;
         }
         if (entry && duelAnimation && found && found->count > 0 && found->data[0]) {
             // Another duelist's Versus intro or outro, asked for by a class a custom character plays it on (Intro=,
-            // customchars.cpp): the class finds animations only in its own folder, that of the animations it found
-            // (declared in the duelist's own folder, it would not be found; the level may hold it there already).
+            // customchars.cpp), or one a mission borrows ([Animations], missions.cpp): the class finds animations only
+            // in its own folder, that of the animations it found (declared in the owner's own folder, it would not be
+            // found; the level may hold it there already).
             std::string other = static_cast<const char*>(found->data[0]) + 4;
             for (char& c : other)
                 c = char(tolower(static_cast<unsigned char>(c)));
@@ -1442,6 +1445,11 @@ void RegisterResourcePatch(const std::string& lowerName, ResourcePatch patch)
 {
     std::lock_guard<std::mutex> lock(g_PatchLock);
     g_Patches[lowerName] = patch;
+}
+
+void SetBorrowedAnimations(std::vector<std::string> lowerFiles)
+{
+    g_Borrowed = std::move(lowerFiles);
 }
 
 void RegisterResourceGenerator(ResourceGenerator generator)

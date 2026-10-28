@@ -12,11 +12,13 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "lua.hpp"
@@ -26,6 +28,7 @@
 #include "core/patch.h"
 #include "debug/console.h"
 #include "game/characters.h"
+#include "game/classsetup.h"
 #include "game/coop.h"
 #include "game/customchars.h"
 #include "game/custommaps.h"
@@ -34,6 +37,7 @@
 #include "game/game.h"
 #include "game/hvv.h"
 #include "game/menus.h"
+#include "game/resources.h"
 #include "input/controls.h"
 #include "kernel/kernel.h"
 
@@ -774,6 +778,256 @@ int L_play(lua_State* L)
         LOG_WARN("Mission: play %s: no such move", name);
     lua_pushboolean(L, played);
     return 1;
+}
+
+// mission.ini's [Animations]: animations, any character's, a class plays (play_anim), each a sequence of the class's
+// own ("Msn_<animation>", added to its class script as custom intros are; its animation declared in the class's folder,
+// resources.cpp). Required by the class while a mission runs, so loaded with it.
+struct MissionAnimation {
+    std::string shortName; // the class script's short name, e.g. "JDBrute"
+    std::string animation, sequence;
+    uint16_t handle = 0;
+};
+constexpr int kMaxMissionAnimations = 32;
+MissionAnimation g_Animations[kMaxMissionAnimations];
+int g_AnimationCount = 0;
+constexpr uint32_t kSequenceSetup = 0x006965D8;
+constexpr uint32_t kScriptInstance = 0x006964C0;
+
+bool SequenceEvent(uint32_t test)
+{
+    return reinterpret_cast<bool(__fastcall*)(uint8_t*, void*)>(uintptr_t(test))(
+        reinterpret_cast<uint8_t*>(uintptr_t(kSequenceSetup)), nullptr);
+}
+
+template <int K> bool __fastcall MissionAnimationFn(uint8_t* self, void*, uint32_t, uint32_t)
+{
+    auto* setup = reinterpret_cast<uint8_t*>(uintptr_t(kSequenceSetup));
+    MissionAnimation& a = g_Animations[K];
+    reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint16_t*, const char*, const char*, float, uint32_t)>(
+        uintptr_t(0x001F5B20))(setup, nullptr, &a.handle, a.sequence.c_str(), a.animation.c_str(), 1.0f, 0x0055FB60);
+    if (SequenceEvent(0x001F62D0)) // it ended: back to the class's state machine
+        reinterpret_cast<void(__cdecl*)(uint8_t*, uint8_t*, int, int)>(uintptr_t(0x0038A140))(
+            *reinterpret_cast<uint8_t**>(uintptr_t(kScriptInstance)), self, -1, -1);
+    return reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, const char*, uint32_t)>(uintptr_t(0x001F6C00))(
+        setup, nullptr, reinterpret_cast<const char*>(uintptr_t(0x0059C07C)), 0x7D00 + K);
+}
+
+template <int... K>
+constexpr std::array<ClassSequenceFn, sizeof...(K)> MissionAnimationFns(std::integer_sequence<int, K...>)
+{
+    return { &MissionAnimationFn<K>... };
+}
+constexpr auto kMissionAnimationFns = MissionAnimationFns(std::make_integer_sequence<int, kMaxMissionAnimations>());
+
+int __cdecl MissionSequences(const char* shortName, ClassSequenceFn* fns, int max)
+{
+    if (!g_Active)
+        return 0;
+    int count = 0;
+    for (int k = 0; k < g_AnimationCount && count < max; ++k)
+        if (_stricmp(g_Animations[k].shortName.c_str(), shortName) == 0) {
+            g_Animations[k].handle = 0;
+            fns[count++] = kMissionAnimationFns[size_t(k)];
+            LOG_INFO("Missions: %s gets %s", shortName, g_Animations[k].animation.c_str());
+        }
+    return count;
+}
+
+// A character's sequence for play_anim's name: a borrowed animation's ([Animations]), the class's own sequence of that
+// name, or the class's own sequence playing that animation.
+uint8_t* FindSequence(uint8_t* c, const char* name)
+{
+    uint8_t* script = c ? At<uint8_t*>(c, kCharacterScript) : nullptr;
+    uint8_t* list = script ? At<uint8_t*>(script, 4) : nullptr;
+    if (!list)
+        return nullptr;
+    const int count = At<int>(list, 8);
+    uint8_t** items = At<uint8_t**>(list, 0xC);
+    const std::string borrowed = std::string("Msn_") + name;
+    for (int pass = 0; pass < 3; ++pass)
+        for (int i = 0; i < count; ++i) {
+            const char* n = items[i] ? At<const char*>(items[i], pass == 2 ? 0x10 : 0xC) : nullptr;
+            if (n && _stricmp(n, pass == 0 ? borrowed.c_str() : name) == 0)
+                return items[i];
+        }
+    return nullptr;
+}
+
+// A character's animation state (TCharState, [char+0x434], vtable 0x58EFB8): its current sequence +0x30, speeds +0x50
+// (the sequence's own, the class scripts change it) and +0x54 (the play's, 0 freezes the pose: a sequence ends only
+// past its last frame), transitions done +0x78, transitions waiting +0xD0; its range state [+0xB8]: the range's first
+// and last frames +8 / +0xA (int16), the current frame +0x14 (float, the animation's own frame number), rate +0x24.
+// The animation advances once per tick of the character, by +0x50 * +0x54 * rate frames (60 a second at speed 1).
+constexpr uint32_t kStateSequence = 0x30, kStateSpeed = 0x50, kStatePlaySpeed = 0x54, kStateTransitions = 0x78,
+                   kStateRange = 0xB8, kStateQueued = 0xD0;
+constexpr uint32_t kRangeFirst = 0x08, kRangeLast = 0x0A, kRangeFrame = 0x14, kRangeRate = 0x24;
+constexpr uint32_t kTickScriptSlot = 0x0058EFDC; // ICharacter TCharState vtable +0x24
+constexpr uintptr_t kTickScript = 0x0049CD90;    // thiscall (cs, arg): one tick of its sequence (its end handled here)
+constexpr uintptr_t kSeekFrame = 0x0049D0E0;     // thiscall (cs, int frame): into the range holding the frame
+
+// play_anim's controls: a range of frames played, looped or held, kept to by the tick hook until the character's
+// sequence changes (stop_anim, a hit, its death, its class's own choice).
+struct AnimControl {
+    uint8_t* state = nullptr; // the character's TCharState
+    uint8_t* sequence = nullptr;
+    float from = -1, to = -1; // frames; -1: the animation's first / last
+    float speed = 1;
+    bool loop = false, hold = false;
+    bool started = false;     // its sequence is on (a play from the script starts at the character's next tick)
+    int waited = 0;           // ticks before it was
+    int transitions = 0;      // the state's count when it started: another transition means the character moved on
+};
+std::vector<AnimControl> g_AnimControls;
+
+uint32_t __fastcall TickScriptHook(uint8_t* cs, void*, uint32_t arg)
+{
+    for (size_t i = 0; i < g_AnimControls.size(); ++i) {
+        AnimControl& k = g_AnimControls[i];
+        if (k.state != cs)
+            continue;
+        uint8_t* rs = At<uint8_t*>(cs, kStateRange);
+        if (!k.started) {
+            if (At<uint8_t*>(cs, kStateSequence) != k.sequence || At<int>(cs, kStateQueued) != 0 || !rs) {
+                if (++k.waited > 30)
+                    g_AnimControls.erase(g_AnimControls.begin() + ptrdiff_t(i));
+                break;
+            }
+            k.started = true;
+            k.transitions = At<int>(cs, kStateTransitions);
+            if (k.to < 0 && (k.hold || k.loop))
+                k.to = float(At<int16_t>(rs, kRangeLast));
+            if (k.speed <= 0)
+                At<float>(cs, kStatePlaySpeed) = 0;
+        } else if (At<uint8_t*>(cs, kStateSequence) != k.sequence || At<int>(cs, kStateTransitions) != k.transitions ||
+                   !rs) {
+            g_AnimControls.erase(g_AnimControls.begin() + ptrdiff_t(i));
+            break;
+        }
+        if (k.to >= 0) {
+            const float frame = At<float>(rs, kRangeFrame);
+            const float step = At<float>(cs, kStateSpeed) * At<float>(cs, kStatePlaySpeed) * At<float>(rs, kRangeRate);
+            if (frame + step > k.to) {
+                if (k.loop) {
+                    const float from = k.from >= 0 ? k.from : float(At<int16_t>(rs, kRangeFirst));
+                    if (from >= At<int16_t>(rs, kRangeFirst) && from <= At<int16_t>(rs, kRangeLast))
+                        At<float>(rs, kRangeFrame) = from;
+                    else
+                        reinterpret_cast<void(__fastcall*)(uint8_t*, void*, int)>(kSeekFrame)(cs, nullptr, int(from));
+                } else if (k.hold) {
+                    At<float>(rs, kRangeFrame) = k.to;
+                    At<float>(cs, kStatePlaySpeed) = 0;
+                }
+            }
+        }
+        break;
+    }
+    return reinterpret_cast<uint32_t(__fastcall*)(uint8_t*, void*, uint32_t)>(kTickScript)(cs, nullptr, arg);
+}
+
+void DropAnimControl(uint8_t* cs)
+{
+    g_AnimControls.erase(std::remove_if(g_AnimControls.begin(), g_AnimControls.end(),
+                             [&](const AnimControl& k) { return k.state == cs; }),
+        g_AnimControls.end());
+}
+
+// play_anim(c, name[, {from=, to=, loop=, hold=, speed=, blend=}]): an animation (the character's own, or one of
+// mission.ini's [Animations]), from frame `from` to frame `to` (the animation's own frame numbers; anim_frames tells
+// them), then: loop (from..to again until stop_anim), hold (the pose at `to` kept: a body that stays down), or (neither)
+// on to its end and back to what the character does. speed 0 holds the pose at `from`. False when there is no such
+// animation.
+int L_play_anim(lua_State* L)
+{
+    uint8_t* c = CheckCharacter(L, 1);
+    const char* name = luaL_checkstring(L, 2);
+    AnimControl k;
+    float blend = 0;
+    if (lua_istable(L, 3)) {
+        const auto number = [&](const char* field, float fallback) {
+            lua_getfield(L, 3, field);
+            const float v = float(luaL_optnumber(L, -1, fallback));
+            lua_pop(L, 1);
+            return v;
+        };
+        const auto flag = [&](const char* field) {
+            lua_getfield(L, 3, field);
+            const bool v = lua_toboolean(L, -1) != 0;
+            lua_pop(L, 1);
+            return v;
+        };
+        k.from = number("from", -1);
+        k.to = number("to", -1);
+        k.speed = number("speed", 1);
+        blend = number("blend", 0);
+        k.loop = flag("loop");
+        k.hold = flag("hold");
+    }
+    uint8_t* sequence = FindSequence(c, name);
+    uint8_t* cs = c ? At<uint8_t*>(c, kCharacterScript) : nullptr;
+    if (!sequence || !cs) {
+        LOG_WARN("Mission: play_anim %s: no such animation for %s (mission.ini [Animations])", name,
+            c ? VirtualTypeName(c) : "nobody");
+        lua_pushboolean(L, false);
+        return 1;
+    }
+    DropAnimControl(cs);
+    reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint8_t*, float, int, int, float)>(kPlaySequence)(
+        c, nullptr, sequence, blend > 0 ? blend : 0.0f, k.from >= 0 ? int(k.from) : 0, 0, k.speed > 0 ? k.speed : 1.0f);
+    if (k.loop || k.hold || k.to >= 0 || k.speed <= 0) {
+        k.state = cs;
+        k.sequence = sequence;
+        g_AnimControls.push_back(k);
+    }
+    lua_pushboolean(L, true);
+    return 1;
+}
+
+// Hands a character's animation back to its class (what it would do now: its idle), as a sequence's own end does.
+void BackToClass(uint8_t* cs)
+{
+    if (At<int>(cs, 0x24) <= 0) // its active states (the call reads the first)
+        return;
+    uint32_t* const globals[] = { reinterpret_cast<uint32_t*>(uintptr_t(0x006943CC)),
+        reinterpret_cast<uint32_t*>(uintptr_t(0x0069652C)), reinterpret_cast<uint32_t*>(uintptr_t(kScriptInstance)),
+        reinterpret_cast<uint32_t*>(uintptr_t(0x00696528)) };
+    uint32_t saved[4];
+    for (int i = 0; i < 4; ++i)
+        saved[i] = *globals[i];
+    Virtual<void(__fastcall*)(uint8_t*, void*)>(cs, 0xC)(cs, nullptr); // its script context
+    reinterpret_cast<void(__cdecl*)(uint32_t, uint32_t, int, int)>(uintptr_t(0x0038A140))(*globals[2], *globals[1], -1, -1);
+    for (int i = 0; i < 4; ++i)
+        *globals[i] = saved[i];
+}
+
+// stop_anim(c): ends play_anim's animation (a loop, a held pose); the character goes back to what it does.
+int L_stop_anim(lua_State* L)
+{
+    uint8_t* c = CheckCharacter(L, 1);
+    uint8_t* cs = c ? At<uint8_t*>(c, kCharacterScript) : nullptr;
+    if (!cs)
+        return 0;
+    DropAnimControl(cs);
+    At<float>(cs, kStatePlaySpeed) = 1.0f;
+    BackToClass(cs);
+    return 0;
+}
+
+// anim_frames(c): the current animation's frame, its first and last frames, and its name (for play_anim's from/to).
+int L_anim_frames(lua_State* L)
+{
+    uint8_t* c = CheckCharacter(L, 1);
+    uint8_t* cs = c ? At<uint8_t*>(c, kCharacterScript) : nullptr;
+    uint8_t* rs = cs ? At<uint8_t*>(cs, kStateRange) : nullptr;
+    uint8_t* sequence = cs ? At<uint8_t*>(cs, kStateSequence) : nullptr;
+    if (!rs || !sequence)
+        return 0;
+    lua_pushnumber(L, At<float>(rs, kRangeFrame));
+    lua_pushinteger(L, At<int16_t>(rs, kRangeFirst));
+    lua_pushinteger(L, At<int16_t>(rs, kRangeLast));
+    const char* animation = At<const char*>(sequence, 0x10);
+    lua_pushstring(L, animation ? animation : "");
+    return 4;
 }
 
 // The names of a character's moves (its sequences), for finding the right one.
@@ -1643,7 +1897,7 @@ void Register(lua_State* L)
         { "alive", L_alive }, { "exists", L_exists }, { "health", L_health }, { "set_health", L_set_health },
         { "max_health", L_max_health }, { "invincible", L_invincible }, { "position", L_position },
         { "distance", L_distance }, { "place", L_place }, { "face", L_face }, { "side", L_side }, { "ai", L_ai },
-        { "attack", L_attack }, { "hold", L_hold }, { "play", L_play }, { "moves", L_moves }, { "saber", L_saber }, { "kill", L_kill }, { "boss", L_boss }, { "objective_done", L_objective_done }, { "tip", L_tip },
+        { "attack", L_attack }, { "hold", L_hold }, { "play", L_play }, { "play_anim", L_play_anim }, { "stop_anim", L_stop_anim }, { "anim_frames", L_anim_frames }, { "moves", L_moves }, { "saber", L_saber }, { "kill", L_kill }, { "boss", L_boss }, { "objective_done", L_objective_done }, { "tip", L_tip },
         { "go", L_go }, { "going", L_going }, { "marker", L_marker },
         { "sound", L_sound }, { "stop_sounds", L_stop_sounds }, { "get_var", L_get_var },
         { "music_volume", L_music_volume },
@@ -1893,6 +2147,10 @@ void InstallMissions(const std::wstring& mods)
     g_EndAt = 0;
     g_EndDone = false;
     g_PlayerDefeatedHandled = false;
+    g_AnimationCount = 0;
+    g_AnimControls.clear();
+    SetBorrowedAnimations({});
+    AddClassSequences(&MissionSequences);
     ReadMissions();
     std::string id;
     if (!DevMapActive() || !BootArgument("mission", id))
@@ -1903,6 +2161,12 @@ void InstallMissions(const std::wstring& mods)
         return;
     }
     PatchCall(kScriptSaberOnCall, reinterpret_cast<const void*>(&ScriptSaberOn), 5);
+    if (*reinterpret_cast<const uint32_t*>(uintptr_t(kTickScriptSlot)) == kTickScript) {
+        const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(&TickScriptHook));
+        PatchBytes(kTickScriptSlot, &hook, 4);
+    } else {
+        LOG_WARN("Missions: unexpected animation tick; play_anim plays whole animations only");
+    }
     kernel::SetLaunchFilter(&MissionRestartLaunch);
     g_Folder = mods + L"\\" + std::wstring(g_Info->folder.begin(), g_Info->folder.end());
     const std::wstring ini = g_Folder + L"\\mission.ini";
@@ -1967,6 +2231,44 @@ void InstallMissions(const std::wstring& mods)
         layout.characters.push_back({ m.className, m.placedId, wx, wz, m.yaw + MapYaw(), m.costume });
         g_Cast.push_back(m);
     }
+    // animations a class plays that are another's: <cast name, player or class>=<animation>[, <animation>...]
+    std::vector<std::string> borrowed;
+    for (const std::string& key : Keys(ini, L"Animations")) {
+        std::string className = key;
+        if (_stricmp(key.c_str(), "player") == 0)
+            className = g_PlayerClass;
+        for (const CastMember& m : g_Cast)
+            if (_stricmp(m.name.c_str(), key.c_str()) == 0)
+                className = m.className;
+        if (const CustomCharacter* custom = FindCustomCharacter(className.c_str()))
+            className = custom->base; // its moves are its base's
+        if (className.size() < 2) {
+            LOG_WARN("Missions: [Animations] %s is no class", key.c_str());
+            continue;
+        }
+        std::string list = Profile(ini, L"Animations", std::wstring(key.begin(), key.end()).c_str(), L"");
+        for (char& ch : list)
+            if (ch == ',')
+                ch = ' ';
+        size_t from = 0;
+        while ((from = list.find_first_not_of(' ', from)) != std::string::npos) {
+            const size_t end = std::min(list.find(' ', from), list.size());
+            std::string animation = list.substr(from, end - from);
+            from = end;
+            if (g_AnimationCount >= kMaxMissionAnimations) {
+                LOG_WARN("Missions: more than %d [Animations]; %s left out", kMaxMissionAnimations, animation.c_str());
+                continue;
+            }
+            for (char& ch : animation)
+                ch = char(std::tolower(static_cast<unsigned char>(ch)));
+            MissionAnimation& a = g_Animations[g_AnimationCount++];
+            a.shortName = className.substr(1);
+            a.animation = animation;
+            a.sequence = "Msn_" + animation;
+            borrowed.push_back(animation + ".bnm");
+        }
+    }
+    SetBorrowedAnimations(std::move(borrowed));
     // its music: Music=<a slot of the game's sound table>, the game's own track, or <slot>.hwx in the mission's folder
     // (in the slot's format, as a custom map's) played in its place for this start
     layout.music = Profile(ini, L"Mission", L"Music");

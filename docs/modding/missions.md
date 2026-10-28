@@ -66,6 +66,19 @@ gate=0 120
 pit=0 600
 ```
 
+Animations of other characters a character plays (`play_anim`, below) are named in `[Animations]`, as
+`<cast name, player or class>=<animation>, <animation>...`, the animations' file names without `.bnm` (any character's,
+from any level: the port loads them with the mission):
+
+```ini
+[Animations]
+maul=anakin_atk_kill_lunge_humangb
+quigon=dooku_death
+```
+
+A character's own animations need no entry. The animations go to the character's class (its base's, for a custom
+character): every character of that class can play them.
+
 The cast are placed in the level before it loads, so they come with their classes' sounds, as Heroes vs Villains'
 fighters do (characters spawned later by the script have none). The script finds them with `cast("<name>")`. A side
 is `ally` (on the player's side), `enemy`, `neutral` (attacks no one until hit) or `riot` (everyone's enemy); left
@@ -194,6 +207,9 @@ level is safe to use: functions on it do nothing, `alive()` and `exists()` are f
 | Function | |
 |---|---|
 | `play(c, move [, speed])` | plays one of its moves by name: intros (`<Name>_Intro`), idles (`Idle_Flavor_v1`), falls (`Death`), reactions; false when it has none of that name |
+| `play_anim(c, animation [, options])` | plays an animation: one of its moves (by its name or its animation's), or one of `[Animations]`. Options: `from` / `to` (the animation's own frame numbers, 60 a second; left out, its first / last), `loop` (`from`..`to` again and again until `stop_anim`), `hold` (stops on `to` and keeps that pose, e.g. a body that stays down), `speed` (1 normal; 0 holds the pose at `from`), `blend` (seconds to blend in from the pose it was in; default 0, at once). Neither `loop` nor `hold`: it plays to `to` (or its end) and the character carries on as before. A hit, its death or its own AI can still end it (turn its AI off for scenes). False when it has no such animation |
+| `stop_anim(c)` | ends `play_anim`'s loop or held pose: the character goes back to what it does (its idle) |
+| `anim_frames(c)` | its current animation's frame, first and last frames and name (`log(anim_frames(c))`), to find `from` / `to` |
 | `moves(c)` | the names of its moves, as a table (`log(table.concat(moves(c), ","))` lists them) |
 | `saber(c, on [, seconds])` | its sabers lit or put away, as the game's cinematics do: the blade grows or shrinks over `seconds` (default 0.4) with the saber's sound; 0 at once, silent. A saber put away stays away (also while it fights) until `saber(c, true)`; false when it has none |
 | `saber(c)` | whether one of its sabers is lit |
@@ -265,4 +281,7 @@ dev map's characters, `devmapbuild.h`), sets the player's class and start and lo
 cast is woken and `main` runs as a Lua 5.4 coroutine (`third_party/lua`), resumed once a frame while the game is not
 paused; the prelude's waits are loops of yields. The player's fatal hit goes to the mission (coop.h's fatal-hit guard),
 so the game never shows its own Game Over. Cameras are the port's director over the game's camera (freecam.h), the
-screen is drawn in the game's font (`src/debug/missionhud.cpp`).
+screen is drawn in the game's font (`src/debug/missionhud.cpp`). `[Animations]` are sequences added to the classes' scripts (`classsetup.h`)
+playing the animations, which the class finds in its own folder (`resources.cpp` declares them there); `play_anim`'s
+ranges, loops and holds are kept by a hook on the character's animation tick (its `TCharState`, vtable 0x58EFB8 +0x24),
+before the sequence's end is reached.
