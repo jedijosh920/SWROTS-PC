@@ -377,6 +377,41 @@ If a game thread does not stop within 4 seconds (a game stuck in its error handl
 back to starting the game process again; the character choice is handed to the new process as
 `SWROTS_PLAYER` (`kernel::SetBeforeRelaunch`), which it reads at its start.
 
+## Animation playback
+
+What a character plays is its `TCharState` (`[char+0x434]`, vtable 0x58EFB8; Indiana Jones' `TCharState_Game`):
+
+- `+0x30` the current sequence (record: `+0x8` speed, `+0xC` name, `+0x10` animation, `+0x1C` its function, `+0x28` end
+  code, `+0x50` next sequence or -1); `+0x50` the sequence's speed (the class scripts' SetAnimSpeed writes it), `+0x54`
+  the play's speed (0 freezes the pose: a sequence ends only *past* its last frame); `+0x78` transitions done, `+0xCC`
+  / `+0xD0` transitions waiting; `[+0xB8]` the range state: `+8` / `+0xA` first / last frame (int16), `+0x14` the
+  current frame (float, the animation's own frame number), `+0x24` rate.
+- Each tick of the character (TickScript, vtable +0x24, 0x49CD90) advances the frame by `+0x50 * +0x54 * rate`: 60
+  frames a second at speed 1 (seen in game). Past the last frame, in that same call: the linked next sequence, else the
+  sequence function with its end code (the class moves on, e.g. 0x38A140(instance, class object, -1, -1)), else it
+  loops from its first frame.
+- PlaySequence 0x150E30 is `thiscall(char, sequence, float blend seconds, int start frame, bool, float speed)`. Played
+  from outside the character's tick it is queued and starts at its next tick; the class sometimes queues its idle
+  right after (seen about every other play), which puts it away again.
+- Back to the class's own (its idle) from the port: set the script context for the character (`TCharState` vfunc +0xC
+  sets `[0x6943CC]`, `[0x69652C]`, `[0x6964C0]`, `[0x696528]`; save and restore them), then 0x38A140(`[0x6964C0]`,
+  `[0x69652C]`, -1, -1).
+
+The port's missions (`missions.cpp`, `play_anim`) hook TickScript to loop a range, hold a frame and put a play back.
+
+## Hits, targets and the dead
+
+- Every hit on a character goes through Reaction_Call 0x159E20 (`thiscall(char, bump, collision, sequence)` -> bool;
+  the classes' wrapper 0x26A960 calls it); returning true without calling it is the game's own "no hit taken" (no
+  damage, no reaction, no block). Its real handler Reaction_Handle starts at 0x158930 (vtable +0x300). The port has
+  one hook there (`characters.h` HookReactions): script actors take none; Cody's rolls dodge in it.
+- Targets: the AI's target check (0x19FFC0) skips the dead (`+0x12C`), characters whose AI is off, "Ignored By AI"
+  (`[+0xA00]+0x52`) and hidden ones; the player's lock-on, Force powers and grapples ask the candidate's brain
+  IsEnemy (0x18F3F0). IsEnemy false for a script actor (in the port's IsEnemy hook) keeps everyone off it.
+- Death: `+0x118` dying, `+0x12C` dead. An NPC's death (0xA3000) fades it out after `+0x5DC` seconds and removes it
+  (0xB5840), unless "Cinematic Death?" (`+0x5D4`) is set, which keeps the body. A mission's body that must never get
+  up is a script actor holding a death animation's last frame instead (no hit reaches it).
+
 ## Open questions
 
 - **Carrying state over in a live change**: the new character starts with its class's health and

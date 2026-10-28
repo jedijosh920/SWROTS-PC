@@ -285,4 +285,5 @@ so the game never shows its own Game Over. Cameras are the port's director over 
 screen is drawn in the game's font (`src/debug/missionhud.cpp`). `[Animations]` are sequences added to the classes' scripts (`classsetup.h`)
 playing the animations, which the class finds in its own folder (`resources.cpp` declares them there); `play_anim`'s
 ranges, loops and holds are kept by a hook on the character's animation tick (its `TCharState`, vtable 0x58EFB8 +0x24),
-before the sequence's end is reached.
+before the sequence's end is reached. `actor` marks script actors (`characters.h`): the hit reaction and the enemy
+check leave them out (see docs/research/characters.md, "Hits, targets and the dead").
