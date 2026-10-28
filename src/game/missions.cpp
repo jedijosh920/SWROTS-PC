@@ -777,6 +777,17 @@ int L_actor(lua_State* L)
     return 0;
 }
 
+// keep_body(c [, on]): when it dies, its body stays where it fell (the game's "Cinematic Death?", +0x5D4: no fade, not
+// taken away). A body that nothing may wake: actor(c) once it has fallen.
+constexpr uint32_t kCinematicDeath = 0x5D4;
+
+int L_keep_body(lua_State* L)
+{
+    if (uint8_t* c = CheckCharacter(L, 1))
+        At<uint8_t>(c, kCinematicDeath) = (lua_isnoneornil(L, 2) || lua_toboolean(L, 2)) ? 1 : 0;
+    return 0;
+}
+
 int L_attack(lua_State* L)
 {
     uint8_t* c = CheckCharacter(L, 1);
@@ -1181,6 +1192,31 @@ uint8_t* MarkerObject(const char* name)
 
 // go(c, marker [, fight]): it walks (runs) to a marker of [Markers] its own way, round what is in the way; with fight,
 // it fights what it meets on the way. False when there is no such marker.
+// Characters on their way with their AI on for it (a goto is the AI's to walk: with it off, nobody moves): off again
+// once there (MissionFrame).
+struct Walker {
+    uint8_t* character;
+    uint32_t id;
+    uint8_t* marker;
+};
+std::vector<Walker> g_Walkers;
+
+void WalkersFrame()
+{
+    for (size_t i = 0; i < g_Walkers.size();) {
+        Walker& w = g_Walkers[i];
+        const bool same = At<uint32_t>(w.character, 4) == w.id;
+        if (same && reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint8_t*)>(kExecutingGoto)(w.character, nullptr, w.marker)) {
+            ++i;
+            continue;
+        }
+        if (same)
+            if (uint8_t* brain = At<uint8_t*>(w.character, kCharacterAI))
+                brain[kAIOff] = 1;
+        g_Walkers.erase(g_Walkers.begin() + ptrdiff_t(i));
+    }
+}
+
 int L_go(lua_State* L)
 {
     uint8_t* c = CheckCharacter(L, 1);
@@ -1188,8 +1224,16 @@ int L_go(lua_State* L)
     uint8_t* marker = MarkerObject(name);
     if (!marker)
         LOG_WARN("Mission: go: no marker %s", name);
-    if (c && marker)
+    if (c && marker) {
+        g_Walkers.erase(std::remove_if(g_Walkers.begin(), g_Walkers.end(), [&](const Walker& w) { return w.character == c; }),
+            g_Walkers.end());
         reinterpret_cast<void(__fastcall*)(uint8_t*, void*, uint8_t*, bool)>(kCharacterGoto)(c, nullptr, marker, lua_toboolean(L, 3) != 0);
+        uint8_t* brain = At<uint8_t*>(c, kCharacterAI);
+        if (brain && brain[kAIOff]) { // (an actor stays one: no one's target, no hits)
+            brain[kAIOff] = 0;
+            g_Walkers.push_back({ c, At<uint32_t>(c, 4), marker });
+        }
+    }
     lua_pushboolean(L, c && marker);
     return 1;
 }
@@ -1981,7 +2025,7 @@ void Register(lua_State* L)
         { "alive", L_alive }, { "exists", L_exists }, { "health", L_health }, { "set_health", L_set_health },
         { "max_health", L_max_health }, { "invincible", L_invincible }, { "position", L_position },
         { "distance", L_distance }, { "place", L_place }, { "face", L_face }, { "side", L_side }, { "ai", L_ai },
-        { "attack", L_attack }, { "hold", L_hold }, { "play", L_play }, { "play_anim", L_play_anim }, { "stop_anim", L_stop_anim }, { "actor", L_actor }, { "anim_frames", L_anim_frames }, { "moves", L_moves }, { "saber", L_saber }, { "kill", L_kill }, { "boss", L_boss }, { "objective_done", L_objective_done }, { "tip", L_tip },
+        { "attack", L_attack }, { "hold", L_hold }, { "play", L_play }, { "play_anim", L_play_anim }, { "stop_anim", L_stop_anim }, { "actor", L_actor }, { "keep_body", L_keep_body }, { "anim_frames", L_anim_frames }, { "moves", L_moves }, { "saber", L_saber }, { "kill", L_kill }, { "boss", L_boss }, { "objective_done", L_objective_done }, { "tip", L_tip },
         { "go", L_go }, { "going", L_going }, { "marker", L_marker },
         { "sound", L_sound }, { "stop_sounds", L_stop_sounds }, { "get_var", L_get_var },
         { "music_volume", L_music_volume },
@@ -2234,6 +2278,7 @@ void InstallMissions(const std::wstring& mods)
     g_AnimationCount = 0;
     g_AnimControls.clear();
     g_Actors.clear();
+    g_Walkers.clear();
     SetBorrowedAnimations({});
     AddClassSequences(&MissionSequences);
     ReadMissions();
@@ -2479,6 +2524,7 @@ void MissionFrame()
     uint8_t* player = PlayerObject();
     if (!player)
         return;
+    WalkersFrame();
     const uint64_t now = GameTime();
     if (!g_InLevelAt)
         g_InLevelAt = now;
