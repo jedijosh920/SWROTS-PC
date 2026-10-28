@@ -193,7 +193,7 @@ level is safe to use: functions on it do nothing, `alive()` and `exists()` are f
 | `side(c, "ally" / "enemy" / "neutral" / "riot")` | changes its side |
 | `ai(c, on)` | its AI on or off (off: it stands still) |
 | `attack(c, target)` | its AI goes after that target |
-| `walk(c, marker [, timeout])` | it runs to a marker of `[Markers]` its own way (as the game's AI goes to places) and the script waits until it is there (true) or `timeout` seconds (default 20) passed (false); works in cutscenes too |
+| `walk(c, marker [, timeout])` | it runs to a marker of `[Markers]` its own way (as the game's AI goes to places) and the script waits until it is there (true) or `timeout` seconds (default 20) passed (false); works in cutscenes too, and for characters whose AI is off (actors): their AI is on for the way, off again once there |
 | `go(c, marker [, fight])` / `going(c, marker)` | the same without waiting (with `fight`, it fights what it meets on the way); whether it is still on its way |
 | `marker(name)` | a marker's x, z |
 | `hold(on)` | everyone holds still and the player's controls are held (as in cutscenes) |
@@ -209,6 +209,7 @@ level is safe to use: functions on it do nothing, `alive()` and `exists()` are f
 | `play(c, move [, speed])` | plays one of its moves by name: intros (`<Name>_Intro`), idles (`Idle_Flavor_v1`), falls (`Death`), reactions; false when it has none of that name |
 | `play_anim(c, animation [, options])` | plays an animation: one of its moves (by its name or its animation's), or one of `[Animations]`. Options: `from` / `to` (the animation's own frame numbers, 60 a second; left out, its first / last), `loop` (`from`..`to` again and again until `stop_anim`), `hold` (stops on `to` and keeps that pose, e.g. a body that stays down), `speed` (1 normal; 0 holds the pose at `from`), `blend` (seconds to blend in from the pose it was in; default 0, at once). Neither `loop` nor `hold`: it plays to `to` (or its end) and the character carries on as before. A hit, its death or its own AI can still end it, except on an actor (`actor`). False when it has no such animation |
 | `actor(c [, on])` | makes it a cutscene actor (`actor(c, false)`: as it was): it does only what the script says (moves, walks, sabers, lines): its AI is off, no hit reaches it (no damage, no reaction, no block), no one attacks or targets it, and an animation `play_anim` gives it stays on (put back if anything puts it away). A body that never gets up: `actor(c)`, then `play_anim(c, "dooku_death", {hold = true})` |
+| `keep_body(c [, on])` | when it dies, its body stays where it fell (the game's own "cinematic death": no fade, not taken away). With `actor(c)` once it has fallen, nothing wakes it |
 | `stop_anim(c)` | ends `play_anim`'s loop or held pose: the character goes back to what it does (its idle) |
 | `anim_frames(c)` | its current animation's frame, first and last frames and name (`log(anim_frames(c))`), to find `from` / `to` |
 | `moves(c)` | the names of its moves, as a table (`log(table.concat(moves(c), ","))` lists them) |
