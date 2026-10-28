@@ -131,6 +131,18 @@ void RefillPlayerHealth();
 // (no one else changes sides). Nulls end it.
 void SetFriendlyFire(const uint8_t* a, const uint8_t* b);
 
+// Characters a script directs alone (a mission's cutscene actors, its bodies): no hit reaches them (no damage, no
+// reaction, no block) and no one takes them for an enemy (AI targets, lock-on, Force powers, grapples). Every start
+// clears them.
+void SetScriptActor(uint8_t* character, bool actor);
+bool IsScriptActor(const uint8_t* character);
+
+// Every character's hit reaction (Reaction_Call 0x159E20) through the port: a script actor's is dropped, any other
+// goes to `wrapper` (one, e.g. Cody's rolls; null keeps the last) or the game's. Once per start of whoever needs it.
+using ReactionCallFn = bool(__fastcall*)(uint8_t* character, void*, void* bump, void* collision, void* sequence);
+using ReactionWrapper = bool (*)(uint8_t* character, void* bump, void* collision, void* sequence, ReactionCallFn original);
+void HookReactions(ReactionWrapper wrapper = nullptr);
+
 // The characters spawned in the running level.
 int SpawnedCount();
 // Removes the characters spawned in the running level (those still there), as the game removes its own

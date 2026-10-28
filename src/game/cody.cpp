@@ -101,8 +101,6 @@ constexpr float kHardestHit = 120; // before kDamageTaken
 // A hit's reaction: ICharacter::Reaction_Call 0x159E20, thiscall on the one hit (bump, collision, &sequence) -> true
 // when dealt with; its own early ways out (the script's "no reactions" bit, a cutscene) return true with none. It also
 // counts a hit on a player holding the block button as blocked (no damage, no reaction): a clone has no block
-constexpr uint32_t kReactionCall = 0x00159E20;
-constexpr uint8_t kReactionCallBytes[] = { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0 }; // push ebp; mov ebp, esp; and esp, -16
 constexpr float kHelperSide = 90;            // how far beside him they come down
 constexpr float kRappelHeight = 320;         // and from how high (indoor arenas have ceilings)
 constexpr ULONGLONG kHelperEngageMs = 2500;  // they turn on his opponent once down
@@ -867,19 +865,16 @@ bool Guarded(const Kit& kit, ULONGLONG now)
 
 // No reaction to a hit in his roll's guard (CodyDamage takes its damage away): dealt with, as the game's own ways out.
 // Otherwise the hit as on anyone not holding the block button (a player's controller, +0x43C, out of it for the call).
-using ReactionCallFn = bool(__fastcall*)(uint8_t*, void*, void*, void*, void*);
-ReactionCallFn g_OriginalReactionCall = nullptr;
-
-bool __fastcall ReactionCallHook(uint8_t* character, void*, void* bump, void* collision, void* sequence)
+bool CodyReaction(uint8_t* character, void* bump, void* collision, void* sequence, ReactionCallFn original)
 {
     const auto kit = g_Kits.find(character);
     if (kit == g_Kits.end())
-        return g_OriginalReactionCall(character, nullptr, bump, collision, sequence);
+        return original(character, nullptr, bump, collision, sequence);
     if (Guarded(kit->second, GameTime()))
         return true;
     const int32_t port = At<int32_t>(character, kCharacterPort);
     At<int32_t>(character, kCharacterPort) = -1;
-    const bool dealt = g_OriginalReactionCall(character, nullptr, bump, collision, sequence);
+    const bool dealt = original(character, nullptr, bump, collision, sequence);
     At<int32_t>(character, kCharacterPort) = port;
     return dealt;
 }
@@ -956,14 +951,7 @@ void InstallCody()
         }
         RegisterResourcePatch(kDroidTable, &AddDroidRows);
     }
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kReactionCall)), kReactionCallBytes, sizeof kReactionCallBytes) == 0) {
-        // the stub lives in the port's memory and survives reboots; the jump goes into every new image
-        static uint8_t* stub = Trampoline(kReactionCall, kReactionCallBytes, sizeof kReactionCallBytes);
-        g_OriginalReactionCall = reinterpret_cast<ReactionCallFn>(stub);
-        PatchJump(kReactionCall, reinterpret_cast<const void*>(&ReactionCallHook));
-    } else {
-        LOG_WARN("Cody: unexpected code at the hit reaction; his rolls do not dodge reactions");
-    }
+    HookReactions(&CodyReaction);
     RegisterResourceGenerator(&BodyGenerator);
     RegisterResourceGenerator(&HelmetGenerator);
 }
@@ -1128,7 +1116,7 @@ namespace {
 
 // A roll: the way the stick points on the screen, else away from his opponent. He is turned for the clone's roll out
 // of cover to go there (his placement, vfunc +0x1F4: rows right, up, forward, position; measured: the roll goes along
-// his forward row). While it lasts no hit lands on him (ReactionCallHook and CodyDamage).
+// his forward row). While it lasts no hit lands on him (CodyReaction and CodyDamage).
 void Roll(uint8_t* cody, Kit& kit, float dx, float dz, ULONGLONG now)
 {
     if (!kit.kind->dodgeTurns) { // a duck where it stands

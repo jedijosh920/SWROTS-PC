@@ -858,9 +858,14 @@ const uint8_t* HelperMaster(const uint8_t* character)
         it->second.master : nullptr;
 }
 
+// Script actors: the object and its instance id (+4), to tell it is still the same one.
+std::vector<std::pair<const uint8_t*, uint32_t>> g_ScriptActors;
+
 bool __fastcall IsEnemyHook(uint8_t* brain, void* edx, uint8_t* other, int flag)
 {
     const uint8_t* self = brain ? *reinterpret_cast<uint8_t* const*>(brain + 0x10) : nullptr;
+    if (!g_ScriptActors.empty() && ((self && IsScriptActor(self)) || (other && IsScriptActor(other))))
+        return false; // no one's enemy, no one's target
     if (self && other && self != other && !g_HelperMasters.empty()) {
         const uint8_t* selfMaster = HelperMaster(self);
         const uint8_t* otherMaster = HelperMaster(other);
@@ -897,6 +902,65 @@ void SetFriendlyFire(const uint8_t* a, const uint8_t* b)
     g_FriendlyFireB = a && b ? b : nullptr;
 }
 
+
+void SetScriptActor(uint8_t* character, bool actor)
+{
+    if (!character)
+        return;
+    g_ScriptActors.erase(std::remove_if(g_ScriptActors.begin(), g_ScriptActors.end(),
+                             [&](const auto& a) { return a.first == character; }),
+        g_ScriptActors.end());
+    if (actor)
+        g_ScriptActors.emplace_back(character, *reinterpret_cast<const uint32_t*>(character + 4));
+}
+
+bool IsScriptActor(const uint8_t* character)
+{
+    for (const auto& a : g_ScriptActors)
+        if (a.first == character)
+            return *reinterpret_cast<const uint32_t*>(character + 4) == a.second;
+    return false;
+}
+
+constexpr uint32_t kReactionCall = 0x00159E20;
+constexpr uint8_t kReactionCallBytes[] = { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0 }; // push ebp; mov ebp, esp; and esp, -16
+ReactionCallFn g_OriginalReactionCall = nullptr;
+ReactionWrapper g_ReactionWrapper = nullptr; // (kept across starts: a wrapper with nothing to do passes hits on)
+
+// true: the hit dealt with (the game's own way out when a hit is not taken: no damage, no reaction)
+bool __fastcall ReactionCallHook(uint8_t* character, void*, void* bump, void* collision, void* sequence)
+{
+    if (!g_ScriptActors.empty() && IsScriptActor(character))
+        return true;
+    if (g_ReactionWrapper)
+        return g_ReactionWrapper(character, bump, collision, sequence, g_OriginalReactionCall);
+    return g_OriginalReactionCall(character, nullptr, bump, collision, sequence);
+}
+
+void HookReactions(ReactionWrapper wrapper)
+{
+    if (wrapper)
+        g_ReactionWrapper = wrapper;
+    if (*reinterpret_cast<const uint8_t*>(uintptr_t(kReactionCall)) == 0xE9) // this start's image has the jump
+        return;
+    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kReactionCall)), kReactionCallBytes, sizeof kReactionCallBytes) != 0) {
+        LOG_WARN("Characters: unexpected code at the hit reaction; hits are not filtered");
+        return;
+    }
+    // the stub lives in the port's memory and survives reboots; the jump goes into every new image
+    static uint8_t* stub = [] {
+        uint8_t* s = AllocStub(sizeof kReactionCallBytes + 5);
+        std::memcpy(s, kReactionCallBytes, sizeof kReactionCallBytes);
+        s[sizeof kReactionCallBytes] = 0xE9;
+        const int32_t rel = int32_t(kReactionCall + sizeof kReactionCallBytes) -
+            int32_t(uintptr_t(s) + sizeof kReactionCallBytes + 5);
+        std::memcpy(s + sizeof kReactionCallBytes + 1, &rel, 4);
+        return s;
+    }();
+    g_OriginalReactionCall = reinterpret_cast<ReactionCallFn>(stub);
+    PatchJump(kReactionCall, reinterpret_cast<const void*>(&ReactionCallHook));
+}
+
 // Neutral spawns and the health they had: one that loses health was attacked, and riots.
 struct NeutralSpawn {
     uint8_t* object;
@@ -909,6 +973,7 @@ void InstallCharacters()
 {
     g_Neutrals.clear();
     g_HelperMasters.clear();
+    g_ScriptActors.clear();
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kIsEnemy)), kIsEnemyPrologue, sizeof(kIsEnemyPrologue)) == 0) {
         uint8_t* stub = AllocStub(16);
         std::memcpy(stub, kIsEnemyPrologue, sizeof(kIsEnemyPrologue));

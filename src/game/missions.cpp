@@ -736,6 +736,47 @@ int L_ai(lua_State* L)
     return 0;
 }
 
+// actor(c, on): a cutscene actor: it does only what the script says (moves, walks, sabers, lines): its AI is off, no
+// hit reaches it (no damage, no reaction, no block), no one attacks or targets it (characters.h script actors). Off:
+// as it was (its AI, invincibility). A body that stays down: actor(c, true), then play_anim(c, <death>, {hold = true}).
+struct ActorWas {
+    uint8_t* character;
+    uint8_t invincible, aiOff, ignored;
+};
+std::vector<ActorWas> g_Actors;
+constexpr uint32_t kAIDataIgnored = 0x52; // [char+0xA00] "Ignored By AI"
+constexpr uint32_t kCharacterAIData = 0xA00;
+
+int L_actor(lua_State* L)
+{
+    uint8_t* c = CheckCharacter(L, 1);
+    if (!c)
+        return 0;
+    const bool on = lua_isnoneornil(L, 2) || lua_toboolean(L, 2);
+    uint8_t* brain = At<uint8_t*>(c, kCharacterAI);
+    uint8_t* data = At<uint8_t*>(c, kCharacterAIData);
+    auto was = std::find_if(g_Actors.begin(), g_Actors.end(), [&](const ActorWas& a) { return a.character == c; });
+    if (on && was == g_Actors.end())
+        g_Actors.push_back({ c, At<uint8_t>(c, kCharacterInvincible), brain ? brain[kAIOff] : uint8_t(0),
+            data ? data[kAIDataIgnored] : uint8_t(0) });
+    if (on) {
+        At<uint8_t>(c, kCharacterInvincible) = 1;
+        if (brain)
+            brain[kAIOff] = 1;
+        if (data)
+            data[kAIDataIgnored] = 1;
+    } else if (was != g_Actors.end()) {
+        At<uint8_t>(c, kCharacterInvincible) = was->invincible;
+        if (brain)
+            brain[kAIOff] = was->aiOff;
+        if (data)
+            data[kAIDataIgnored] = was->ignored;
+        g_Actors.erase(was);
+    }
+    SetScriptActor(c, on);
+    return 0;
+}
+
 int L_attack(lua_State* L)
 {
     uint8_t* c = CheckCharacter(L, 1);
@@ -869,6 +910,8 @@ constexpr uintptr_t kSeekFrame = 0x0049D0E0;     // thiscall (cs, int frame): in
 // play_anim's controls: a range of frames played, looped or held, kept to by the tick hook until the character's
 // sequence changes (stop_anim, a hit, its death, its class's own choice).
 struct AnimControl {
+    uint8_t* character = nullptr;
+    uint32_t id = 0;          // its instance id (+4), to tell it is still the same one
     uint8_t* state = nullptr; // the character's TCharState
     uint8_t* sequence = nullptr;
     float from = -1, to = -1; // frames; -1: the animation's first / last
@@ -877,8 +920,22 @@ struct AnimControl {
     bool started = false;     // its sequence is on (a play from the script starts at the character's next tick)
     int waited = 0;           // ticks before it was
     int transitions = 0;      // the state's count when it started: another transition means the character moved on
+    float lastFrame = -1;     // where it was at the last tick
+    int lastOfRange = 0;
+    bool frozen = false;      // held at `to`
+    int replays = 0;
 };
+constexpr int kMaxReplays = 600; // an actor put back (10 s of ticks put away one by one: something else wants it)
 std::vector<AnimControl> g_AnimControls;
+
+void Replay(AnimControl& k, float frame)
+{
+    k.started = false;
+    k.waited = 0;
+    ++k.replays;
+    reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint8_t*, float, int, int, float)>(kPlaySequence)(
+        k.character, nullptr, k.sequence, 0.0f, frame >= 0 ? int(frame) : 0, 0, k.speed > 0 ? k.speed : 1.0f);
+}
 
 uint32_t __fastcall TickScriptHook(uint8_t* cs, void*, uint32_t arg)
 {
@@ -887,23 +944,47 @@ uint32_t __fastcall TickScriptHook(uint8_t* cs, void*, uint32_t arg)
         if (k.state != cs)
             continue;
         uint8_t* rs = At<uint8_t*>(cs, kStateRange);
+        uint8_t* now = At<uint8_t*>(cs, kStateSequence);
+        const bool same = At<uint32_t>(k.character, 4) == k.id;
+        const auto drop = [&](const char* why) {
+            LOG_INFO("Mission: play_anim %s %s (%s)", At<const char*>(k.sequence, 0xC), why,
+                now ? At<const char*>(now, 0xC) : "nothing");
+            g_AnimControls.erase(g_AnimControls.begin() + ptrdiff_t(i));
+        };
+        if (!same || !rs) {
+            g_AnimControls.erase(g_AnimControls.begin() + ptrdiff_t(i));
+            break;
+        }
         if (!k.started) {
-            if (At<uint8_t*>(cs, kStateSequence) != k.sequence || At<int>(cs, kStateQueued) != 0 || !rs) {
-                if (++k.waited > 30)
-                    g_AnimControls.erase(g_AnimControls.begin() + ptrdiff_t(i));
+            if (now != k.sequence || At<int>(cs, kStateQueued) != 0) {
+                // a transition the class queued as the play came (seen: its idle, at times) put it away: again
+                if (At<int>(cs, kStateQueued) == 0 && ++k.waited > 2) {
+                    if (k.replays >= kMaxReplays)
+                        drop("did not start");
+                    else
+                        Replay(k, k.lastFrame >= 0 ? k.lastFrame : k.from);
+                }
                 break;
             }
             k.started = true;
             k.transitions = At<int>(cs, kStateTransitions);
             if (k.to < 0 && (k.hold || k.loop))
                 k.to = float(At<int16_t>(rs, kRangeLast));
-            if (k.speed <= 0)
+            if (k.speed <= 0 || k.frozen)
                 At<float>(cs, kStatePlaySpeed) = 0;
-        } else if (At<uint8_t*>(cs, kStateSequence) != k.sequence || At<int>(cs, kStateTransitions) != k.transitions ||
-                   !rs) {
-            g_AnimControls.erase(g_AnimControls.begin() + ptrdiff_t(i));
+        } else if (now != k.sequence || At<int>(cs, kStateTransitions) != k.transitions) {
+            // moved on: at its end (a play to its end), or put away. An actor's is put back where it was; anyone
+            // else's ends there (a hit, its death).
+            const bool ended = k.to < 0 && k.lastFrame + 2 >= k.lastOfRange;
+            if (ended || !IsScriptActor(k.character) || k.replays >= kMaxReplays) {
+                drop(ended ? "played" : "ended by");
+            } else {
+                Replay(k, k.lastFrame);
+            }
             break;
         }
+        k.lastFrame = At<float>(rs, kRangeFrame);
+        k.lastOfRange = At<int16_t>(rs, kRangeLast);
         if (k.to >= 0) {
             const float frame = At<float>(rs, kRangeFrame);
             const float step = At<float>(cs, kStateSpeed) * At<float>(cs, kStatePlaySpeed) * At<float>(rs, kRangeRate);
@@ -917,6 +998,7 @@ uint32_t __fastcall TickScriptHook(uint8_t* cs, void*, uint32_t arg)
                 } else if (k.hold) {
                     At<float>(rs, kRangeFrame) = k.to;
                     At<float>(cs, kStatePlaySpeed) = 0;
+                    k.frozen = true;
                 }
             }
         }
@@ -972,13 +1054,15 @@ int L_play_anim(lua_State* L)
         return 1;
     }
     DropAnimControl(cs);
-    reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint8_t*, float, int, int, float)>(kPlaySequence)(
+    const bool played = reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint8_t*, float, int, int, float)>(kPlaySequence)(
         c, nullptr, sequence, blend > 0 ? blend : 0.0f, k.from >= 0 ? int(k.from) : 0, 0, k.speed > 0 ? k.speed : 1.0f);
-    if (k.loop || k.hold || k.to >= 0 || k.speed <= 0) {
-        k.state = cs;
-        k.sequence = sequence;
-        g_AnimControls.push_back(k);
-    }
+    if (!played)
+        LOG_WARN("Mission: play_anim %s: the game refused it", name);
+    k.character = c;
+    k.id = At<uint32_t>(c, 4);
+    k.state = cs;
+    k.sequence = sequence;
+    g_AnimControls.push_back(k); // (also a plain play: put back if the class puts it away as it starts)
     lua_pushboolean(L, true);
     return 1;
 }
@@ -1897,7 +1981,7 @@ void Register(lua_State* L)
         { "alive", L_alive }, { "exists", L_exists }, { "health", L_health }, { "set_health", L_set_health },
         { "max_health", L_max_health }, { "invincible", L_invincible }, { "position", L_position },
         { "distance", L_distance }, { "place", L_place }, { "face", L_face }, { "side", L_side }, { "ai", L_ai },
-        { "attack", L_attack }, { "hold", L_hold }, { "play", L_play }, { "play_anim", L_play_anim }, { "stop_anim", L_stop_anim }, { "anim_frames", L_anim_frames }, { "moves", L_moves }, { "saber", L_saber }, { "kill", L_kill }, { "boss", L_boss }, { "objective_done", L_objective_done }, { "tip", L_tip },
+        { "attack", L_attack }, { "hold", L_hold }, { "play", L_play }, { "play_anim", L_play_anim }, { "stop_anim", L_stop_anim }, { "actor", L_actor }, { "anim_frames", L_anim_frames }, { "moves", L_moves }, { "saber", L_saber }, { "kill", L_kill }, { "boss", L_boss }, { "objective_done", L_objective_done }, { "tip", L_tip },
         { "go", L_go }, { "going", L_going }, { "marker", L_marker },
         { "sound", L_sound }, { "stop_sounds", L_stop_sounds }, { "get_var", L_get_var },
         { "music_volume", L_music_volume },
@@ -2149,6 +2233,7 @@ void InstallMissions(const std::wstring& mods)
     g_PlayerDefeatedHandled = false;
     g_AnimationCount = 0;
     g_AnimControls.clear();
+    g_Actors.clear();
     SetBorrowedAnimations({});
     AddClassSequences(&MissionSequences);
     ReadMissions();
@@ -2161,6 +2246,7 @@ void InstallMissions(const std::wstring& mods)
         return;
     }
     PatchCall(kScriptSaberOnCall, reinterpret_cast<const void*>(&ScriptSaberOn), 5);
+    HookReactions(); // actor(): no hits
     if (*reinterpret_cast<const uint32_t*>(uintptr_t(kTickScriptSlot)) == kTickScript) {
         const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(&TickScriptHook));
         PatchBytes(kTickScriptSlot, &hook, 4);
