@@ -62,6 +62,7 @@ constexpr float kFloorMargin = 600.0f;
 constexpr float kRespawnReach = 950.0f;  // from the fight's middle, at most
 constexpr float kRespawnClear = 380.0f;  // from every fighter, at least (when it can)
 constexpr int kRespawnTries = 32;
+constexpr float kSpawnNear = 350.0f; // a custom map's own clear places this near a post stand for it
 constexpr float kSpawnLift = 25.0f;  // above a custom map's floor (under its low ceilings)
 // The intro (ms): for each side a frontal shot of its line playing its Versus intros, then a close shot along the
 // line; the camera back behind the player; "FIGHT!" shows a while after.
@@ -486,7 +487,7 @@ void SafePlace(int except, float (&m)[16])
             bestZ = z;
         }
     }
-    Transform(bestX, bestZ, std::atan2(cx - bestX, cz - bestZ), m);
+    Transform(bestX, bestZ, std::atan2(cx - bestX, cz - bestZ), m, DevMapCustomMap() ? kSpawnLift : 60.0f);
 }
 
 // Where the player waits out of the fight (between its fall and its comeback, or out of lives): far off on the dev
@@ -719,7 +720,7 @@ void Unstick(int i, ULONGLONG now)
         return;
     }
     float m[16];
-    Transform(bestX, bestZ, std::atan2(t[0] - bestX, t[2] - bestZ), m);
+    Transform(bestX, bestZ, std::atan2(t[0] - bestX, t[2] - bestZ), m, DevMapCustomMap() ? kSpawnLift : 60.0f);
     VirtualOf<void(__fastcall*)(uint8_t*, void*, const float*)>(f.object, kPlace)(f.object, nullptr, m);
     setTarget(); // its walk was cut short: set on the target anew
     LOG_INFO("HvV: %s could not reach %s; brought nearer", ShownName(i).c_str(), goal.c_str());
@@ -1469,15 +1470,42 @@ void ConquestPlace(int side, float (&m)[16])
     }
     const size_t pick = clear.empty() ? furthest : clear[size_t(std::rand()) % clear.size()];
     float x = places[pick].first, z = places[pick].second;
-    const float angle = float(std::rand()) / RAND_MAX * 2 * kPi, reach = 60.0f + float(std::rand()) / RAND_MAX * 140.0f;
-    x = std::clamp(x + std::sin(angle) * reach, g_Bounds[0] + g_Margin, g_Bounds[2] - g_Margin);
-    z = std::clamp(z + std::cos(angle) * reach, g_Bounds[1] + g_Margin, g_Bounds[3] - g_Margin);
+    float lift = 60.0f;
+    if (DevMapCustomMap()) {
+        // a custom map's ground is not flat around a post (walls, steps, low ceilings): one of the map's own clear
+        // places near it (Spawns=, open floor checked by its converter), else the post itself; set down from lower
+        // (a low ceiling over the floor: a body dropped from 60 above it met the ceiling and stayed stuck)
+        std::vector<size_t> picks;
+        size_t nearest = g_Spawns.size();
+        float nearestDistance = 1e9f;
+        for (size_t k = 0; k < g_Spawns.size(); ++k) {
+            const float d = std::hypot(g_Spawns[k].first - x, g_Spawns[k].second - z);
+            if (d < kSpawnNear)
+                picks.push_back(k);
+            if (d < nearestDistance) {
+                nearestDistance = d;
+                nearest = k;
+            }
+        }
+        if (picks.empty() && nearest < g_Spawns.size())
+            picks.push_back(nearest); // none that near: the nearest
+        if (!picks.empty()) {
+            const auto& s = g_Spawns[picks[size_t(std::rand()) % picks.size()]];
+            x = s.first;
+            z = s.second;
+        }
+        lift = kSpawnLift;
+    } else {
+        const float angle = float(std::rand()) / RAND_MAX * 2 * kPi, reach = 60.0f + float(std::rand()) / RAND_MAX * 140.0f;
+        x = std::clamp(x + std::sin(angle) * reach, g_Bounds[0] + g_Margin, g_Bounds[2] - g_Margin);
+        z = std::clamp(z + std::cos(angle) * reach, g_Bounds[1] + g_Margin, g_Bounds[3] - g_Margin);
+    }
     float cx = 0, cz = 0;
     for (const Post& post : g_Posts) {
         cx += post.x / float(g_Posts.size());
         cz += post.z / float(g_Posts.size());
     }
-    Transform(x, z, std::atan2(cx - x, cz - z), m);
+    Transform(x, z, std::atan2(cx - x, cz - z), m, lift);
 }
 
 // A post's letter (A, B, C...).
