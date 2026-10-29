@@ -91,8 +91,12 @@ constexpr float kPostRadius = 240.0f;      // a fighter this near a post counts 
 constexpr float kPostHeightReach = 180.0f; // ... and this near its floor's height (not one on a floor under or over it)
 // A post on a floor of its own above (a bridge, a pad: CommandPosts= with a height): the AI walks straight to a post's
 // marker, under that floor from a lower one, into what lies under it (a pad's pit). A trooper going for it from more
-// than kRaisedBy below is brought up onto it once within kRaisedReach.
+// than kRaisedBy below is brought up onto it once within kRaisedReach. Not again within kBringAgainMs, and after
+// kMostBrings in a row that did not keep it there (a floor the game's collision does not hold it on, a lower floor it
+// falls back to) it walks as the others do until it reaches a post.
 constexpr float kRaisedBy = 100.0f, kRaisedReach = 700.0f;
+constexpr ULONGLONG kBringAgainMs = 8000;
+constexpr int kMostBrings = 3;
 constexpr float kCaptureMs = 7000.0f;      // one fighter alone turns a post (neutral to its side) in this long
 constexpr int kMostCapturers = 3;          // more fighters turn it faster, up to this many
 constexpr ULONGLONG kBleedMs = 5000;       // a side holding fewer posts loses a ticket this often
@@ -157,6 +161,8 @@ struct Fighter {
     float stillAt[3] = {};   // where it was when it last moved on (stuck: see Unstick)
     int post = -1;           // Battlefront: the post it walks to (-1: none, fighting or there)
     ULONGLONG stillSince = 0;
+    ULONGLONG broughtAt = 0; // Battlefront: when it was last brought up onto a post (BringOnto)
+    int brought = 0;         // ... times in a row, since it last reached a post
     ULONGLONG lastBlow = 0;  // when it last dealt or took an enemy's hit (idle beside its target: see Unstick)
     std::string troopClass;  // Battlefront: its trooper's class (it is a hero while `hero`)
     bool hero = false;
@@ -598,12 +604,20 @@ bool SeeToPost(int i)
                 goal = k;
     }
     const Post& target = g_Posts[goal];
-    if (std::hypot(target.x - p[0], target.z - p[2]) <= kMarkerReach && std::abs(target.y - p[1]) <= kPostHeightReach)
+    if (std::hypot(target.x - p[0], target.z - p[2]) <= kMarkerReach && std::abs(target.y - p[1]) <= kPostHeightReach) {
+        f.brought = 0;
         return true; // there: holds it
+    }
     f.post = int(goal);
     if (target.y - p[1] > kRaisedBy && std::hypot(target.x - p[0], target.z - p[2]) < kRaisedReach) {
-        BringOnto(i, goal);
-        return true;
+        const ULONGLONG now = GetTickCount64();
+        if (f.brought < kMostBrings && (!f.broughtAt || now - f.broughtAt >= kBringAgainMs)) {
+            BringOnto(i, goal);
+            f.broughtAt = now;
+            if (++f.brought == kMostBrings)
+                LOG_INFO("Battlefront: %s not brought up again before it reaches a post", ShownName(i).c_str());
+            return true;
+        }
     }
     uint8_t* marker = g_PostMarkers[goal];
     if (!reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint8_t*)>(uintptr_t(kExecutingGoto))(f.object, nullptr, marker))
@@ -2308,6 +2322,8 @@ void HvvFrame()
         }
         --g_Lives[side];
         Track(f, back);
+        f.brought = 0;
+        f.broughtAt = 0;
         FullHealth(back);
         Shield(f, now);
         Engage(i);

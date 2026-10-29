@@ -92,7 +92,9 @@ A post on a floor of its own (a bridge, a landing pad) gives that floor's height
 (as `Floor=`; without it, a post is on `Floor=`): its marker stands there, and only fighters on that floor (within
 180 units of its height) count for it, not those on a street under the bridge. The computer's troopers walk straight
 to a post, so one going for a raised post from a floor more than 100 units below is brought up onto it once within
-700 units, before it walks under that floor into whatever lies below.
+700 units, before it walks under that floor into whatever lies below. It is not brought up again within 8 seconds,
+and after three times in a row that did not keep it on that floor (it fell back to a lower one) it walks as the others
+do until it reaches a post: place a raised post where there is room around it, on a floor the game holds fighters on.
 
 ## Collision of its own
 
