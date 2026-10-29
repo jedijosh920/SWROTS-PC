@@ -70,6 +70,9 @@ INT=luk010               ; in its Versus intro (optional; else a TNT line)
 WIN=luk011               ; on winning a Versus round (optional; else a KIL line)
 EFF=luk012               ; efforts: jumps, falls (optional; said with HIT for its base's grunts)
 
+[Voice2]                 ; optional: player 2's lines when both Versus players pick it (the same events; else [Voice])
+TNT=luk101 luk102
+
 [Subtitles]              ; optional: the texts of its own lines
 LUK001=For the Rebellion!
 ```
@@ -290,4 +293,6 @@ it. For an event it has no lines for, it says those of a related one it has (KIL
 INT: TNT, BAT; FSE: BAT, TNT; TNT: BAT, KIL; BAT: TNT, FSE), and for its base's efforts (lines numbered 900 and
 up: pains, grunts) its `EFF` lines (jumps, falls) or its `HIT` lines, a pain's `HIT` first; only what it has none
 of stays its base's (logged). The lines take turns per event (a turn passes only when the
-engine starts or queues one). Subtitles show with the game's subtitles on (the Settings menu, or `set subtitles true`).
+engine starts or queues one). Player 2 of a Versus mirror (both players chose it: its look's texture suffix
+`_duel`) says its `[Voice2]` lines instead, when the file has that section (the same events and fallbacks; its files
+in the same `voice` folder). Subtitles show with the game's subtitles on (the Settings menu, or `set subtitles true`).

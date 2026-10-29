@@ -28,6 +28,8 @@ struct CustomCharacter {
     // its own voice ([Voice]): for a dialogue event (BAT battle cry, TNT taunt, KIL kill, FSE first sight, HIT hit or
     // saber lock, ...), the lines it says instead of the base's (their ids, upper case, e.g. "LUK003")
     std::vector<std::pair<std::string, std::vector<std::string>>> voice;
+    // player 2's in a Versus mirror (both chose it; [Voice2], the same events), e.g. another JK2 Jedi's; empty: its own
+    std::vector<std::pair<std::string, std::vector<std::string>>> voice2;
     bool hasSaber = false;
     float saber[3] = {};     // its saber's colour (0-1), when it has one of its own
     bool hasSaber2 = false;
@@ -92,6 +94,8 @@ void CustomCharactersFrame();
 
 // The custom character a character is (recognised by its costume list, the port's own), or null.
 const CustomCharacter* CustomCharacterOf(const uint8_t* character);
+// True for Versus player 2 when both players chose the same fighter (its look's texture suffix "_duel").
+bool IsMirrorPlayer2(const uint8_t* character);
 // The HUD portrait a custom character shows now (player 2's in a Versus mirror, else its own).
 const std::string& CustomFaceOf(const uint8_t* character, const CustomCharacter& custom);
 // The next line `speaker` starts for `event` (three letters, e.g. "TKE": an event its speaker code has entries for)

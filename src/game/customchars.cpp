@@ -53,6 +53,13 @@ const float* SaberColourOf(const uint8_t* character, const CustomCharacter& cust
     return custom.saber;
 }
 
+// The lines a custom character says: player 2's in a Versus mirror ([Voice2]) when it has them, else its own.
+const std::vector<std::pair<std::string, std::vector<std::string>>>& VoiceOf(const uint8_t* character,
+    const CustomCharacter& custom)
+{
+    return !custom.voice2.empty() && IsMirrorPlayer2(character) ? custom.voice2 : custom.voice;
+}
+
 // A Jedi's sabers: the class's Init fills up to 4 weapon records (+0x1064, 0x20 bytes each: +0 double-bladed flag, +4
 // the hilt mesh (a TString), +8 its colour) before the Jedi's weapon setup (0x2814C0) makes a saber of each record
 // with a mesh (0x280480: the double-bladed class for a flagged one). The Jedi Brute's is double-bladed (Lsaberjdbrute,
@@ -255,7 +262,8 @@ int __fastcall StartEntryHook(uint8_t* engine, void*, uint8_t* speaker, int entr
         }
     }
     const CustomCharacter* custom = speaker && g_VoiceServed ? CustomCharacterOf(speaker) : nullptr;
-    if (!custom || custom->voice.empty() || entry < 0)
+    const auto* voice = custom ? &VoiceOf(speaker, *custom) : nullptr;
+    if (!custom || voice->empty() || entry < 0)
         return g_StartEntry(engine, nullptr, speaker, entry, a, b, c);
     uint8_t* e = *reinterpret_cast<uint8_t**>(engine + kDialogueEntries) + size_t(entry) * kDialogueEntrySize;
     const char* name = *reinterpret_cast<const char**>(e + 0x14);
@@ -280,7 +288,7 @@ int __fastcall StartEntryHook(uint8_t* engine, void*, uint8_t* speaker, int entr
         wanted[5] = pain ? "EFF" : "HIT";
     }
     for (const char* key : wanted)
-    for (const auto& event : custom->voice) {
+    for (const auto& event : *voice) {
         if (!key || event.second.empty() || _strnicmp(key, event.first.c_str(), 3) != 0)
             continue;
         size_t& turn = LineTurn(&event.second);
@@ -1219,41 +1227,45 @@ void ReadCharacters(const std::wstring& mods)
             source += char(*ch < 128 ? *ch : '?');
         c.source = source;
         // its voice: [Voice] EVENT=line line ..., the lines in characters\<name>\voice\<line>.xadpcm, their
-        // texts in [Subtitles] LINE=text
+        // texts in [Subtitles] LINE=text; player 2's in a Versus mirror likewise in [Voice2], if it has one
         {
             const std::wstring stem = file.substr(0, file.size() - 4);
-            wchar_t keys[4096] = {};
-            GetPrivateProfileStringW(L"Voice", nullptr, L"", keys, 4096, file.c_str());
-            for (const wchar_t* k = keys; *k; k += wcslen(k) + 1) {
-                std::string event;
-                for (const wchar_t* ch = k; *ch; ++ch)
-                    event += char(toupper(*ch < 128 ? *ch : '?'));
-                std::vector<std::string> ids;
-                std::istringstream words(ProfileIn(file, L"Voice", k));
-                std::string id;
-                while (words >> id) {
-                    for (char& ch : id)
-                        ch = char(toupper(static_cast<unsigned char>(ch)));
-                    std::string lower = id;
-                    for (char& ch : lower)
-                        ch = char(tolower(static_cast<unsigned char>(ch)));
-                    const std::wstring path = stem + L"\\voice\\" + std::wstring(lower.begin(), lower.end()) + L".xadpcm";
-                    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
-                        LOG_WARN("Custom characters: %s's line %s has no file", c.className.c_str(), id.c_str());
-                        continue;
+            auto readVoice = [&](const wchar_t* section, std::vector<std::pair<std::string, std::vector<std::string>>>& out) {
+                wchar_t keys[4096] = {};
+                GetPrivateProfileStringW(section, nullptr, L"", keys, 4096, file.c_str());
+                for (const wchar_t* k = keys; *k; k += wcslen(k) + 1) {
+                    std::string event;
+                    for (const wchar_t* ch = k; *ch; ++ch)
+                        event += char(toupper(*ch < 128 ? *ch : '?'));
+                    std::vector<std::string> ids;
+                    std::istringstream words(ProfileIn(file, section, k));
+                    std::string id;
+                    while (words >> id) {
+                        for (char& ch : id)
+                            ch = char(toupper(static_cast<unsigned char>(ch)));
+                        std::string lower = id;
+                        for (char& ch : lower)
+                            ch = char(tolower(static_cast<unsigned char>(ch)));
+                        const std::wstring path = stem + L"\\voice\\" + std::wstring(lower.begin(), lower.end()) + L".xadpcm";
+                        if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                            LOG_WARN("Custom characters: %s's line %s has no file", c.className.c_str(), id.c_str());
+                            continue;
+                        }
+                        ids.push_back(id);
+                        bool known = false;
+                        for (const VoiceLine& v : g_VoiceLines)
+                            known |= v.id == id;
+                        if (!known) {
+                            const std::string text = ProfileIn(file, L"Subtitles", std::wstring(id.begin(), id.end()).c_str());
+                            g_VoiceLines.push_back({ id, path, std::wstring(text.begin(), text.end()) });
+                        }
                     }
-                    ids.push_back(id);
-                    bool known = false;
-                    for (const VoiceLine& v : g_VoiceLines)
-                        known |= v.id == id;
-                    if (!known) {
-                        const std::string text = ProfileIn(file, L"Subtitles", std::wstring(id.begin(), id.end()).c_str());
-                        g_VoiceLines.push_back({ id, path, std::wstring(text.begin(), text.end()) });
-                    }
+                    if (!ids.empty())
+                        out.push_back({ event, ids });
                 }
-                if (!ids.empty())
-                    c.voice.push_back({ event, ids });
-            }
+            };
+            readVoice(L"Voice", c.voice);
+            readVoice(L"Voice2", c.voice2);
         }
         LOG_INFO("Custom characters: %s (%s, from %s), from characters\\%s", c.className.c_str(), c.name.c_str(),
             c.base.c_str(), source.c_str());
@@ -1736,15 +1748,21 @@ const CustomCharacter* CustomCharacterOf(const uint8_t* character)
     return nullptr;
 }
 
-const std::string& CustomFaceOf(const uint8_t* character, const CustomCharacter& custom)
+bool IsMirrorPlayer2(const uint8_t* character)
 {
     __try {
         // player 2 in Versus: the duel gives it the texture suffix "_duel" (character +0x1F4, 0x27B88D)
         const char* suffix = *reinterpret_cast<const char* const*>(character + kCharacterTextureSuffix);
-        if (!custom.duelFace.empty() && suffix && _stricmp(suffix, "_duel") == 0)
-            return custom.duelFace;
+        return suffix && _stricmp(suffix, "_duel") == 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
+    return false;
+}
+
+const std::string& CustomFaceOf(const uint8_t* character, const CustomCharacter& custom)
+{
+    if (!custom.duelFace.empty() && IsMirrorPlayer2(character))
+        return custom.duelFace;
     return custom.hudFace;
 }
 
