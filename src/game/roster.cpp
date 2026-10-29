@@ -246,7 +246,7 @@ void PatchArenaScreen(std::vector<uint8_t>& data)
     WriteSet(data, bodiesAt, bodiesEnd, WithExtraBodies(bodies, true));
     // the custom maps' entries (hvvmenu.cpp) take places after the game's own in both arena picture sets: copies of
     // a game arena's pictures, drawn with the map's own (DrawRecordWith)
-    const size_t maps = CustomMaps().size();
+    const size_t maps = CustomMapsFor(MapMode::Versus).size();
     if (!maps)
         return;
     if (!ReadSet(data, "LargeArenaTextSet", large, largeAt, largeEnd) || large.size() != 16 ||

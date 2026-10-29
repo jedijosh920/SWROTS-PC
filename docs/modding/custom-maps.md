@@ -40,6 +40,7 @@ the human characters are 73-75 units tall):
 ```ini
 [Map]
 Name=Mos Eisley Cantina          ; as shown
+Modes=Versus HvV Battlefront     ; the modes that offer it (optional; all of them when left out)
 Music=mus_m13_templebattle01_lp  ; its music (optional): a music slot of the game, the track beside map.ini
 Model=maps\cantina\cantina       ; its model under meshes\, without .msh
 Vertices=10234                   ; the model's vertex count (all its parts)
@@ -64,6 +65,11 @@ BakedScale=0.5                   ; the baked light dimmed (below 1) or brightene
 CharacterAmbient=0.26 0.23 0.20  ; the characters' ambient light (the dev map's is 0.55)
 Lights=0.6                       ; the level's point lights' intensity, scaled
 ```
+
+`Modes=` keeps a map to some modes: `Versus` (its row on the Select Arena screen), `HvV` (Heroes vs Villains' Map
+row) and `Battlefront` (its setup screen, for a map with command posts), separated by spaces or commas. A duel arena
+says `Modes=Versus`, a large map `Modes=HvV Battlefront`. The console's `devmap`, `hvv map` and `versus ... map` take
+any map.
 
 The map is turned and moved so that the middle between its two lines is the dev map's middle and the heroes face the
 villains along +z: the intro's camera, the line-up and the end are then the same as on the floor.

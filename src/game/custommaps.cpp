@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sstream>
 
 #include "core/log.h"
 
@@ -87,6 +88,23 @@ bool ReadMap(const std::wstring& file, const std::string& id, CustomMap& m)
         m.name = id;
     for (char& c : m.name)
         c = char(toupper(static_cast<unsigned char>(c)));
+    // Modes=Versus HvV Battlefront (any of them, separated by spaces or commas): the modes that offer the map
+    if (std::string modes = Profile(file, L"Map", L"Modes"); !modes.empty()) {
+        for (char& c : modes)
+            c = char(c == ',' || c == ';' ? ' ' : tolower(static_cast<unsigned char>(c)));
+        m.versus = m.hvv = m.battlefront = false;
+        std::istringstream words(modes);
+        for (std::string word; words >> word;) {
+            if (word == "versus" || word == "duel")
+                m.versus = true;
+            else if (word == "hvv" || word == "heroesvsvillains")
+                m.hvv = true;
+            else if (word == "battlefront" || word == "bf")
+                m.battlefront = true;
+            else
+                LOG_WARN("Custom maps: %s: unknown mode %s in Modes (Versus, HvV, Battlefront)", id.c_str(), word.c_str());
+        }
+    }
     // Model=maps\cantina\cantina: its folder (with the last backslash) and its name
     const std::string model = Profile(file, L"Map", L"Model");
     const size_t slash = model.find_last_of('\\');
@@ -264,15 +282,25 @@ void InstallCustomMaps(const std::wstring& mods)
         CustomMap m;
         if (!ReadMap(file, Narrow(found.cFileName), m))
             continue;
-        LOG_INFO("Custom maps: %s (%s), model meshes\\%s%s, %zu collision boxes, %zu bytes of brushes, %zu spawns",
-            m.id.c_str(), m.name.c_str(), m.modelFolder.c_str(), m.modelName.c_str(), m.boxes.size(), m.brushes.size(),
-            m.spawns.size());
+        LOG_INFO("Custom maps: %s (%s), model meshes\\%s%s, %zu collision boxes, %zu bytes of brushes, %zu spawns; "
+            "in%s%s%s", m.id.c_str(), m.name.c_str(), m.modelFolder.c_str(), m.modelName.c_str(), m.boxes.size(),
+            m.brushes.size(), m.spawns.size(), m.versus ? " Versus" : "", m.hvv ? " HvV" : "",
+            m.battlefront ? (m.commandPosts.empty() ? " (Battlefront: no command posts)" : " Battlefront") : "");
         g_Maps.push_back(std::move(m));
     } while (FindNextFileW(find, &found));
     FindClose(find);
 }
 
 const std::vector<CustomMap>& CustomMaps() { return g_Maps; }
+
+std::vector<const CustomMap*> CustomMapsFor(MapMode mode)
+{
+    std::vector<const CustomMap*> maps;
+    for (const CustomMap& m : g_Maps)
+        if (mode == MapMode::Versus ? m.versus : mode == MapMode::HeroesVsVillains ? m.hvv : m.battlefront)
+            maps.push_back(&m);
+    return maps;
+}
 
 const CustomMap* FindCustomMap(const std::string& id)
 {

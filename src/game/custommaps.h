@@ -15,6 +15,9 @@ namespace swrots::game {
 struct CustomMap {
     std::string id;            // its folder's name, e.g. "cantina"
     std::string name;          // as shown, e.g. "MOS EISLEY CANTINA"
+    // the modes that offer it (Modes=, all when left out): Versus' Select Arena screen, Heroes vs Villains' map row,
+    // Battlefront's (which also needs its command posts)
+    bool versus = true, hvv = true, battlefront = true;
     std::string modelFolder;   // under meshes\, e.g. "maps\cantina\"
     std::string modelName;     // e.g. "cantina"
     uint32_t vertices = 0;     // the model's vertex count (its baked light has one entry per vertex)
@@ -52,6 +55,9 @@ struct CustomMap {
 void InstallCustomMaps(const std::wstring& mods);
 
 const std::vector<CustomMap>& CustomMaps();
+// The maps a mode offers (Modes=), in CustomMaps' order.
+enum class MapMode { Versus, HeroesVsVillains, Battlefront };
+std::vector<const CustomMap*> CustomMapsFor(MapMode mode);
 // A map by its id (case-insensitive), or null.
 const CustomMap* FindCustomMap(const std::string& id);
 
