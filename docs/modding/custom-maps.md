@@ -80,13 +80,19 @@ A map with command posts can host [Battlefront](../battlefront.md) (it is then o
 
 ```ini
 [Battlefront]
-CommandPosts=0 0; 300 250; -280 -160; 560 -480   ; the posts (x z, separated by ";"), named A, B, C... in this order
+CommandPosts=0 0; 300 250 140; -280 -160; 560 -480   ; the posts (x z, separated by ";"), named A, B, C... in this order
 CloneStart=700 245                               ; where the clones start (x z)
 DroidStart=-720 -120                             ; and the droids
 ```
 
 Without the starts, the clones start on the heroes' line and the droids on the villains'. Each side starts with the
 post nearest its start. Keep the posts on open floor, inside `Bounds=`, a few hundred units apart.
+
+A post on a floor of its own (a bridge, a landing pad) gives that floor's height after its x z, in the map's own y
+(as `Floor=`; without it, a post is on `Floor=`): its marker stands there, and only fighters on that floor (within
+180 units of its height) count for it, not those on a street under the bridge. The computer's troopers walk straight
+to a post, so one going for a raised post from a floor more than 100 units below is brought up onto it once within
+700 units, before it walks under that floor into whatever lies below.
 
 ## Collision of its own
 

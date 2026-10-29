@@ -59,9 +59,10 @@ struct DevMapLayout {
     // The Versus arena's own level file: its duel camera (ICameraControl 'Rail Tracking', its helpers and trigger
     // bound) is taken from it, moved from the arena's fighters onto the duel's.
     std::vector<uint8_t> duelArena;
-    // Places the AI can be sent to (x, z on the floor): the level's own goto marker (ICharacterGoto) copied there,
+    // Places the AI can be sent to (x, z on the floor, or `markerLifts` above it): the level's own goto marker (ICharacterGoto) copied there,
     // one each, with ids from kDevMapFirstMarkerId on; arrived within `markerReach`.
     std::vector<std::pair<float, float>> markers;
+    std::vector<float> markerLifts; // each marker's height above the floor (none: on it)
     float markerReach = 175.0f;
 };
 // The ids of the objects the dev map adds for a duel.

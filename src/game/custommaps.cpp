@@ -153,9 +153,16 @@ bool ReadMap(const std::wstring& file, const std::string& id, CustomMap& m)
     v = Numbers(Profile(file, L"Map", L"Spawns"));
     for (size_t i = 0; i + 1 < v.size(); i += 2)
         m.spawns.push_back({ v[i], v[i + 1] });
-    v = Numbers(Profile(file, L"Battlefront", L"CommandPosts"));
-    for (size_t i = 0; i + 1 < v.size(); i += 2)
-        m.commandPosts.push_back({ v[i], v[i + 1] });
+    // CommandPosts=x z; x z height; ...: a post on a floor of its own (a bridge, a pad) gives that floor's height
+    {
+        std::stringstream posts(Profile(file, L"Battlefront", L"CommandPosts"));
+        std::string one;
+        while (std::getline(posts, one, ';')) {
+            v = Numbers(one);
+            if (v.size() >= 2)
+                m.commandPosts.push_back({ v[0], v[1], v.size() >= 3 ? v[2] : m.floor });
+        }
+    }
     {
         const std::vector<float> clones = Numbers(Profile(file, L"Battlefront", L"CloneStart"));
         const std::vector<float> droids = Numbers(Profile(file, L"Battlefront", L"DroidStart"));

@@ -88,6 +88,11 @@ constexpr const char* kDefaultLineup[] = { "IObiwan", "IYoda", "IMace", "ISerra"
 // side's posts) and heroes: points buy one (the player's, a press of B) and the AI's sides call theirs too, one hero a
 // side at a time.
 constexpr float kPostRadius = 240.0f;      // a fighter this near a post counts for it
+constexpr float kPostHeightReach = 180.0f; // ... and this near its floor's height (not one on a floor under or over it)
+// A post on a floor of its own above (a bridge, a pad: CommandPosts= with a height): the AI walks straight to a post's
+// marker, under that floor from a lower one, into what lies under it (a pad's pit). A trooper going for it from more
+// than kRaisedBy below is brought up onto it once within kRaisedReach.
+constexpr float kRaisedBy = 100.0f, kRaisedReach = 700.0f;
 constexpr float kCaptureMs = 7000.0f;      // one fighter alone turns a post (neutral to its side) in this long
 constexpr int kMostCapturers = 3;          // more fighters turn it faster, up to this many
 constexpr ULONGLONG kBleedMs = 5000;       // a side holding fewer posts loses a ticket this often
@@ -525,6 +530,24 @@ void Shield(Fighter& f, ULONGLONG now)
 
 // --- Fighting ----------------------------------------------------------------------------------------------------
 
+std::string PostName(size_t k);
+
+// A trooper going for a post on a floor above its own (see kRaisedBy): set on that floor beside the post, on the side it
+// came from (a bridge's narrow deck holds it).
+void BringOnto(int i, size_t post)
+{
+    Fighter& f = g_Fighters[i];
+    const Post& target = g_Posts[post];
+    const float* p = Position(f.object);
+    const float angle = std::atan2(p[0] - target.x, p[2] - target.z);
+    const float x = target.x + std::sin(angle) * 40.0f, z = target.z + std::cos(angle) * 40.0f;
+    float m[16];
+    Transform(x, z, angle + kPi, m, target.y - kDevMapFloorY + kSpawnLift);
+    VirtualOf<void(__fastcall*)(uint8_t*, void*, const float*)>(f.object, kPlace)(f.object, nullptr, m);
+    f.stillSince = 0;
+    LOG_INFO("Battlefront: %s brought up onto command post %s", ShownName(i).c_str(), PostName(post).c_str());
+}
+
 // Battlefront's troopers have a post to see to: one in three of a side holds one of its posts (a defender), the rest
 // go for the nearest post their side does not hold (attackers; defending when it holds them all, attacking when it
 // holds none). An enemy within kFightRange is fought first; with none, the fighter walks to its post (the game's
@@ -574,9 +597,14 @@ bool SeeToPost(int i)
             if (std::hypot(g_Posts[k].x - p[0], g_Posts[k].z - p[2]) < std::hypot(g_Posts[goal].x - p[0], g_Posts[goal].z - p[2]))
                 goal = k;
     }
-    if (std::hypot(g_Posts[goal].x - p[0], g_Posts[goal].z - p[2]) <= kMarkerReach)
+    const Post& target = g_Posts[goal];
+    if (std::hypot(target.x - p[0], target.z - p[2]) <= kMarkerReach && std::abs(target.y - p[1]) <= kPostHeightReach)
         return true; // there: holds it
     f.post = int(goal);
+    if (target.y - p[1] > kRaisedBy && std::hypot(target.x - p[0], target.z - p[2]) < kRaisedReach) {
+        BringOnto(i, goal);
+        return true;
+    }
     uint8_t* marker = g_PostMarkers[goal];
     if (!reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint8_t*)>(uintptr_t(kExecutingGoto))(f.object, nullptr, marker))
         reinterpret_cast<void(__fastcall*)(uint8_t*, void*, uint8_t*, bool)>(uintptr_t(kCharacterGoto))(
@@ -650,9 +678,9 @@ void Unstick(int i, ULONGLONG now)
     if (!toPost && (target < 0 || !Standing(g_Fighters[target])))
         return;
     float t[3];
-    if (toPost) {
+    if (toPost) { // on its post's floor
         t[0] = g_Posts[f.post].x;
-        t[1] = p[1];
+        t[1] = g_Posts[f.post].y;
         t[2] = g_Posts[f.post].z;
     } else {
         std::memcpy(t, Position(g_Fighters[target].object), sizeof t);
@@ -720,7 +748,8 @@ void Unstick(int i, ULONGLONG now)
         return;
     }
     float m[16];
-    Transform(bestX, bestZ, std::atan2(t[0] - bestX, t[2] - bestZ), m, DevMapCustomMap() ? kSpawnLift : 60.0f);
+    Transform(bestX, bestZ, std::atan2(t[0] - bestX, t[2] - bestZ), m,
+        DevMapCustomMap() ? (toPost ? t[1] - kDevMapFloorY : 0.0f) + kSpawnLift : 60.0f);
     VirtualOf<void(__fastcall*)(uint8_t*, void*, const float*)>(f.object, kPlace)(f.object, nullptr, m);
     setTarget(); // its walk was cut short: set on the target anew
     LOG_INFO("HvV: %s could not reach %s; brought nearer", ShownName(i).c_str(), goal.c_str());
@@ -1529,7 +1558,7 @@ void UpdatePosts(ULONGLONG now)
             if (f.out || !Standing(f) || (i == g_Player && g_PlayerFell))
                 continue;
             const float* p = Position(f.object);
-            if (std::hypot(p[0] - post.x, p[2] - post.z) > kPostRadius)
+            if (std::hypot(p[0] - post.x, p[2] - post.z) > kPostRadius || std::abs(p[1] - post.y) > kPostHeightReach)
                 continue;
             ++count[SideOf(i)];
             inside[SideOf(i)].push_back(i);
@@ -1722,13 +1751,15 @@ void InstallHvv()
         if (map && !map->commandPosts.empty()) {
             for (const auto& c : map->commandPosts) {
                 Post post;
-                CustomMapToWorld(*map, c.first, c.second, post.x, post.z);
+                CustomMapToWorld(*map, c[0], c[1], post.x, post.z);
+                post.y = kDevMapFloorY + c[2] - map->floor;
                 g_Posts.push_back(post);
             }
         } else {
             for (const auto& c : kDevPosts) {
                 Post post;
                 post.x = c[0];
+                post.y = kDevMapFloorY;
                 post.z = c[1];
                 g_Posts.push_back(post);
             }
@@ -1742,8 +1773,6 @@ void InstallHvv()
         } else {
             std::memcpy(g_TeamStart, kDevStarts, sizeof g_TeamStart);
         }
-        for (Post& post : g_Posts)
-            post.y = kDevMapFloorY;
         // each side starts with the post nearest its start
         for (int side = 0; side < 2; ++side) {
             Post* nearest = nullptr;
@@ -1790,8 +1819,10 @@ void InstallHvv()
             for (const std::string& hero : g_HeroPool[side])
                 layout.characters.push_back({ hero, kDevMapFirstId + kLoaderIds + loader++,
                     kDevMapMiddleX + 7000.0f + 200.0f * float(loader), kDevMapMiddleZ - 4500.0f, 0.0f });
-        for (const Post& post : g_Posts) // the posts' goto markers
+        for (const Post& post : g_Posts) { // the posts' goto markers, on their floors
             layout.markers.push_back({ post.x, post.z });
+            layout.markerLifts.push_back(post.y - kDevMapFloorY);
+        }
         layout.markerReach = kMarkerReach;
     }
     SetDevMapLayout(layout);

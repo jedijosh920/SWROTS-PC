@@ -956,8 +956,9 @@ bool BuildDevMapLevel(std::vector<uint8_t>& level, std::string& report, const De
             Writer id, name;
             id.U32(kDevMapFirstMarkerId + uint32_t(k));
             name.String("ICharacterGoto_dev" + std::to_string(k));
-            const float m[12] = { 1, 0, 0, 0, 1, 0, 0, 0, 1, layout->markers[k].first, float(kFloorY + kStandLift),
-                layout->markers[k].second };
+            const float lift = k < layout->markerLifts.size() ? layout->markerLifts[k] : 0.0f;
+            const float m[12] = { 1, 0, 0, 0, 1, 0, 0, 0, 1, layout->markers[k].first,
+                float(kFloorY + kStandLift + lift), layout->markers[k].second };
             const float reach[1] = { layout->markerReach };
             for (Property& p : copy.props) {
                 if (p.name == "ID")
