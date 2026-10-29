@@ -67,6 +67,7 @@ TNT=luk003 luk004        ; taunts
 KIL=luk008 luk009        ; after a kill
 INT=luk010               ; in its Versus intro (optional; else a TNT line)
 WIN=luk011               ; on winning a Versus round (optional; else a KIL line)
+EFF=luk012               ; efforts: jumps, falls (optional; said with HIT for its base's grunts)
 
 [Subtitles]              ; optional: the texts of its own lines
 LUK001=For the Rebellion!
@@ -79,6 +80,8 @@ character the texture suffix `_duel`, and each of its textures is then `<texture
 pack gives its character the same: `<texture>_duel.stx` next to each body texture (e.g. `luke_body_duel.stx`, its name
 inside `luke_body_duel`), declared with the body like its other textures. Without them player 2 looks like player 1;
 `Saber2=` (or the other side's colour) still tells them apart.
+Its HUD portrait for player 2 is `<portrait>_duel.stx` next to its own (e.g. `hud_face_luke01_duel.stx`), when the
+pack has one.
 
 ## The body
 
@@ -280,5 +283,8 @@ archive (`Dialogue\gen_dialogue.rpx`, mounted in every level) with the lines add
 they change, from a pack's own `mods\Dialogue\gen_dialogue.rpx` when there is one, so the lines it replaces stay;
 any number of lines fit) and, when the dialogue engine starts one of the character's entries for such an event (StartEntry,
 0x90330), gives the entry the character's line for that call: the voice, the subtitle and the line's length follow
-it. Its other sounds (grunts) stay the base's. The lines take turns per event (a turn passes only when the
+it. For an event it has no lines for, it says those of a related one it has (KIL: WIN then TNT; WIN: KIL, TNT;
+INT: TNT, BAT; FSE: BAT, TNT; TNT: BAT, KIL; BAT: TNT, FSE), and for its base's efforts (lines numbered 900 and
+up: pains, grunts) its `EFF` lines (jumps, falls) or its `HIT` lines, a pain's `HIT` first; only what it has none
+of stays its base's (logged). The lines take turns per event (a turn passes only when the
 engine starts or queues one). Subtitles show with the game's subtitles on (the Settings menu, or `set subtitles true`).

@@ -60,6 +60,7 @@ struct CustomCharacter {
     bool forceStorm = false;
     std::string hudFace;     // the HUD portrait shown for it (a donor's path, its picture served: see customchars.cpp)
     std::string face;        // its HUD portrait's path (interfc\hud_b\hud_face_<costume>01), when the mod has one
+    std::string duelFace;    // player 2's HUD portrait in Versus (<face>_duel, beside its <texture>_duel look), if any
     std::string source;      // the file it came from
     // a fighter of the port's own, made from the game's assets (no files: Commander Cody): its Versus pictures are the
     // disc's (selectBust, a picture the menus' PAK has) and copies of disc pictures the port writes (generated)
@@ -90,6 +91,8 @@ void CustomCharactersFrame();
 
 // The custom character a character is (recognised by its costume list, the port's own), or null.
 const CustomCharacter* CustomCharacterOf(const uint8_t* character);
+// The HUD portrait a custom character shows now (player 2's in a Versus mirror, else its own).
+const std::string& CustomFaceOf(const uint8_t* character, const CustomCharacter& custom);
 // The next line `speaker` starts for `event` (three letters, e.g. "TKE": an event its speaker code has entries for)
 // says `lineId` instead (a line of the mounted dialogue archives, e.g. "CLC013"), for the next few seconds; the event is
 // then asked as usual (the script's SayEvent, 0x17ACC0, in the character's script turn).

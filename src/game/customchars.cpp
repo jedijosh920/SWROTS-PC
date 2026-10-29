@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <array>
 #include <memory>
@@ -40,6 +41,7 @@ constexpr size_t kInfoCopy = 0x200;     // bytes of the base's class info copied
 constexpr size_t kVtableCopy = 96;      // slots of its vtable copied
 constexpr uint32_t kCharacterSaberColor = 0xF20;
 constexpr uint32_t kCharacterTextureSet = 0x1EC; // its texture set, 1-based (0: the plain one)
+constexpr uint32_t kCharacterTextureSuffix = 0x1F4; // a suffix its textures are asked with (Versus player 2's "_duel")
 
 // A custom character's saber colour now: the one its pointer (+0xF20) gives when something chose one for it (a Versus
 // mirror's player 2: Saber2=, the duel's colour table), else its own.
@@ -227,6 +229,13 @@ struct ForcedLine {
 };
 ForcedLine g_Forced;
 
+// For an event a custom character has no lines for, the lines of related events it may have (else its base's line).
+// Its base's efforts (grunts, pain: line numbers 900 and up) take its EFF or HIT lines.
+constexpr const char* kVoiceFallbacks[][3] = {
+    { "KIL", "WIN", "TNT" }, { "WIN", "KIL", "TNT" }, { "INT", "TNT", "BAT" }, { "FSE", "BAT", "TNT" },
+    { "TNT", "BAT", "KIL" }, { "BAT", "TNT", "FSE" },
+};
+
 int __fastcall StartEntryHook(uint8_t* engine, void*, uint8_t* speaker, int entry, int a, int b, int c)
 {
     if (speaker && speaker == g_Forced.speaker && entry >= 0 && g_Forced.id && GetTickCount64() < g_Forced.until) {
@@ -254,9 +263,25 @@ int __fastcall StartEntryHook(uint8_t* engine, void*, uint8_t* speaker, int entr
     if (g_DuelLine.speaker == speaker && name && GetTickCount64() < g_DuelLine.until &&
         _strnicmp(name, g_DuelLine.event, 3) == 0)
         duel = g_DuelLine.own;
-    for (int pass = duel ? 0 : 1; pass < 2; ++pass)
+    // the events whose lines it says: the duel's (INT / WIN), the entry's own, else a related one it has lines for (a
+    // custom character without kills says its victory or taunt lines rather than its base's kill lines)
+    const char* wanted[6] = { duel, name, nullptr, nullptr, nullptr, nullptr };
+    for (const auto& f : kVoiceFallbacks)
+        if (name && _strnicmp(name, f[0], 3) == 0) {
+            wanted[2] = f[1];
+            wanted[3] = f[2];
+        }
+    // its base's efforts (line numbers 900 and up: PHR, PHH pain, PGH, EHG...): its own efforts (EFF: jumps, falls)
+    // or pain (HIT), the pains first for a pain
+    const char* baseLine = *reinterpret_cast<const char* const*>(e + 0x10);
+    if (baseLine && strlen(baseLine) >= 6 && atoi(baseLine + 3) >= 900) {
+        const bool pain = name && (name[0] == 'P' || name[0] == 'p');
+        wanted[4] = pain ? "HIT" : "EFF";
+        wanted[5] = pain ? "EFF" : "HIT";
+    }
+    for (const char* key : wanted)
     for (const auto& event : custom->voice) {
-        if (!name || event.second.empty() || _strnicmp(pass == 0 ? duel : name, event.first.c_str(), 3) != 0)
+        if (!key || event.second.empty() || _strnicmp(key, event.first.c_str(), 3) != 0)
             continue;
         size_t& turn = LineTurn(&event.second);
         const char* line = PooledString(event.second[turn % event.second.size()]);
@@ -275,7 +300,13 @@ int __fastcall StartEntryHook(uint8_t* engine, void*, uint8_t* speaker, int entr
         }
         return result;
     }
-    return g_StartEntry(engine, nullptr, speaker, entry, a, b, c);
+    const int result = g_StartEntry(engine, nullptr, speaker, entry, a, b, c);
+    if (result) {
+        const char* id = *reinterpret_cast<const char* const*>(e + 0x10);
+        LOG_INFO("Custom characters: %s says its base's %s (%s): no line of its own for it", custom->className.c_str(),
+            id ? id : "?", name ? name : "?");
+    }
+    return result;
 }
 
 // The duel's say (0x17ACC0, cdecl (event, context, ...): the current script's character says a line of the event;
@@ -1179,6 +1210,8 @@ void ReadCharacters(const std::wstring& mods)
         if (ModFileExists(face + ".stx")) { // loaded from its file by the HUD (characters.cpp)
             c.face = face;
             c.hudFace = face;
+            if (ModFileExists(face + "_duel.stx"))
+                c.duelFace = face + "_duel";
         }
         std::string source;
         for (const wchar_t* ch = found.cFileName; *ch; ++ch)
@@ -1685,10 +1718,33 @@ const CustomCharacter* CustomCharacterOf(const uint8_t* character)
     if (!character)
         return nullptr;
     const uint8_t* list = *reinterpret_cast<const uint8_t* const*>(character + kCharacterVariants);
+    if (!list)
+        return nullptr;
     for (auto& p : g_Proxies)
         if (!p->list.empty() && p->list.data() == list)
             return p->custom;
+    // a character in another body (`player <class> mesh`, `spawn ... mesh`) wears its own copy of its class's list
+    // (characters.cpp, Dress): the copy keeps the records' names, so its first one is the custom costume's own string
+    __try {
+        const char* first = *reinterpret_cast<const char* const*>(list + kVariantRecords);
+        for (auto& p : g_Proxies)
+            if (!p->list.empty() && first == p->costumeName.c_str())
+                return p->custom;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
     return nullptr;
+}
+
+const std::string& CustomFaceOf(const uint8_t* character, const CustomCharacter& custom)
+{
+    __try {
+        // player 2 in Versus: the duel gives it the texture suffix "_duel" (character +0x1F4, 0x27B88D)
+        const char* suffix = *reinterpret_cast<const char* const*>(character + kCharacterTextureSuffix);
+        if (!custom.duelFace.empty() && suffix && _stricmp(suffix, "_duel") == 0)
+            return custom.duelFace;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return custom.hudFace;
 }
 
 bool ModFileExists(const std::string& relative)

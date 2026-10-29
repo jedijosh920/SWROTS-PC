@@ -662,19 +662,22 @@ void* __cdecl PortraitForCharacter(uint8_t* manager, const char* name, int head,
                 return record.face;
             }
         }
-    if (!custom || custom->hudFace.empty() || head || !manager)
+    // its own portrait, or player 2's in a Versus mirror
+    static const std::string kNoFace;
+    const std::string& face = custom ? CustomFaceOf(character, *custom) : kNoFace;
+    if (!custom || face.empty() || head || !manager)
         return PortraitLookupHook(manager, nullptr, name, head);
-    if (void* found = g_OriginalPortraitLookup(manager, nullptr, custom->hudFace.c_str(), 0))
+    if (void* found = g_OriginalPortraitLookup(manager, nullptr, face.c_str(), 0))
         return found;
-    MakeGeneratedResource(custom->hudFace + ".stx"); // a built-in fighter's, a copy of a disc picture
-    PortraitRecord record = { LoadInterfaceTexture(custom->hudFace.c_str(), true), nullptr, custom->hudFace.c_str() };
+    MakeGeneratedResource(face + ".stx"); // a built-in fighter's, a copy of a disc picture
+    PortraitRecord record = { LoadInterfaceTexture(face.c_str(), true), nullptr, face.c_str() };
     if (!record.face) {
-        LOG_WARN("Characters: %s's HUD portrait %s did not load", custom->className.c_str(), custom->face.c_str());
+        LOG_WARN("Characters: %s's HUD portrait %s did not load", custom->className.c_str(), face.c_str());
         return PortraitLookupHook(manager, nullptr, name, head);
     }
     reinterpret_cast<void(__fastcall*)(void*, void*, const PortraitRecord*)>(uintptr_t(kPortraitListAdd))(
         manager + 0x260, nullptr, &record);
-    LOG_INFO("Characters: %s's HUD portrait %s loaded", custom->className.c_str(), custom->face.c_str());
+    LOG_INFO("Characters: %s's HUD portrait %s loaded", custom->className.c_str(), face.c_str());
     return record.face;
 }
 
