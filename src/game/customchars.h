@@ -20,6 +20,7 @@ struct CustomCharacter {
     std::string base;        // the class whose moves it has, e.g. "IAnakin"
     std::string costume;     // its costume's name, e.g. "Luke"
     std::string mesh;        // its body under meshes\chars ("folder\file"), e.g. "luke\luke"
+    std::string mesh2;       // player 2's body in a Versus mirror (Mesh2=), the same skeleton; empty: its own
     std::string code;        // its dialogue speaker code (three letters: whose lines it says, e.g. "AKN"); empty: the
                              // base's
     std::string speaker;     // its name in subtitles, e.g. "Luke"

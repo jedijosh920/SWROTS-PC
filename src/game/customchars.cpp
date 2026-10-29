@@ -1114,6 +1114,7 @@ void ReadCharacters(const std::wstring& mods)
         c.className = Profile(file, L"Class");
         c.base = Profile(file, L"Base");
         c.mesh = Profile(file, L"Mesh");
+        c.mesh2 = Profile(file, L"Mesh2");
         if (c.className.empty() || c.base.empty() || c.mesh.empty() || _stricmp(c.className.c_str(), c.base.c_str()) == 0) {
             LOG_WARN("Custom characters: %ls needs Class, Base and Mesh", found.cFileName);
             continue;

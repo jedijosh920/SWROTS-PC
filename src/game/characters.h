@@ -75,6 +75,10 @@ bool ClassHasBody(const char* className);
 // unknown or cut class).
 // Neutral: attacks no one and no one attacks it, until it is hit: then it riots. Riot: everyone's enemy.
 enum class SpawnSide { Default, Ally, Enemy, Neutral, Riot };
+// Versus: a mirror duel's player 2 in another body (its custom character's Mesh2=), worn as `player <class> mesh`
+// wears one (its own copy of the class's costume list, the body in its costume's record). Called as the duel creates
+// the fighter, before its body loads; returns the costume to use.
+int DressMirrorPlayer2(uint8_t* fighter, int variant, const std::string& mesh);
 bool SpawnCharacter(const char* className, const std::string& costume, const std::string& skin,
     const std::string& mesh, SpawnSide side, std::string& error);
 // The same at a place (a character's transform: rows right, up, forward and position, 4 floats each; null: in

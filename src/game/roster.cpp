@@ -962,6 +962,17 @@ float* ItemOffset(uint8_t* screen, uint32_t field)
 
 } // namespace
 
+bool BothPlayersChose(const char* className)
+{
+    auto* launch = *reinterpret_cast<uint8_t**>(uintptr_t(kLaunchSettings));
+    for (int player = 0; launch && className && player < 2; ++player) {
+        const char* chosen = *reinterpret_cast<const char**>(launch + 4 + player * 4);
+        if (!chosen || _stricmp(chosen, className) != 0)
+            return false;
+    }
+    return launch != nullptr && className != nullptr;
+}
+
 bool DrawSelectStrip(uint8_t* screen, uint32_t context)
 {
     uint8_t* strip = *reinterpret_cast<uint8_t**>(screen + 4);

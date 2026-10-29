@@ -37,6 +37,7 @@ Title=Jedi Knight
 Base=IAnakin             ; the class whose moves, AI and sounds it has
 Costume=Luke             ; its costume's name
 Mesh=luke\luke           ; its body, under meshes\chars, without .msh
+Mesh2=luke2\luke2        ; player 2's body when both Versus players pick it (optional; else its own)
 Saber=0 255 0            ; its saber's colour, 0-255 each (optional; 0 255 0 is the game's own green)
 Saber2=255 0 0           ; player 2's when both Versus players pick it (optional; else red for a hero, blue for a
                          ; villain, as the game's dark Anakin)
@@ -80,6 +81,8 @@ character the texture suffix `_duel`, and each of its textures is then `<texture
 pack gives its character the same: `<texture>_duel.stx` next to each body texture (e.g. `luke_body_duel.stx`, its name
 inside `luke_body_duel`), declared with the body like its other textures. Without them player 2 looks like player 1;
 `Saber2=` (or the other side's colour) still tells them apart.
+Player 2 can also wear another body: `Mesh2=` (a body under `meshes\chars`, as `Mesh=`, on the same skeleton) is
+player 2's in a mirror duel, with its own textures (its `_duel` ones where it has them).
 Its HUD portrait for player 2 is `<portrait>_duel.stx` next to its own (e.g. `hud_face_luke01_duel.stx`), when the
 pack has one.
 

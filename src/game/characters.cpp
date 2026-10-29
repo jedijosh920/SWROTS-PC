@@ -808,6 +808,15 @@ __declspec(naked) void SaberTickStub()
 
 } // namespace
 
+int DressMirrorPlayer2(uint8_t* fighter, int variant, const std::string& mesh)
+{
+    // Kept for the boot, as the spawns' (a duel may create player 2 more than once; an earlier one may still be there)
+    static std::list<OwnedList> owned;
+    owned.emplace_back();
+    std::string body = mesh;
+    return Dress(fighter, variant, "", "", body, owned.back(), "Versus player 2");
+}
+
 int VariantOnDisc(const void* character, int preferred)
 {
     if (!character)
