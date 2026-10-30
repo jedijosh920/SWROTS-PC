@@ -411,6 +411,35 @@ The port's missions (`missions.cpp`, `play_anim`) hook TickScript to loop a rang
 - Death: `+0x118` dying, `+0x12C` dead. An NPC's death (0xA3000) fades it out after `+0x5DC` seconds and removes it
   (0xB5840), unless "Cinematic Death?" (`+0x5D4`) is set, which keeps the body. A mission's body that must never get
   up is a script actor holding a death animation's last frame instead (no hit reaches it).
+- Bumping: HandleCharacterBumping (0x16AED0, from the character's tick) pushes the two characters of each contact
+  apart; a character with the byte `+0x7F4` ("character push", Phys_EnableCharacterPush; 1 from its constructor, the
+  script function 0x17A020(bool) sets it, e.g. off during ForceAction_2HandPush) at 0 takes no part: others pass
+  through it and it is never shoved. Missions: `pushable(c, false)`.
+
+## Paired kills
+
+The kill moves are pairs: the attacker's half (`..._GB`, the grabber) and the victim's (`..._GR`, the grabbed), both
+from the moment of contact (the approach is a separate "attempt" animation). The reaction tables (`r_<class>.csv`,
+columns Reaction / AttackerReaction / Sound) start both halves when an attempt connects on a victim at critical
+health; e.g. Anakin's lunge: `Anakin_Kill_Lunge_Human_GB` (0x318B60, animation `anakin_atk_kill_lunge_humangb`) and
+the human's `Kill_Lunge_GR` (0x3D34C0, `anakin_atk_kill_lunge_humangr`).
+
+- The attacker's sequence, at its start: 0x2BC210(1, 0, 0) (its weapon), Grapple_Grab 0x172E00(x, y, z) (the
+  partner: the script's target, else `[+0x3D8]`, else `[attacker+0x5B0]` (an instance id), else in a cutscene the
+  nearest; ids stored both ways, victim `+0x5AC` / attacker `+0x5B0`; the victim's physics commit `+0x4E4` becomes a
+  TCommit_GrappleDefend (vtable 0x58EB38) that holds its root to the attacker's at that offset: the lunge's is
+  (0, 0, 0), the pair's animations made around one origin), slow motion 0x176BF0(0.5, 0, 9999, 0). Frame code 6:
+  0x401F40 (IDS_FX_LIGHTSABER_Body_Impale at the saber's ATT_saber_middle); 20: slow motion off. At its end: release
+  0x172E20, 0x2BC1B0(0, 0). 0x174B40(name, 0, 0, 0, 0) plays a sequence on the grapple partner by name.
+- The victim's `Kill_Lunge_GR`: at its start IDS_FX_LIGHTSABER_IMPACT_HEAVY at its bone root_g and 1000 damage to
+  itself (0x2BB460: nothing to an invincible one); at frame code 49 the release and `Fall_StandingF`
+  (`Anakin_HitRe4_VSpin`), then `R_OnBack` (`Anakin_KD_B_OnGroundIdle`).
+- A sequence's events (0x1F6310 start, 0x1F6350 left, 0x1F62D0 end, 0x1F6390 frame code, 0x1728C0 = the code) are
+  registered by asking them while the class is set up (the setup object's `+4` set: each ask adds the event to the
+  sequence through 0x1F8A00); an event not asked then never comes.
+
+The port's missions play the pair from an `[Animations]` attacker's sequence (`play_anim` with `partner`): the same
+calls as 0x318B60, which itself cannot run on another class (it keeps its state in Anakin's class object).
 
 ## Open questions
 

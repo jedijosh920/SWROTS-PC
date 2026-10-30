@@ -80,6 +80,10 @@ constexpr uint32_t kManagerPlayerIds = 0x2A4;
 constexpr uintptr_t kCharacterGoto = 0x00151400;  // ICharacter, thiscall (marker, may fight on the way)
 constexpr uintptr_t kExecutingGoto = 0x001513E0;  // ICharacter, thiscall (marker): still on its way
 constexpr uint32_t kGotoMarkerVtable = 0x00598970;
+// A walk called off: the AI's goto controllers (type 8, TAI +0x18 count / +0x1C items, type at +0x10) let go of their
+// marker (SetGoto(null), vfunc +0x208: goto +0x13C and TAI +0x2D4 cleared)
+constexpr uint32_t kAIControllerCount = 0x18, kAIControllers = 0x1C, kControllerType = 0x10, kGotoController = 8;
+constexpr uint32_t kSetGoto = 0x208;
 // Sabers: the character's weapon slots, and what the cinematics' ToggleSaber event (0x24A490) calls on a saber
 constexpr uint32_t kCharacterWeapons = 0x1080;   // 4 slots, 0x20 apart: the weapon object, or null
 constexpr uint32_t kSaberVtables[] = { 0x005B1FF0, 0x005B2620, 0x005B2C90, 0x005B32F8, 0x005B3958 };
@@ -252,6 +256,8 @@ MissionHud g_Hud;
 Shot g_Shot;
 bool g_Held = false;
 bool g_Skip = false;        // a cutscene is being skipped: waits end at once
+double g_SkipAskedAt = -10; // a first press in a cutscene: the second one skips it
+bool g_Advance = false;     // the developer's "next" (mission next, F8): the current wait ends
 bool g_InCutscene = false;
 double g_FadeFrom = 0, g_FadeTo = 0, g_FadeStart = 0, g_FadeLength = 0;
 double g_BarsFrom = 0, g_BarsTo = 0, g_BarsStart = 0;
@@ -699,9 +705,12 @@ int L_distance(lua_State* L)
     return 1;
 }
 
+void CancelWalk(uint8_t* c, bool stopGoing);
+
 int L_place(lua_State* L)
 {
     if (uint8_t* c = CheckCharacter(L, 1)) {
+        CancelWalk(c, true); // (moved by a cut: a walk it was on is over)
         float m[16];
         // place(c, x, z [, heading, height]): a height above the floor (it falls from there), or below it (a pit's
         // fall: nothing stops it)
@@ -736,9 +745,11 @@ int L_side(lua_State* L)
 
 int L_ai(lua_State* L)
 {
-    if (uint8_t* c = CheckCharacter(L, 1))
+    if (uint8_t* c = CheckCharacter(L, 1)) {
+        CancelWalk(c, false); // (the AI is the script's now: a walk on its way does not switch it off on arrival)
         if (uint8_t* brain = At<uint8_t*>(c, kCharacterAI))
             brain[kAIOff] = lua_toboolean(L, 2) ? 0 : 1;
+    }
     return 0;
 }
 
@@ -772,6 +783,7 @@ int L_actor(lua_State* L)
         if (data)
             data[kAIDataIgnored] = 1;
     } else if (was != g_Actors.end()) {
+        CancelWalk(c, true); // (a scene's walk ends with the scene)
         At<uint8_t>(c, kCharacterInvincible) = was->invincible;
         if (brain)
             brain[kAIOff] = was->aiOff;
@@ -791,6 +803,18 @@ int L_keep_body(lua_State* L)
 {
     if (uint8_t* c = CheckCharacter(L, 1))
         At<uint8_t>(c, kCinematicDeath) = (lua_isnoneornil(L, 2) || lua_toboolean(L, 2)) ? 1 : 0;
+    return 0;
+}
+
+// pushable(c, on): whether characters bumping into it push it aside (and it them): off, they pass through it and it
+// stays where it is (a body lying in the way). The game's "character push" (+0x7F4, Phys_EnableCharacterPush: its
+// HandleCharacterBumping 0x16AED0 skips a character without it).
+constexpr uint32_t kCharacterPush = 0x7F4;
+
+int L_pushable(lua_State* L)
+{
+    if (uint8_t* c = CheckCharacter(L, 1))
+        At<uint8_t>(c, kCharacterPush) = lua_toboolean(L, 2) ? 1 : 0;
     return 0;
 }
 
@@ -858,13 +882,92 @@ bool SequenceEvent(uint32_t test)
         reinterpret_cast<uint8_t*>(uintptr_t(kSequenceSetup)), nullptr);
 }
 
+// play_anim's partner (a paired kill, as the game's attack table plays one): the attacker's sequence grabs the partner
+// as the game's own kill sequences do (Anakin_Kill_Lunge_Human_GB, 0x318B60): the partner's root is then locked to the
+// attacker's (the pair's two animations share one origin), and the partner plays its half by name (e.g. Kill_Lunge_GR,
+// whose own script shows the hit, the saber's heavy impact at his root, and falls him: Fall_StandingF, R_OnBack).
+// Slow motion through the stab, the blade's impale effect at frame code 6 (as Anakin's: 0x401F40).
+struct Grapple {
+    uint8_t* attacker;
+    uint32_t attackerId;
+    uint8_t* partner;
+    uint32_t partnerId;
+    std::string partnerSequence;
+    bool grabbed;
+};
+std::vector<Grapple> g_Grapples;
+constexpr uint32_t kScriptContext = 0x006943CC;   // the running script's: +0x68 its character
+constexpr uint32_t kGrapplePartnerId = 0x5B0;     // the attacker's partner (an instance id), read by the grab
+constexpr uintptr_t kGrab = 0x00172E00;           // cdecl (x, y, z): the partner's root offset
+constexpr uintptr_t kRelease = 0x00172E20;
+constexpr uintptr_t kPartnerSequence = 0x00174B40; // cdecl (name, 0, 0, 0, 0): the partner plays that sequence
+constexpr uintptr_t kWeaponKillMode = 0x002BC210;  // cdecl (1, 0, 0) at a kill's start; 0x2BC1B0 (0, 0) after
+constexpr uintptr_t kWeaponKillModeOff = 0x002BC1B0;
+constexpr uintptr_t kSlowMotion = 0x00176BF0;      // cdecl (scale, ramp in, hold, ramp out)
+constexpr uintptr_t kImpaleEffect = 0x00401F40;    // IDS_FX_LIGHTSABER_Body_Impale at the saber's middle
+constexpr uintptr_t kFrameCode = 0x001728C0;       // the animation's frame code now
+
+// A sequence's events, each asked once a call: while the class is set up, asking registers the event with the
+// sequence (only events asked then ever come); while it plays, it is true at that event.
+struct SequenceEvents {
+    bool start, frameCode, left, ended;
+};
+
+void GrappleEvents(const SequenceEvents& e)
+{
+    uint8_t* context = *reinterpret_cast<uint8_t**>(uintptr_t(kScriptContext));
+    uint8_t* c = context ? At<uint8_t*>(context, 0x68) : nullptr;
+    auto g = std::find_if(g_Grapples.begin(), g_Grapples.end(), [&](const Grapple& x) { return x.attacker == c; });
+    if (!c || g == g_Grapples.end())
+        return;
+    const auto release = [&] {
+        if (!g->grabbed)
+            return;
+        g->grabbed = false;
+        reinterpret_cast<void(__cdecl*)(int, int)>(kWeaponKillModeOff)(0, 0);
+        reinterpret_cast<void(__cdecl*)()>(kRelease)();
+        reinterpret_cast<void(__cdecl*)(float, int, int, int)>(kSlowMotion)(1.0f, 10, 0, 0);
+    };
+    if (e.start) { // its start: the grab, the partner's half
+        if (At<uint32_t>(c, 4) != g->attackerId || At<uint32_t>(g->partner, 4) != g->partnerId) {
+            g_Grapples.erase(g);
+            return;
+        }
+        At<uint32_t>(c, kGrapplePartnerId) = g->partnerId;
+        reinterpret_cast<void(__cdecl*)(int, int, int)>(kWeaponKillMode)(1, 0, 0);
+        reinterpret_cast<void(__cdecl*)(float, float, float)>(kGrab)(0, 0, 0);
+        reinterpret_cast<void(__cdecl*)(float, int, int, int)>(kSlowMotion)(0.5f, 0, 9999, 0);
+        reinterpret_cast<void(__cdecl*)(const char*, int, int, int, int)>(kPartnerSequence)(g->partnerSequence.c_str(), 0, 0, 0, 0);
+        g->grabbed = true;
+        LOG_INFO("Mission: %s grabs its partner, who plays %s", VirtualTypeName(c), g->partnerSequence.c_str());
+    }
+    if (e.frameCode) {
+        const int code = reinterpret_cast<int(__cdecl*)()>(kFrameCode)();
+        if (code == 6 && g->grabbed)
+            reinterpret_cast<void(__cdecl*)()>(kImpaleEffect)();
+        else if (code == 20)
+            reinterpret_cast<void(__cdecl*)(float, int, int, int)>(kSlowMotion)(1.0f, 10, 0, 0);
+    }
+    if (e.left || e.ended) {
+        release();
+        g_Grapples.erase(g);
+    }
+}
+
 template <int K> bool __fastcall MissionAnimationFn(uint8_t* self, void*, uint32_t, uint32_t)
 {
     auto* setup = reinterpret_cast<uint8_t*>(uintptr_t(kSequenceSetup));
     MissionAnimation& a = g_Animations[K];
     reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint16_t*, const char*, const char*, float, uint32_t)>(
         uintptr_t(0x001F5B20))(setup, nullptr, &a.handle, a.sequence.c_str(), a.animation.c_str(), 1.0f, 0x0055FB60);
-    if (SequenceEvent(0x001F62D0)) // it ended: back to the class's state machine
+    SequenceEvents e;
+    e.start = SequenceEvent(0x001F6310);
+    e.left = SequenceEvent(0x001F6350);
+    e.ended = SequenceEvent(0x001F62D0);
+    e.frameCode = SequenceEvent(0x001F6390);
+    if (!g_Grapples.empty())
+        GrappleEvents(e);
+    if (e.ended) // it ended: back to the class's state machine
         reinterpret_cast<void(__cdecl*)(uint8_t*, uint8_t*, int, int)>(uintptr_t(0x0038A140))(
             *reinterpret_cast<uint8_t**>(uintptr_t(kScriptInstance)), self, -1, -1);
     return reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, const char*, uint32_t)>(uintptr_t(0x001F6C00))(
@@ -934,6 +1037,8 @@ struct AnimControl {
     float from = -1, to = -1; // frames; -1: the animation's first / last
     float speed = 1;
     bool loop = false, hold = false;
+    bool bounce = false;      // looped forth and back (no jump from `to` to `from`)
+    bool backwards = false;   // a bounce on its way back: the frames stepped here (the game's play speed 0)
     bool started = false;     // its sequence is on (a play from the script starts at the character's next tick)
     int waited = 0;           // ticks before it was
     int transitions = 0;      // the state's count when it started: another transition means the character moved on
@@ -1005,7 +1110,20 @@ uint32_t __fastcall TickScriptHook(uint8_t* cs, void*, uint32_t arg)
         if (k.to >= 0) {
             const float frame = At<float>(rs, kRangeFrame);
             const float step = At<float>(cs, kStateSpeed) * At<float>(cs, kStatePlaySpeed) * At<float>(rs, kRangeRate);
-            if (frame + step > k.to) {
+            if (k.bounce) {
+                const float from = std::max(k.from >= 0 ? k.from : 0.0f, float(At<int16_t>(rs, kRangeFirst)));
+                const float back = At<float>(cs, kStateSpeed) * k.speed * At<float>(rs, kRangeRate);
+                if (!k.backwards && frame + step > k.to) {
+                    k.backwards = true;
+                    At<float>(cs, kStatePlaySpeed) = 0;
+                } else if (k.backwards && frame - back <= from) {
+                    k.backwards = false;
+                    At<float>(rs, kRangeFrame) = from;
+                    At<float>(cs, kStatePlaySpeed) = k.speed;
+                } else if (k.backwards) {
+                    At<float>(rs, kRangeFrame) = frame - back;
+                }
+            } else if (frame + step > k.to) {
                 if (k.loop) {
                     const float from = k.from >= 0 ? k.from : float(At<int16_t>(rs, kRangeFirst));
                     if (from >= At<int16_t>(rs, kRangeFirst) && from <= At<int16_t>(rs, kRangeLast))
@@ -1031,9 +1149,9 @@ void DropAnimControl(uint8_t* cs)
         g_AnimControls.end());
 }
 
-// play_anim(c, name[, {from=, to=, loop=, hold=, speed=, blend=}]): an animation (the character's own, or one of
-// mission.ini's [Animations]), from frame `from` to frame `to` (the animation's own frame numbers; anim_frames tells
-// them), then: loop (from..to again until stop_anim), hold (the pose at `to` kept: a body that stays down), or (neither)
+// play_anim(c, name[, {from=, to=, loop=, bounce=, hold=, speed=, blend=}]): an animation (the character's own, or one
+// of mission.ini's [Animations]), from frame `from` to frame `to` (the animation's own frame numbers; anim_frames tells
+// them), then: loop (from..to again until stop_anim; bounce: to..from back, and again, so no jump), hold (the pose at `to` kept: a body that stays down), or (neither)
 // on to its end and back to what the character does. speed 0 holds the pose at `from`. False when there is no such
 // animation.
 int L_play_anim(lua_State* L)
@@ -1042,6 +1160,8 @@ int L_play_anim(lua_State* L)
     const char* name = luaL_checkstring(L, 2);
     AnimControl k;
     float blend = 0;
+    uint8_t* partner = nullptr;
+    std::string partnerSequence;
     if (lua_istable(L, 3)) {
         const auto number = [&](const char* field, float fallback) {
             lua_getfield(L, 3, field);
@@ -1059,9 +1179,20 @@ int L_play_anim(lua_State* L)
         k.to = number("to", -1);
         k.speed = number("speed", 1);
         blend = number("blend", 0);
-        k.loop = flag("loop");
+        k.bounce = flag("bounce");
+        k.loop = flag("loop") || k.bounce;
         k.hold = flag("hold");
+        lua_getfield(L, 3, "partner");
+        partner = CheckCharacter(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "partner_anim");
+        partnerSequence = luaL_optstring(L, -1, "");
+        lua_pop(L, 1);
     }
+    g_Grapples.erase(std::remove_if(g_Grapples.begin(), g_Grapples.end(), [&](const Grapple& g) { return g.attacker == c; }),
+        g_Grapples.end());
+    if (c && partner && partner != c && !partnerSequence.empty())
+        g_Grapples.push_back({ c, At<uint32_t>(c, 4), partner, At<uint32_t>(partner, 4), partnerSequence, false });
     uint8_t* sequence = FindSequence(c, name);
     uint8_t* cs = c ? At<uint8_t*>(c, kCharacterScript) : nullptr;
     if (!sequence || !cs) {
@@ -1221,6 +1352,23 @@ void WalkersFrame()
                 brain[kAIOff] = 1;
         g_Walkers.erase(g_Walkers.begin() + ptrdiff_t(i));
     }
+}
+
+// A walk called off (a cut moved the character, the script gave it back its AI): it stops going there, and its AI is
+// left as the script set it (else a walk cut short would go on to the marker once the AI is back on, and switch it off
+// there).
+void CancelWalk(uint8_t* c, bool stopGoing)
+{
+    g_Walkers.erase(std::remove_if(g_Walkers.begin(), g_Walkers.end(), [&](const Walker& w) { return w.character == c; }),
+        g_Walkers.end());
+    uint8_t* brain = stopGoing ? At<uint8_t*>(c, kCharacterAI) : nullptr;
+    if (!brain)
+        return;
+    const int count = At<int>(brain, kAIControllerCount);
+    uint8_t** items = At<uint8_t**>(brain, kAIControllers);
+    for (int i = 0; items && i < count; ++i)
+        if (items[i] && At<uint32_t>(items[i], kControllerType) == kGotoController)
+            Virtual<void(__fastcall*)(uint8_t*, void*, uint8_t*, float)>(items[i], kSetGoto)(items[i], nullptr, nullptr, 0.0f);
 }
 
 int L_go(lua_State* L)
@@ -1981,20 +2129,39 @@ int L_cutscene_state(lua_State* L)
     const bool on = lua_toboolean(L, 1) != 0;
     g_InCutscene = on;
     SetDialogueQuiet(on); // no barks in a cutscene: only its own lines
-    if (on) {
-        g_Skip = false;
+    g_Skip = false;
+    g_SkipAskedAt = -10;
+    if (on)
         input::TakeHeldPress(); // a press from before does not skip it
-    } else {
-        g_Skip = false;
-    }
     return 0;
 }
 
+// A cutscene is skipped by a second press (A or Start) within a few seconds of the first, which asks; one press by
+// mistake (Start to pause) does not skip it.
 int L_skip_pressed(lua_State* L)
 {
-    if (g_InCutscene && g_Held && input::TakeHeldPress())
-        g_Skip = true;
+    if (g_InCutscene && g_Held && input::TakeHeldPress()) {
+        if (Now() - g_SkipAskedAt < 3.0) {
+            g_Skip = true;
+            g_NoticeUntil = Now();
+        } else {
+            g_SkipAskedAt = Now();
+            g_Hud.notice = "Press again to skip";
+            g_NoticeAt = Now();
+            g_NoticeUntil = g_NoticeAt + 3.0;
+        }
+    }
     lua_pushboolean(L, g_Skip);
+    return 1;
+}
+
+// The developer's "next" outside a cutscene: true once (the wait that sees it ends).
+int L_advance(lua_State* L)
+{
+    const bool advance = g_Advance && !g_InCutscene;
+    if (advance)
+        g_Advance = false;
+    lua_pushboolean(L, advance);
     return 1;
 }
 
@@ -2044,11 +2211,12 @@ int L_thread(lua_State* L)
 constexpr const char* kPrelude = R"LUA(
 function wait(seconds)
   local until_ = time() + (seconds or 0)
-  while time() < until_ and not _skip_pressed() do coroutine.yield() end
+  while time() < until_ and not _skip_pressed() and not _advance() do coroutine.yield() end
 end
 function wait_until(condition, timeout)
   local until_ = timeout and (time() + timeout) or nil
   while not condition() do
+    if _advance() then return true end
     if until_ and time() >= until_ then return false end
     coroutine.yield()
   end
@@ -2093,7 +2261,7 @@ void Register(lua_State* L)
         { "alive", L_alive }, { "exists", L_exists }, { "health", L_health }, { "set_health", L_set_health },
         { "max_health", L_max_health }, { "invincible", L_invincible }, { "position", L_position },
         { "distance", L_distance }, { "place", L_place }, { "face", L_face }, { "side", L_side }, { "ai", L_ai },
-        { "attack", L_attack }, { "hold", L_hold }, { "play", L_play }, { "play_anim", L_play_anim }, { "stop_anim", L_stop_anim }, { "actor", L_actor }, { "keep_body", L_keep_body }, { "anim_frames", L_anim_frames }, { "moves", L_moves }, { "saber", L_saber }, { "kill", L_kill }, { "boss", L_boss }, { "objective_done", L_objective_done }, { "tip", L_tip },
+        { "attack", L_attack }, { "hold", L_hold }, { "play", L_play }, { "play_anim", L_play_anim }, { "stop_anim", L_stop_anim }, { "actor", L_actor }, { "keep_body", L_keep_body }, { "pushable", L_pushable }, { "anim_frames", L_anim_frames }, { "moves", L_moves }, { "saber", L_saber }, { "kill", L_kill }, { "boss", L_boss }, { "objective_done", L_objective_done }, { "tip", L_tip },
         { "go", L_go }, { "going", L_going }, { "marker", L_marker }, { "field", L_field },
         { "sound", L_sound }, { "stop_sounds", L_stop_sounds }, { "get_var", L_get_var },
         { "music_volume", L_music_volume },
@@ -2105,7 +2273,7 @@ void Register(lua_State* L)
         { "line", L_line }, { "timer", L_timer }, { "timer_value", L_timer_value }, { "timer_stop", L_timer_stop },
         { "counter", L_counter }, { "hud", L_hud }, { "set_var", L_set_var }, { "command", L_command },
         { "skipping", L_skipping }, { "complete", L_complete }, { "fail", L_fail }, { "thread", L_thread },
-        { "_cutscene_state", L_cutscene_state }, { "_skip_pressed", L_skip_pressed },
+        { "_cutscene_state", L_cutscene_state }, { "_skip_pressed", L_skip_pressed }, { "_advance", L_advance },
     };
     for (const luaL_Reg& f : kFunctions) {
         lua_pushcfunction(L, f.func);
@@ -2263,6 +2431,17 @@ const MissionInfo* FindMission(const std::string& id)
 
 bool MissionActive() { return g_Active; }
 
+void AdvanceMission()
+{
+    if (!g_Active)
+        return;
+    if (g_InCutscene)
+        g_Skip = true;
+    else
+        g_Advance = true;
+    LOG_INFO("Mission: next (%s)", g_InCutscene ? "the cutscene skipped" : "the current wait ends");
+}
+
 MissionHud GetMissionHud() { return g_Hud; }
 
 bool StartMission(const std::string& id, std::string& error)
@@ -2330,7 +2509,8 @@ void InstallMissions(const std::wstring& mods)
     g_Hud = MissionHud{};
     g_Shot = Shot{};
     SetCameraFov(0);
-    g_Held = g_Skip = g_InCutscene = false;
+    g_Held = g_Skip = g_InCutscene = g_Advance = false;
+    g_SkipAskedAt = -10;
     SetDialogueQuiet(false);
     g_LentName = {};
     g_LevelCharFade = -1;
@@ -2346,6 +2526,7 @@ void InstallMissions(const std::wstring& mods)
     g_AnimationCount = 0;
     g_FieldTinted = false;
     g_AnimControls.clear();
+    g_Grapples.clear();
     g_Actors.clear();
     g_Walkers.clear();
     SetBorrowedAnimations({});

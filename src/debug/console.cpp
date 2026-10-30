@@ -271,6 +271,8 @@ void Help(uint8_t* console)
     Print(LineKind::Output, "  versus <class> <class> [map <map>] [rounds <n>]  a Versus duel (you, the computer) on the");
     Print(LineKind::Output, "                           developer map or a custom map");
     Print(LineKind::Output, "  mission [<id>]           start a mission of mods\\missions (no id: list them)");
+    Print(LineKind::Output, "  mission next             skip to its next part: the cutscene ends, or the fight being");
+    Print(LineKind::Output, "                           waited on is over (F8 does the same)");
     Print(LineKind::Output, "  hvv [<classes>] [heroes <n>] [player <n>] [lives <n>] [health <n>] [intro on|off] [map <map>]");
     Print(LineKind::Output, "                           Heroes vs Villains: 2-16 classes, heroes then villains (half each");
     Print(LineKind::Output, "                           unless `heroes` says); hvv board on|off; hvv end (ends it now)");
@@ -1124,7 +1126,16 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         Print(LineKind::Output, "  starting a duel...");
         game::StartDuel(first, second, map, rounds, game::ProfileSessionArguments());
     } else if (command == "mission") {
-        // mission [<id>]: starts a mission of mods\missions\<id> (missions.h); no id: lists them
+        // mission [<id>]: starts a mission of mods\missions\<id> (missions.h); no id: lists them; next: its next part
+        if (words.size() >= 2 && words[1] == "next") {
+            if (!game::MissionActive()) {
+                Print(LineKind::Error, "no mission is running");
+                return true;
+            }
+            game::AdvanceMission();
+            Print(LineKind::Output, "  next part");
+            return true;
+        }
         if (words.size() < 2) {
             if (game::Missions().empty())
                 Print(LineKind::Output, "  no missions in mods\\missions");

@@ -482,6 +482,14 @@ void CharactersTab()
         Submit("restart");
     if (!game::PlayerInLevel())
         ImGui::EndDisabled();
+    if (game::MissionActive()) {
+        ImGui::SameLine();
+        if (ImGui::Button("Next part"))
+            Submit("mission next");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("A mods\\missions mission: skips the cutscene, or ends the fight the script waits on\n"
+                              "(its next part begins). F8 does the same.");
+    }
     ImGui::SameLine();
     bool autoRestart = game::RestartOnChange();
     if (ImGui::Checkbox("Apply at once", &autoRestart))
@@ -900,6 +908,12 @@ bool MenuWindowMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, LRESUL
     }
     if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)
         g_SwallowChar = false;
+    if (msg == WM_KEYDOWN && wParam == VK_F8 && game::MissionActive()) { // a mission's next part, for testing it
+        if (!(lParam & (1 << 30)))
+            QueueConsoleCommand("mission next");
+        *result = 0;
+        return true;
+    }
     if (!g_Open)
         return false;
     if (msg == WM_SETCURSOR && LOWORD(lParam) == HTCLIENT) {

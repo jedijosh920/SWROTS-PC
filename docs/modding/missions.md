@@ -199,10 +199,10 @@ level is safe to use: functions on it do nothing, `alive()` and `exists()` are f
 | `invincible(c, on)` | no damage while on |
 | `position(c)` | x, z, height |
 | `distance(a, b)` | between two characters, across the floor |
-| `place(c, x, z [, heading, height])` | moves it there; with a height above the floor it falls from there (below it, it falls away: a pit) |
+| `place(c, x, z [, heading, height])` | moves it there; with a height above the floor it falls from there (below it, it falls away: a pit). A `go`/`walk` it was on is over |
 | `face(c, other)` | turns it toward another |
 | `side(c, "ally" / "enemy" / "neutral" / "riot")` | changes its side |
-| `ai(c, on)` | its AI on or off (off: it stands still) |
+| `ai(c, on)` | its AI on or off (off: it stands still); a `go` it is on no longer switches its AI off when it gets there |
 | `attack(c, target)` | its AI goes after that target |
 | `walk(c, marker [, timeout])` | it runs to a marker of `[Markers]` its own way (as the game's AI goes to places) and the script waits until it is there (true) or `timeout` seconds (default 20) passed (false); works in cutscenes too, and for characters whose AI is off (actors): their AI is on for the way, off again once there |
 | `go(c, marker [, fight])` / `going(c, marker)` | the same without waiting (with `fight`, it fights what it meets on the way); whether it is still on its way |
@@ -219,9 +219,10 @@ level is safe to use: functions on it do nothing, `alive()` and `exists()` are f
 | Function | |
 |---|---|
 | `play(c, move [, speed])` | plays one of its moves by name: intros (`<Name>_Intro`), idles (`Idle_Flavor_v1`), falls (`Death`), reactions; false when it has none of that name |
-| `play_anim(c, animation [, options])` | plays an animation: one of its moves (by its name or its animation's), or one of `[Animations]`. Options: `from` / `to` (the animation's own frame numbers, 60 a second; left out, its first / last), `loop` (`from`..`to` again and again until `stop_anim`), `hold` (stops on `to` and keeps that pose, e.g. a body that stays down), `speed` (1 normal; 0 holds the pose at `from`), `blend` (seconds to blend in from the pose it was in; default 0, at once). Neither `loop` nor `hold`: it plays to `to` (or its end) and the character carries on as before. A hit, its death or its own AI can still end it, except on an actor (`actor`). False when it has no such animation |
+| `play_anim(c, animation [, options])` | plays an animation: one of its moves (by its name or its animation's), or one of `[Animations]`. Options: `from` / `to` (the animation's own frame numbers, 60 a second; left out, its first / last), `loop` (`from`..`to` again and again until `stop_anim`; it jumps from `to` back to `from`, so pick two frames alike), `bounce` (a loop that plays `to` back to `from` and on again, never jumping: a breathing or idle pose), `hold` (stops on `to` and keeps that pose, e.g. a body that stays down), `speed` (1 normal; 0 holds the pose at `from`), `blend` (seconds to blend in from the pose it was in; default 0, at once), `partner` + `partner_anim` (a paired kill, see below). Neither `loop` nor `hold`: it plays to `to` (or its end) and the character carries on as before. A hit, its death or its own AI can still end it, except on an actor (`actor`). False when it has no such animation |
 | `actor(c [, on])` | makes it a cutscene actor (`actor(c, false)`: as it was): it does only what the script says (moves, walks, sabers, lines): its AI is off, no hit reaches it (no damage, no reaction, no block), no one attacks or targets it, and an animation `play_anim` gives it stays on (put back if anything puts it away). A body that never gets up: `actor(c)`, then `play_anim(c, "dooku_death", {hold = true})` |
 | `keep_body(c [, on])` | when it dies, its body stays where it fell (the game's own "cinematic death": no fade, not taken away). With `actor(c)` once it has fallen, nothing wakes it |
+| `pushable(c, on)` | whether characters walking into it push it aside (and it them): off, they pass through it and it stays put (a body lying in the way) |
 | `stop_anim(c)` | ends `play_anim`'s loop or held pose: the character goes back to what it does (its idle) |
 | `anim_frames(c)` | its current animation's frame, first and last frames and name (`log(anim_frames(c))`), to find `from` / `to` |
 | `moves(c)` | the names of its moves, as a table (`log(table.concat(moves(c), ","))` lists them) |
@@ -245,7 +246,7 @@ Heights are from the floor; `look` is the height on the character the camera loo
 
 | Function | |
 |---|---|
-| `cutscene(fn)` | runs `fn` as a cutscene: bars, the game's HUD hidden, everyone held; the player skips it with A or Start (its `wait`s and `say`s then end at once; `wait_until` does not) |
+| `cutscene(fn)` | runs `fn` as a cutscene: bars, the game's HUD hidden, everyone held; the player skips it by pressing A or Start twice (the first press asks; its `wait`s and `say`s then end at once; `wait_until` does not) |
 | `letterbox(on [, seconds])` | the game's own cutscene bars slide in or out (0.5 s); while they are in, the game counts it a cutscene (its HUD hidden) |
 | `tip(name)` | a tip of `[Tips]` shows |
 | `fade_out(seconds)` / `fade_in(seconds)` | to black and back |
@@ -282,10 +283,35 @@ A line of `lines.ini` with a `[Voice]` file is said with it (see lines.ini above
 
 The script has Lua's base functions, `string`, `table`, `math` and `coroutine`; no files, no loading of other code.
 
+### Paired kills
+
+The game's kill moves come in two halves, played together: the attacker's (`..._gb`, the grabber) and the victim's
+(`..._gr`, the grabbed), made around one shared spot. `play_anim` plays one as the game does when an attacker's
+animation of `[Animations]` is given a partner:
+
+```lua
+-- [Animations] maul=anakin_atk_kill_lunge_humangb
+play_anim(maul, "anakin_atk_kill_lunge_humangb", {partner = quigon, partner_anim = "Kill_Lunge_GR"})
+```
+
+As the attacker's half starts, the partner is grabbed (held to the attacker: the blade goes where it should, wherever
+the two stood) and plays its half, a move of its own by name (`Kill_Lunge_GR` is every human's: the saber's heavy
+impact, then the fall, `Fall_StandingF`, and lying on its back, `R_OnBack`). The attacker's half shows the blade's
+impale at its frame code 6, in slow motion until its frame code 20 (as Anakin's own lunge kill). A partner that is an
+actor (`actor`) takes no damage from it and stays alive; `play_anim(c, "R_OnBack", {bounce = true, speed = 0.5})` then
+keeps it lying there, breathing, and `pushable(c, false)` keeps it from being pushed about. The pairs on the disc are
+the `*_kill_*` animations in `animation\grapple\` (e.g. `anakin_atk_kill_lunge_humangb` / `..._humangr`); the victim's
+move for a pair is the one the game's reaction tables give it (`Kill_Lunge_GR` for the lunge).
+
 ## Testing a script
 
 A mission is read when the game starts it, so a change takes effect at the next `mission <id>`. Errors in the script
 show at the bottom of the screen and in `logs\swrots.log` (`Mission: script error: ...`); `log()` writes there too.
+
+To get to a later part quickly, `mission next` in the console (or F8, or the debug menu's **Next part**, with the debug
+menu on) skips the cutscene playing, or, outside one, ends the script's current `wait_until` or `wait` at once (it
+returns true): a fight the script waits on is over and the next part begins. Code after the wait still runs, so a
+fight's wait followed by `set_health(boss, 0.5)` leaves the boss as the story expects.
 
 ## How it works (for developers)
 
@@ -299,4 +325,7 @@ screen is drawn in the game's font (`src/debug/missionhud.cpp`). `[Animations]` 
 playing the animations, which the class finds in its own folder (`resources.cpp` declares them there); `play_anim`'s
 ranges, loops and holds are kept by a hook on the character's animation tick (its `TCharState`, vtable 0x58EFB8 +0x24),
 before the sequence's end is reached. `actor` marks script actors (`characters.h`): the hit reaction and the enemy
-check leave them out (see docs/research/characters.md, "Hits, targets and the dead").
+check leave them out (see docs/research/characters.md, "Hits, targets and the dead"). A paired kill is the
+`[Animations]` sequence doing what the game's own attacker sequences do (docs/research/characters.md, "Paired
+kills"). A walk (`go`) is the game's AI goto; `place` and `actor(c, false)` call it off (the goto controllers let go
+of the marker), so a walk a cut interrupted does not carry on once the character's AI is back.

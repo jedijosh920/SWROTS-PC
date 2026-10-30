@@ -35,6 +35,10 @@ bool MissionActive();
 // Once a frame on the game thread: runs the script.
 void MissionFrame();
 
+// For testing a mission (console `mission next`, F8 with the debug menu on): a cutscene is skipped at once; otherwise
+// the script's current wait (a fight's wait_until, a wait) ends now, so the next part begins. Game thread.
+void AdvanceMission();
+
 // What the mission's screen shows (debug/missionhud.cpp), read on the game thread.
 struct MissionHud {
     bool active = false;
