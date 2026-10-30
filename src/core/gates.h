@@ -26,6 +26,11 @@ const void* HostCallGate(uint32_t slot, const void* target);
 const char* GameString(const char* text);
 const wchar_t* GameText(const wchar_t* text);
 
+// Zeroes the stack below the caller's (back to 8 KiB of zeros), while the gates are in use: for the port's code that
+// calls into the game's after its own work (a hook calling the original, a decoder), whose locals would otherwise
+// lie over what the port's code left there.
+void ScrubStack();
+
 // Whether `address` is code (a kernel export may be a variable: those get no gate).
 bool IsCodeAddress(const void* address);
 

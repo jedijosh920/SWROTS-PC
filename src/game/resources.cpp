@@ -36,6 +36,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "core/gates.h"
 #include "core/log.h"
 #include "core/patch.h"
 #include "debug/console.h"
@@ -152,6 +153,7 @@ int DecodeFromFile(EngineObject* file, uint32_t size, int scene, ReadSource* pak
     ReadSource source = *pakSource;
     source.reader = reader;
     source.fromPak = 0;
+    ScrubStack(); // the game's decoder below what the port's code left (netplay)
     int result = pending->decode(scene, &source, typeId, extra);
 
     VirtualAt<void(__fastcall*)(EngineObject*, void*)>(file, 0x10)(file, nullptr);
@@ -586,7 +588,7 @@ int __fastcall ReadHook(void* packer, void* edx, DecodeFn decode, EnginePath* pa
     int extra, int context)
 {
     if (!path)
-        return g_OriginalRead(packer, edx, decode, path, typeId, record, a5, extra, context);
+        return ScrubStack(), g_OriginalRead(packer, edx, decode, path, typeId, record, a5, extra, context);
 
     InstallEngineMessageHook();
     char full[512] = {};
@@ -700,8 +702,9 @@ int __fastcall ReadHook(void* packer, void* edx, DecodeFn decode, EnginePath* pa
     }
 
     if (g_DumpDir.empty() || _strnicmp(full, "d:\\", 3) != 0)
-        return g_OriginalRead(packer, edx, decode, path, typeId, record, a5, extra, context);
+        return ScrubStack(), g_OriginalRead(packer, edx, decode, path, typeId, record, a5, extra, context);
     t_Top = &pending;
+    ScrubStack();
     int result = g_OriginalRead(packer, edx, &DecodeDumped, path, typeId, record, a5, extra, context);
     t_Top = pending.outer;
     return result;

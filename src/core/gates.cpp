@@ -10,6 +10,7 @@
 #include <string>
 
 #include "core/log.h"
+#include "kernel/sched.h"
 
 namespace swrots {
 
@@ -185,6 +186,43 @@ const wchar_t* GameText(const wchar_t* text)
     std::memcpy(p, text, bytes);
     g_TextsPooled.emplace(text, p);
     return p;
+}
+
+namespace {
+
+__declspec(naked) void ScrubDirtyBelow()
+{
+    __asm {
+        push ebx
+        mov ecx, esp
+        mov edx, dword ptr fs:[8]
+        xor ebx, ebx
+    scrub:
+        sub ecx, 4
+        cmp ecx, edx
+        jb scrubbed
+        cmp dword ptr [ecx], 0
+        jne dirty
+        inc ebx
+        cmp ebx, 2048
+        jb scrub
+        jmp scrubbed
+    dirty:
+        mov dword ptr [ecx], 0
+        xor ebx, ebx
+        jmp scrub
+    scrubbed:
+        pop ebx
+        ret
+    }
+}
+
+} // namespace
+
+void ScrubStack()
+{
+    if (g_GateCodeReady && kernel::SchedActive())
+        ScrubDirtyBelow();
 }
 
 bool IsCodeAddress(const void* address)
