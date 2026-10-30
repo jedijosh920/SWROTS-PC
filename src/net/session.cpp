@@ -9,6 +9,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <thread>
@@ -37,7 +38,18 @@ constexpr uint16_t kDefaultPort = 27960;
 constexpr uint32_t kHistory = 512;      // frames of inputs kept (a power of two)
 constexpr uint32_t kMaxSend = 48;       // inputs in one packet at most
 constexpr uint32_t kChunk = 1024;       // bytes of the package in one packet
-constexpr uint32_t kHashEvery = 60;     // frames between two checks that the games have not parted
+constexpr uint32_t kHashEveryDefault = 60; // frames between two checks that the games have not parted
+
+// SWROTS_ONLINE_CHECK_EVERY=<frames> (diagnostics): checks more often, to find the first frame that parts.
+uint32_t HashEvery()
+{
+    static const uint32_t every = [] {
+        char v[16] = "";
+        const uint32_t n = GetEnvironmentVariableA("SWROTS_ONLINE_CHECK_EVERY", v, sizeof(v)) ? uint32_t(std::atoi(v)) : 0;
+        return n ? n : kHashEveryDefault;
+    }();
+    return every;
+}
 constexpr int kSilenceMs = 20000;       // the other PC is gone after that long without a word
 constexpr int kConnectMs = 20000;       // the guest gives up calling after that long
 
@@ -1207,7 +1219,7 @@ void OnlineFrame()
         g_S.localLatest = ahead;
     }
     // A check of the game's course at the start of every kHashEvery-th frame (the same point on both PCs).
-    if (next % kHashEvery == 0) {
+    if (next % HashEvery() == 0) {
         const auto* data = reinterpret_cast<const uint8_t*>(uintptr_t(0x00612BE0));
         const size_t dataSize = 0x00962BF8 - 0x00612BE0;
         uint64_t h = kernel::SchedTraceHash();
@@ -1217,9 +1229,9 @@ void OnlineFrame()
             g_S.checkedTrace = h;
         }
         h = HashBlock(data, dataSize, h);
-        g_S.checks[(next / kHashEvery) % std::size(g_S.checks)] = { next, h };
+        g_S.checks[(next / HashEvery()) % std::size(g_S.checks)] = { next, h };
         g_S.lastLocal = { next, h };
-        if (next % (kHashEvery * 10) == 0)
+        if (next % 600 == 0)
             LOG_INFO("Online: frame %u, check %016llX, %u stall(s), ping %d ms", next, h, g_S.stalls, g_S.pingMs);
         CompareChecksLocked();
     }
