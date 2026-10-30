@@ -959,7 +959,7 @@ void InstallPrompts(const std::wstring& cache)
     patch(3, reinterpret_cast<const void*>(&ReleaseHook));
     patch(5, reinterpret_cast<const void*>(&DrawQuadHook));
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kTextureOf)), kTextureOfBytes, sizeof kTextureOfBytes) == 0) {
-        static uint8_t* stub = [] { // once: the port's memory outlives the game's restarts
+        uint8_t* stub = [] { // made again at every start (ResetStubsForBoot)
             uint8_t* s = AllocStub(sizeof kTextureOfBytes + 5);
             std::memcpy(s, kTextureOfBytes, sizeof kTextureOfBytes);
             s[sizeof kTextureOfBytes] = 0xE9;

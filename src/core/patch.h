@@ -14,6 +14,11 @@ void PatchNop(uint32_t address, uint32_t length);
 void PatchBytes(uint32_t address, const void* bytes, uint32_t length);
 
 // Allocates executable memory for runtime-generated stubs.
+// From the start of the range at every start of the game (stubs made in an earlier start are then gone: a stub is
+// made again by the install that patches the new image).
 uint8_t* AllocStub(uint32_t size);
+void ResetStubsForBoot();
+// Moves on with each reset: a stub kept across calls is made again when it changed.
+uint32_t StubGeneration();
 
 } // namespace swrots

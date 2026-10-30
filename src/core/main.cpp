@@ -15,6 +15,7 @@
 #include "core/icon.h"
 #include "core/install.h"
 #include "core/log.h"
+#include "core/patch.h"
 #include "core/settings.h"
 #include "core/window.h"
 #include "core/xbe.h"
@@ -174,6 +175,7 @@ static BootConfig g_Boot;
 // On the first boot and after each in-process reboot (kernel/reboot.cpp).
 static void StartGame(const void* launchData)
 {
+    ResetStubsForBoot(); // the same stubs at the same places at every start (netplay)
     kernel::BootInit(launchData);
     if (kernel::SchedActive()) // a netplay match's start: the sound model from the start too
         audio::SetDeterministic(true);

@@ -1677,8 +1677,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
         g_Customs.clear();
         return;
     }
-    // The stub lives in the port's memory and survives reboots; the jump is patched into every new image.
-    static uint8_t* stub = [] {
+    uint8_t* stub = [] { // made again at every start (ResetStubsForBoot)
         uint8_t* s = AllocStub(sizeof(kClassLookupBytes) + 5);
         std::memcpy(s, kClassLookupBytes, sizeof(kClassLookupBytes));
         s[sizeof(kClassLookupBytes)] = 0xE9;
@@ -1690,7 +1689,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
     g_OriginalLookup = reinterpret_cast<LookupFn>(stub);
     PatchHook(kClassLookup, reinterpret_cast<const void*>(&LookupHook));
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kStartEntry)), kStartEntryBytes, sizeof kStartEntryBytes) == 0) {
-        static uint8_t* startEntryStub = [] { // once: the port's memory outlives the game's reboots
+        uint8_t* startEntryStub = [] { // made again at every start (ResetStubsForBoot)
             uint8_t* stub = AllocStub(sizeof kStartEntryBytes + 5);
             std::memcpy(stub, kStartEntryBytes, sizeof kStartEntryBytes);
             stub[sizeof kStartEntryBytes] = 0xE9;
@@ -1704,7 +1703,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
     }
     g_DuelLine = {};
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kChargeupPick)), kChargeupPickBytes, sizeof kChargeupPickBytes) == 0) {
-        static uint8_t* pickStub = [] { // once: the port's memory outlives the game's reboots
+        uint8_t* pickStub = [] { // made again at every start (ResetStubsForBoot)
             uint8_t* stub = AllocStub(sizeof kChargeupPickBytes + 5);
             std::memcpy(stub, kChargeupPickBytes, sizeof kChargeupPickBytes);
             stub[sizeof kChargeupPickBytes] = 0xE9;
@@ -1720,7 +1719,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
         std::memcmp(reinterpret_cast<const void*>(uintptr_t(kScriptSetScale)), kScriptSetScaleBytes, sizeof kScriptSetScaleBytes) == 0)
         PatchHook(kScriptSetScale, reinterpret_cast<const void*>(&ScriptSetScale));
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kSayEvent)), kSayEventBytes, sizeof kSayEventBytes) == 0) {
-        static uint8_t* sayStub = [] { // once: the port's memory outlives the game's reboots
+        uint8_t* sayStub = [] { // made again at every start (ResetStubsForBoot)
             uint8_t* stub = AllocStub(sizeof kSayEventBytes + 5);
             std::memcpy(stub, kSayEventBytes, sizeof kSayEventBytes);
             stub[sizeof kSayEventBytes] = 0xE9;
@@ -1800,7 +1799,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
         break;
     }
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kJediSetup)), kJediSetupBytes, sizeof kJediSetupBytes) == 0) {
-        static uint8_t* jediStub = [] { // once: the port's memory outlives the game's restarts
+        uint8_t* jediStub = [] { // made again at every start (ResetStubsForBoot)
             uint8_t* s = AllocStub(13);
             s[0] = 0x56; // push esi
             s[1] = 0x8B; // mov esi, ecx

@@ -48,7 +48,9 @@ extern "C" void __stdcall UnimplementedKernelCall(uint32_t ordinal, uint32_t ret
 static void* MakeUnimplementedStub(uint32_t ordinal)
 {
     static uint8_t* s_trampoline = nullptr;
-    if (!s_trampoline) {
+    static uint32_t s_generation = 0;
+    if (!s_trampoline || s_generation != StubGeneration()) { // made again at every start (ResetStubsForBoot)
+        s_generation = StubGeneration();
         // [esp] = ordinal, [esp+4] = caller's return address
         s_trampoline = AllocStub(16);
         uint8_t* p = s_trampoline;

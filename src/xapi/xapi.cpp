@@ -143,7 +143,9 @@ extern "C" void __stdcall SdkTrap(uint32_t symbolIndex, uint32_t returnAddress)
 static void* MakeTrap(uint32_t index)
 {
     static uint8_t* s_trampoline = nullptr;
-    if (!s_trampoline) {
+    static uint32_t s_generation = 0;
+    if (!s_trampoline || s_generation != StubGeneration()) { // made again at every start (ResetStubsForBoot)
+        s_generation = StubGeneration();
         s_trampoline = AllocStub(16);
         uint8_t* p = s_trampoline;
         *p++ = 0xFF; *p++ = 0x74; *p++ = 0x24; *p++ = 0x04; // push [esp+4] (return address)

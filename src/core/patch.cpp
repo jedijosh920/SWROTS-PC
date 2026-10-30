@@ -61,12 +61,26 @@ void PatchNop(uint32_t address, uint32_t length)
 }
 
 // Stubs live in the loader's image range, past the game's image and before the PE header copy (0x9F0000-0xF00000,
-// executable, never cleared by a reboot), so that they are at the same addresses on every PC: the game's libraries
-// are patched with jumps to them, and netplay compares that memory. Taken in order, as the port makes them.
+// executable), so that they are at the same addresses on every PC: the game's libraries are patched with jumps to
+// them, and netplay compares that memory. Taken in order, as the port makes them, from the start of the range again
+// at every start of the game (ResetStubsForBoot): every start makes the same stubs in the same order, so they do not
+// depend on what the process did before (two PCs that played different things before a match agree).
+namespace {
+constexpr uint32_t kStubStart = 0x009F0000, kStubEnd = 0x00F00000;
+uint32_t s_next = kStubStart;
+uint32_t s_generation = 1;
+} // namespace
+
+void ResetStubsForBoot()
+{
+    s_next = kStubStart;
+    ++s_generation;
+}
+
+uint32_t StubGeneration() { return s_generation; }
+
 uint8_t* AllocStub(uint32_t size)
 {
-    static constexpr uint32_t kStubStart = 0x009F0000, kStubEnd = 0x00F00000;
-    static uint32_t s_next = kStubStart;
     static uint8_t* s_page = nullptr; // beyond the range: from Windows, as before
     static uint32_t s_used = 0;
     size = (size + 15) & ~15u;
