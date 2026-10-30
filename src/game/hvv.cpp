@@ -62,6 +62,7 @@ constexpr float kFloorMargin = 600.0f;
 constexpr float kRespawnReach = 950.0f;  // from the fight's middle, at most
 constexpr float kRespawnClear = 380.0f;  // from every fighter, at least (when it can)
 constexpr int kRespawnTries = 32;
+constexpr float kSpawnLift = 25.0f;  // above a custom map's floor (under its low ceilings)
 // The intro (ms): for each side a frontal shot of its line playing its Versus intros, then a close shot along the
 // line; the camera back behind the player; "FIGHT!" shows a while after.
 constexpr ULONGLONG kFrontShot = 2800, kCloseShot = 2200, kToPlayer = 900, kFightBanner = 1500;
@@ -486,6 +487,33 @@ void SafePlace(int except, float (&m)[16])
         }
     }
     Transform(bestX, bestZ, std::atan2(cx - bestX, cz - bestZ), m);
+}
+
+// Where the player waits out of the fight (between its fall and its comeback, or out of lives): far off on the dev
+// map's endless floor; on a custom map, which has no floor there (the body fell all the while, and came back still
+// in its fall, stuck in it), at the map's own clear place furthest from every standing fighter.
+void WaitingPlace(float x, float z, float (&m)[16])
+{
+    if (!DevMapCustomMap() || g_Spawns.empty()) {
+        Transform(x, z, 0, m);
+        return;
+    }
+    float best = -1;
+    for (const auto& s : g_Spawns) {
+        float nearest = 1e9f;
+        for (int i = 0; i < g_Count; ++i) {
+            if (i == g_Player || !Placed(g_Fighters[i]) || !Standing(g_Fighters[i]))
+                continue;
+            const float* p = Position(g_Fighters[i].object);
+            nearest = std::min(nearest, std::hypot(p[0] - s.first, p[2] - s.second));
+        }
+        if (nearest > best) {
+            best = nearest;
+            x = s.first;
+            z = s.second;
+        }
+    }
+    Transform(x, z, 0, m, kSpawnLift);
 }
 
 void Shield(Fighter& f, ULONGLONG now)
@@ -1759,6 +1787,8 @@ void InstallHvv()
 
 bool HvvActive() { return g_Active; }
 
+bool HvvFighting() { return g_Active && g_Phase == Phase::Fight; }
+
 bool HvvSameSide(const uint8_t* a, const uint8_t* b)
 {
     const int i = FighterOf(a), k = FighterOf(b);
@@ -2120,7 +2150,7 @@ void HvvFrame()
             Track(me, player);
             // it waits far from the fight (out of the kill camera's picture and the AI's way) until it comes back
             float m[16];
-            Transform(kDevMapMiddleX - 9000, kDevMapMiddleZ + 4500, 0, m);
+            WaitingPlace(kDevMapMiddleX - 9000, kDevMapMiddleZ + 4500, m);
             VirtualOf<void(__fastcall*)(uint8_t*, void*, const float*)>(player, kPlace)(player, nullptr, m);
             FullHealth(player);
             Field<uint8_t>(player, kCharacterInvincible) = 1;
@@ -2146,7 +2176,7 @@ void HvvFrame()
         if (g_Lives[SideOf(g_Player)] <= 0) { // out: held, out of the way, until the end
             me.out = true;
             float m[16];
-            Transform(g_Bounds[0] + 100, g_Bounds[1] + 100, 0, m);
+            WaitingPlace(g_Bounds[0] + 100, g_Bounds[1] + 100, m);
             VirtualOf<void(__fastcall*)(uint8_t*, void*, const float*)>(player, kPlace)(player, nullptr, m);
             Field<uint8_t>(player, kCharacterInvincible) = 1;
             LOG_INFO("HvV: you are out");

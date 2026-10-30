@@ -717,6 +717,91 @@ __declspec(naked) void PortraitCallStub()
     }
 }
 
+// A character's tick (its vtable slot 0xB4: the base's 0x158790, or the saber users' 0x280790, which calls it first)
+// activates it once: while +0x1C2 is set, 0xF2A50 clears it and calls slot 0x218 (0xF1DC0), which while +0x110 is set
+// clears that and calls the activation (slot 0x214: 0x267350, under the saber users' 0x2815F0, or the base's own
+// 0x15ABF0), which starts the character's script implement (+0x438: 0x15ABF0 -> 0x16E140). The loader makes that
+// implement in the character's setup (slot 0x390, 0x155680: +0x438 near its end), while the game's thread already
+// ticks the level's objects: a character whose setup came late (bodies of mods' own read from loose files, behind a
+// custom map's big level) was activated without it and crashed writing its +0x228 (0x16E175), now and then. Such a
+// tick is now skipped until the setup made the implement (the loader waits on the game's thread meanwhile: that
+// thread must go on).
+constexpr uint32_t kCharacterTick = 0x00158790, kCharacterTickContinue = 0x0015879A;
+constexpr uint8_t kCharacterTickBytes[] = { 0x51, 0x56, 0x8B, 0xF1, 0x8A, 0x86, 0xC2, 0x01, 0x00, 0x00 };
+constexpr uint32_t kSaberTick = 0x00280790, kSaberTickContinue = 0x00280799;
+constexpr uint8_t kSaberTickBytes[] = { 0x56, 0x57, 0x8B, 0xF1, 0xE8, 0xF7, 0x7F, 0xED, 0xFF }; // ... call 0x158790
+constexpr uint32_t kActivationSlot = 0x214;
+constexpr uint32_t kScriptActivations[] = { 0x00267350, 0x0015ABF0, 0x002815F0, 0x002A0C00 }; // all start 0x15ABF0
+constexpr uint32_t kCharacterTickPending = 0x1C2, kCharacterActivationPending = 0x110, kCharacterScript = 0x438;
+std::unordered_set<const uint8_t*> g_WaitingSetup; // reported once
+SRWLOCK g_WaitingSetupLock = SRWLOCK_INIT;
+
+int __fastcall TickWaits(const uint8_t* character)
+{
+    if (!character[kCharacterTickPending] || !character[kCharacterActivationPending])
+        return 0;
+    const bool ready = *reinterpret_cast<const volatile uint32_t*>(character + kCharacterScript) != 0;
+    if (ready) {
+        AcquireSRWLockExclusive(&g_WaitingSetupLock);
+        const bool waited = g_WaitingSetup.erase(character) > 0;
+        ReleaseSRWLockExclusive(&g_WaitingSetupLock);
+        if (waited)
+            LOG_INFO("Characters: %p set up, its activation goes on", character);
+        return 0;
+    }
+    // only a character whose activation starts the script implement
+    const uintptr_t vtable = *reinterpret_cast<const uintptr_t*>(character);
+    const uint32_t activation = *reinterpret_cast<const uint32_t*>(vtable + kActivationSlot);
+    if (std::find(std::begin(kScriptActivations), std::end(kScriptActivations), activation) ==
+        std::end(kScriptActivations))
+        return 0;
+    AcquireSRWLockExclusive(&g_WaitingSetupLock);
+    const bool first = g_WaitingSetup.insert(character).second;
+    ReleaseSRWLockExclusive(&g_WaitingSetupLock);
+    if (first)
+        LOG_INFO("Characters: %p ticked before its setup was done; its activation waits for it", character);
+    return 1;
+}
+
+__declspec(naked) void CharacterTickStub()
+{
+    __asm {
+        push ecx
+        call TickWaits
+        pop ecx
+        test eax, eax
+        jz run
+        ret
+    run:
+        push ecx
+        push esi
+        mov esi, ecx
+        mov al, byte ptr [esi + 0x1C2]
+        push kCharacterTickContinue
+        ret
+    }
+}
+
+__declspec(naked) void SaberTickStub()
+{
+    __asm {
+        push ecx
+        call TickWaits
+        pop ecx
+        test eax, eax
+        jz run
+        ret
+    run:
+        push esi
+        push edi
+        mov esi, ecx
+        mov eax, kCharacterTick
+        call eax
+        push kSaberTickContinue
+        ret
+    }
+}
+
 } // namespace
 
 int VariantOnDisc(const void* character, int preferred)
@@ -974,6 +1059,15 @@ void InstallCharacters()
     g_Neutrals.clear();
     g_HelperMasters.clear();
     g_ScriptActors.clear();
+    g_WaitingSetup.clear();
+    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kCharacterTick)), kCharacterTickBytes,
+            sizeof(kCharacterTickBytes)) == 0 &&
+        std::memcmp(reinterpret_cast<const void*>(uintptr_t(kSaberTick)), kSaberTickBytes, sizeof(kSaberTickBytes)) == 0) {
+        PatchJump(kCharacterTick, reinterpret_cast<const void*>(&CharacterTickStub));
+        PatchJump(kSaberTick, reinterpret_cast<const void*>(&SaberTickStub));
+    } else {
+        LOG_WARN("Characters: unexpected code at the character ticks; activations unguarded");
+    }
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kIsEnemy)), kIsEnemyPrologue, sizeof(kIsEnemyPrologue)) == 0) {
         uint8_t* stub = AllocStub(16);
         std::memcpy(stub, kIsEnemyPrologue, sizeof(kIsEnemyPrologue));

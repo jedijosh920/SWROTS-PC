@@ -1150,6 +1150,7 @@ void ReadCharacters(const std::wstring& mods)
         c.forceStorm = std::atoi(Profile(file, L"ForceStorm").c_str()) != 0;
         c.side = _stricmp(Profile(file, L"Side", L"Hero").c_str(), "villain") == 0 ? 1 : 0;
         c.scale = std::clamp(float(atof(Profile(file, L"Scale", L"1").c_str())), 0.5f, 2.0f);
+        c.breathing = std::atoi(Profile(file, L"Breathing", L"1").c_str()) != 0;
         const std::string force = Profile(file, L"Force");
         c.force = force.empty() ? -1.0f : std::clamp(float(atof(force.c_str())), 0.0f, 10000.0f);
         const std::string health = Profile(file, L"Health");
@@ -1351,6 +1352,22 @@ void AddBuiltInCharacters()
     g_PictureCopies.push_back({ "interfc\\hud_b\\hud_face_codyport01.stx", "interfc\\hud_b\\hud_face_unlock_cody01.stx" });
     g_Customs.push_back(c);
     LOG_INFO("Custom characters: ICody (COMMANDER CODY, from ICloneTrooper), built in");
+}
+
+// Vader's script (its VaderBreath state, 0x48D4B0) breathes in and out through the script's sound call (0x17AD20,
+// cdecl (sound, near, 1, far, -1, 0)) at these four places; a custom character on his class with Breathing=0 does not.
+constexpr uint32_t kScriptPlaySound = 0x0017AD20;
+constexpr uint32_t kBreathCalls[] = { 0x0048D547, 0x0048D577, 0x0048D5BE, 0x0048D5EE };
+
+int __cdecl BreathSoundHook(int sound, int nearDistance, int one, int farDistance, int loop, int zero)
+{
+    uint8_t* scripts = *reinterpret_cast<uint8_t**>(uintptr_t(kScriptCharacter));
+    const uint8_t* character = scripts ? *reinterpret_cast<uint8_t**>(scripts + 0x68) : nullptr;
+    const CustomCharacter* custom = character ? CustomCharacterOf(character) : nullptr;
+    if (custom && !custom->breathing)
+        return 0;
+    return reinterpret_cast<int(__cdecl*)(int, int, int, int, int, int)>(uintptr_t(kScriptPlaySound))(
+        sound, nearDistance, one, farDistance, loop, zero);
 }
 
 // A clone's Init sets its health (0x35B36D: 0x177AC0 (50, 1)); a custom character on it gets its own, and its meter
@@ -1580,6 +1597,15 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
         std::memcpy(call + 1, &rel, 4);
         if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kBruteSetHealthCall)), call, 5) == 0)
             PatchCall(kBruteSetHealthCall, reinterpret_cast<const void*>(&BruteSetHealthHook), 5);
+    }
+    if (std::any_of(g_Customs.begin(), g_Customs.end(), [](const CustomCharacter& c) { return !c.breathing; })) {
+        for (uint32_t site : kBreathCalls) {
+            uint8_t call[5] = { 0xE8 };
+            const int32_t rel = int32_t(kScriptPlaySound) - int32_t(site + 5);
+            std::memcpy(call + 1, &rel, 4);
+            if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(site)), call, 5) == 0)
+                PatchCall(site, reinterpret_cast<const void*>(&BreathSoundHook), 5);
+        }
     }
     {
         uint8_t call[5] = { 0xE8 };

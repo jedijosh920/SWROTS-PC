@@ -16,6 +16,7 @@
 #include "game/characters.h"
 #include "game/freecam.h"
 #include "game/custommaps.h"
+#include "game/hvv.h"
 #include "game/resources.h"
 #include "kernel/kernel.h"
 
@@ -39,6 +40,7 @@ const CustomMap* g_Map = nullptr; // a map of a mod's own, from `custommap:<id>`
 std::string g_MusicServed;        // the disc's music file its track is served for
 bool g_Duel = false;              // a Versus duel on the dev map (`versus:1`)
 std::string g_Arguments; // this start's launch arguments, or else its Default_Xbox.cfg
+std::vector<uint32_t> g_Fallen; // the instance ids of the characters a KillHeight= fall has killed (DevMapFrame)
 
 void BuildLevel(std::vector<uint8_t>& data)
 {
@@ -291,6 +293,7 @@ void InstallDevMap(const std::wstring& gameData, const std::wstring& mods)
         kernel::SetDiscFileOverride(g_MusicServed, L"");
     g_MusicServed.clear();
     g_Map = nullptr;
+    g_Fallen.clear();
     g_Duel = g_Active && BootArgument("versus", value) && value == "1";
     if (g_Active && BootArgument("custommap", value)) {
         g_Map = FindCustomMap(value);
@@ -331,6 +334,41 @@ void InstallDevMap(const std::wstring& gameData, const std::wstring& mods)
 }
 
 bool DevMapActive() { return g_Active; }
+
+// A fall below a custom map's KillHeight= (its pits): the character's instant kill (ICharacter's slot 0xC8, 0x152D30),
+// as the game's own falls into the void, once a fall: its instance id (+4) is kept in g_Fallen until it is back above
+// the line or gone from the level (its body lies below the line for a while, and a kill a frame was hundreds a fall).
+// In Heroes vs Villains and Battlefront only while the fight is on: the match's guard on the player's falls is in
+// place then; before it (the line-up, the intro) a kill would be the game's own, with its Game Over.
+void DevMapFrame()
+{
+    if (!g_Active || !g_Map || !g_Map->hasKillHeight || (HvvActive() && !HvvFighting()))
+        return;
+    constexpr uint32_t kInstanceId = 0x4, kHealth = 0x130, kDead = 0x12C, kTransform = 0x150, kInstantKillSlot = 0xC8;
+    const float killY = kDevMapFloorY + g_Map->killHeight - g_Map->floor;
+    std::vector<uint32_t> present;
+    for (uint8_t* c : LevelCharacters()) {
+        const uint32_t id = *reinterpret_cast<const uint32_t*>(c + kInstanceId);
+        present.push_back(id);
+        const auto fallen = std::find(g_Fallen.begin(), g_Fallen.end(), id);
+        if (reinterpret_cast<const float*>(c + kTransform + 48)[1] >= killY) {
+            if (fallen != g_Fallen.end()) // back above the line (brought back): a new fall kills again
+                g_Fallen.erase(fallen);
+            continue;
+        }
+        if (fallen != g_Fallen.end() || *reinterpret_cast<const float*>(c + kHealth) <= 0 || c[kDead])
+            continue;
+        g_Fallen.push_back(id);
+        LOG_INFO("Dev map: character %08X fell below KillHeight= (%.0f): its instant kill", id, killY);
+        using InstantKill = void(__fastcall*)(uint8_t*, void*, uint32_t);
+        const auto kill = reinterpret_cast<InstantKill>((*reinterpret_cast<void* const* const*>(c))[kInstantKillSlot / 4]);
+        kill(c, nullptr, 0);
+    }
+    // the removed ones (their ids may be given again)
+    g_Fallen.erase(std::remove_if(g_Fallen.begin(), g_Fallen.end(), [&](uint32_t id) {
+        return std::find(present.begin(), present.end(), id) == present.end();
+    }), g_Fallen.end());
+}
 
 const CustomMap* DevMapCustomMap() { return g_Active ? g_Map : nullptr; }
 

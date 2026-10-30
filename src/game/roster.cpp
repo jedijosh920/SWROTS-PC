@@ -57,8 +57,10 @@ constexpr ExtraFighter kYoda = { "IYoda", "s_selduel_yodahead", "s_selduel_yodab
 constexpr int kFighterCount = 9;
 constexpr int kRandomSlot = 9;
 constexpr int kFirstExtraSlot = 10;
-// Custom characters (customchars.h) with their select pictures join the extras, up to this many in all.
-constexpr int kMaxExtras = 8;
+// Custom characters (customchars.h) with their select pictures join the extras, up to this many in all (Yoda, the
+// packs' characters, Commander Cody and the Droid Commander). The bound is player 2's full-body offset, a signed 8-bit
+// displacement (see InstallRoster): (kFirstExtraSlot + kMaxExtras + 1) * 4 <= 0x7F.
+constexpr int kMaxExtras = 20;
 
 // This start's extras: Yoda, then the custom characters; their texts (owned here: the strings live for the session).
 std::vector<ExtraFighter> g_Extras;

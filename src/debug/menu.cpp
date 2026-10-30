@@ -1113,6 +1113,7 @@ void MenuAfterFrame()
     game::RevanFrame();
     game::HvvFrame();
     game::MissionFrame();
+    game::DevMapFrame();
 }
 
 } // namespace swrots::debug

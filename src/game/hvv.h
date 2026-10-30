@@ -19,6 +19,8 @@ void InstallHvv();
 
 // True when this start of the game is a match.
 bool HvvActive();
+// True while its fight is on (after the intro, before the end): its guard on the player's falls is in place.
+bool HvvFighting();
 
 // Whether nothing of the match's map (its collision boxes) stands between two points of the world.
 bool HvvLineOfSight(const float a[3], const float b[3]);

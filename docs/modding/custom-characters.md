@@ -56,6 +56,7 @@ IntroSpeed=1.2           ; the Jedi Brute's twirl), at this speed (optional; 1)
 Lightning=1              ; on Serra Keto's class (Base=ISerra): Force lightning instead of her stun (optional)
 Grapples=IDooku          ; on Serra Keto's class: Count Dooku's grapple throws instead of hers (optional)
 ForceStorm=1             ; on Serra Keto's class: the Force Storm special (optional; see "Other duelists' moves")
+Breathing=0              ; on Darth Vader's class (Base=IVader): without his breathing (optional; 1)
 Side=Hero                ; Hero or Villain: its side in Heroes vs Villains by default
 Speaker=Luke             ; its name in subtitles (optional; the name's first word)
 Code=                    ; whose lines it says, a dialogue speaker code such as AKN or OBW (optional; the base's)
@@ -199,8 +200,9 @@ mods\interfc\front_end\s_selduel_fb_<costume>_v2.stx     player 2's (optional)
 ```
 
 (`<costume>` in lower case, e.g. `s_selduel_lukehead.stx`.) Any number of custom characters get their slots (up to
-seven after Yoda). The full bodies show under the strip and on the arena screen, as the game's fighters'; without
-them the arena screen shows the bust in the full body's frame.
+nineteen after Yoda, Commander Cody and the Droid Commander among them; the strip scrolls). The full bodies show
+under the strip and on the arena screen, as the game's fighters'; without them the arena screen shows the bust in
+the full body's frame.
 
 The menus use only pictures read with the shared PAK (`res_null.pak`; a picture under `mods\` that no PAK has is
 refused: its pre-cache finds no image, 0x210B6B), so a custom character's entries in the screens' picture sets name

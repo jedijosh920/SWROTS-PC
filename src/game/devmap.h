@@ -16,6 +16,8 @@ void InstallDevMap(const std::wstring& gameData, const std::wstring& mods);
 
 // True when this start of the game loads the dev map in place of Grievous Survival.
 bool DevMapActive();
+// Once a frame on the game thread: a custom map's falls (KillHeight=).
+void DevMapFrame();
 
 // The map of a mod's own this start's dev map is (launch argument `custommap:<id>`, custommaps.h), or null.
 struct CustomMap;

@@ -97,6 +97,16 @@ bool ReadMap(const std::wstring& file, const std::string& id, CustomMap& m)
     }
     m.modelFolder = model.substr(0, slash + 1);
     m.modelName = model.substr(slash + 1);
+    // Sky=maps\cantina\cantina_sky: a model about the sky's origin (the level's backdrop is some 600 units across)
+    const std::string sky = Profile(file, L"Map", L"Sky");
+    if (const size_t skySlash = sky.find_last_of('\\'); skySlash != std::string::npos && skySlash + 1 < sky.size()) {
+        m.skyFolder = sky.substr(0, skySlash + 1);
+        m.skyName = sky.substr(skySlash + 1);
+    }
+    if (const std::string kill = Profile(file, L"Map", L"KillHeight"); !kill.empty()) {
+        m.hasKillHeight = true;
+        m.killHeight = std::strtof(kill.c_str(), nullptr);
+    }
     m.vertices = uint32_t(std::strtoul(Profile(file, L"Map", L"Vertices").c_str(), nullptr, 10));
     if (!m.vertices) {
         LOG_WARN("Custom maps: %s needs Vertices (its model's vertex count)", id.c_str());
@@ -153,6 +163,13 @@ bool ReadMap(const std::wstring& file, const std::string& id, CustomMap& m)
         if (v.size() < 6)
             break;
         m.boxes.push_back({ v[0], v[1], v[2], v[3], v[4], v[5], v.size() > 6 ? v[6] * kPi / 180 : 0.0f });
+    }
+    // Brushes=<file in the map's folder>: its collision as convex volumes (BSP trees in the level file's format)
+    const std::string brushes = Profile(file, L"Collision", L"Brushes");
+    if (!brushes.empty()) {
+        const std::wstring path = file.substr(0, file.find_last_of(L'\\') + 1) + std::wstring(brushes.begin(), brushes.end());
+        if (!ReadAll(path, m.brushes))
+            LOG_WARN("Custom maps: %s's brushes %s are missing", id.c_str(), brushes.c_str());
     }
     // its light: one number (grey) or three (red, green, blue) each
     auto colour = [&](const wchar_t* key, float (&out)[3]) {
@@ -263,8 +280,9 @@ void InstallCustomMaps(const std::wstring& mods)
         CustomMap m;
         if (!ReadMap(file, Narrow(found.cFileName), m))
             continue;
-        LOG_INFO("Custom maps: %s (%s), model meshes\\%s%s, %zu collision boxes, %zu spawns", m.id.c_str(),
-            m.name.c_str(), m.modelFolder.c_str(), m.modelName.c_str(), m.boxes.size(), m.spawns.size());
+        LOG_INFO("Custom maps: %s (%s), model meshes\\%s%s, %zu collision boxes, %zu bytes of brushes, %zu spawns",
+            m.id.c_str(), m.name.c_str(), m.modelFolder.c_str(), m.modelName.c_str(), m.boxes.size(), m.brushes.size(),
+            m.spawns.size());
         g_Maps.push_back(std::move(m));
     } while (FindNextFileW(find, &found));
     FindClose(find);
@@ -342,6 +360,8 @@ void ApplyCustomMap(const CustomMap& map, DevMapLayout& layout)
 {
     layout.modelFolder = map.modelFolder;
     layout.modelName = map.modelName;
+    layout.skyFolder = map.skyFolder;
+    layout.skyName = map.skyName;
     layout.modelVertices = map.vertices;
     CustomMapToWorld(map, 0, 0, layout.modelX, layout.modelZ);
     layout.modelY = -map.floor;
@@ -362,6 +382,7 @@ void ApplyCustomMap(const CustomMap& map, DevMapLayout& layout)
     }
     if (layout.music.empty()) // (a mission's own music comes first)
         layout.music = map.music;
+    layout.brushes = map.brushes;
     layout.boxes.clear();
     for (const DevMapBox& b : map.boxes) {
         DevMapBox w = b;

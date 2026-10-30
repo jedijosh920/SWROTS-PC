@@ -43,7 +43,9 @@ Name=Mos Eisley Cantina          ; as shown
 Music=mus_m13_templebattle01_lp  ; its music (optional): a music slot of the game, the track beside map.ini
 Model=maps\cantina\cantina       ; its model under meshes\, without .msh
 Vertices=10234                   ; the model's vertex count (all its parts)
+Sky=maps\cantina\cantina_sky     ; its sky's model (optional), about the sky's origin (see below)
 Floor=0                          ; the height (y) of its floor: it stands there on the dev map's floor
+KillHeight=-200                  ; a fighter below this height (y) dies, as in a fall into the void (optional)
 HeroesLine=0 -350                ; Heroes vs Villains: the middle of the heroes' line (x z)
 VillainsLine=0 350               ; and of the villains'; the lines run across the line between them
 LineGap=150                      ; between fighters in a line
@@ -53,6 +55,7 @@ Bounds=-900 -900 900 900         ; x0 z0 x1 z1: where fighters may come back
 [Collision]
 Box1=0 100 450 600 100 20 0      ; a box: its centre (x y z), half its size (x y z), its turn (degrees, about y)
 Box2=...                         ; numbered from 1, without gaps
+Brushes=cantina_brushes.bin      ; its own collision (optional): convex volumes, see below
 
 [Lighting]                       ; all optional; a colour is one number (grey) or three (red green blue)
 Ambient=0.10 0.09 0.08           ; the model's ambient light (the floor's is 0.8)
@@ -84,6 +87,35 @@ DroidStart=-720 -120                             ; and the droids
 
 Without the starts, the clones start on the heroes' line and the droids on the villains'. Each side starts with the
 post nearest its start. Keep the posts on open floor, inside `Bounds=`, a few hundred units apart.
+
+## Collision of its own
+
+`Brushes=` names a file beside map.ini: the map's collision as convex volumes (floors, walls, steps, ramps), one
+after the other, each a BSP tree in the level file's format, in the map's own coordinates (the model's). Each
+volume is a tree with one hedron: its vertices, edges and faces (their planes and corner loops), its planes
+(outward normals, n . p = d) and a chain of nodes, two a plane and the solid leaf last. They are placed as the
+model is (turned and moved with it) and added to the level's brushes, each with its brush manager handle. Fighters
+then stand on the map's own floors at any height, and the dev map's floor goes down 1150 units, under the map's
+lower parts (a fall there ends on it).
+
+A converter writes these files from Jedi Knight II maps: the JK2 solid and player-clip brushes, one volume each
+(`convert_map.py` in the community JK2 pack, not in the port). Maps without `Brushes=` keep the dev map's floor where
+it is.
+
+The level's load stops in the game's error handler (in `IStaticManager`, as the static's meshes are set up) when
+the model is too large: a model of 19786 vertices loads, one of 30101 does not, whatever its textures.
+
+## Sky and pits
+
+Without `Sky=` a map of its own has no sky around it. With it, the level's sky backdrop (Utapau's `backdrop`, an
+`IStatic` drawn about the `ISectorSkybox` before the rest, lit by its ambient light alone) draws the map's sky model
+instead, turned as the map is; Utapau's cloud domes and its sky dome go. The model is a static one, as the map's,
+in the sky's own units: Utapau's backdrop is some 600 units across and the converter's sky box is 1000 units wide.
+
+`KillHeight=` kills a character that falls below it (the character's instant kill, as in the game's own falls into
+the void: in Heroes vs Villains the fighter comes back as after any defeat), once a fall: checked every frame, it
+kills a character again only after it has been above the line. In Heroes vs Villains and Battlefront it applies while
+the fight is on (not during the line-up or the intro).
 
 ## Light
 
@@ -183,6 +215,6 @@ Utapau one, with `devmap:1 versus:1 custommap:<map>`.
 
 ## Not yet
 
-- Collision other than boxes (a model's own shape: ramps, stairs); fighters stand on the dev map's floor.
+- The camera's line of sight (Versus) and the AI's moves (Heroes vs Villains) know the boxes only, not `Brushes=`.
 - Paths for the AI (a map's own navigation).
-- The map's own point lights and sky (its light so far: baked, ambient, and the level's lights scaled).
+- The map's own point lights (its light so far: baked, ambient, and the level's lights scaled).

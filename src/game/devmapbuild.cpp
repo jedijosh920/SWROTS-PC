@@ -28,6 +28,11 @@ constexpr Range kSpace[3] = { { 1500.0, 24000.0 }, { -3115.924, 1100.0 }, { 2700
 constexpr double kFloorY = -2557.5;
 constexpr double kCaveCentreX = 6296.0, kCaveCentreZ = 6282.0;
 constexpr double kLift = 100000.0; // the wall brushes are moved this far up, out of the way
+// Under a map with brushes of its own the floor goes down this far, and the space's bottom with it (1442 below the
+// cave floor): a map's lower parts (pits, stairs down) stand above the floor. Other maps keep the old box's bottom.
+constexpr double kMapFloorDrop = 1150.0;
+constexpr double kMapSpaceBottom = -4000.0;
+double g_SpaceBottom = kSpace[1].lo; // this build's
 // The layout's characters and start stand just above the floor: one placed higher falls when it wakes, and a fall
 // stops what it plays (Heroes vs Villains' intros).
 constexpr double kStandLift = 2.0;
@@ -407,7 +412,7 @@ void SetFloats(Property* p, const float (&v)[N], size_t at = 0)
 double Remap(double v, int axis)
 {
     if (std::fabs(v - kOldBox[axis].lo) < 0.01)
-        return kSpace[axis].lo;
+        return axis == 1 ? g_SpaceBottom : kSpace[axis].lo;
     if (std::fabs(v - kOldBox[axis].hi) < 0.01)
         return kSpace[axis].hi;
     return v;
@@ -447,6 +452,7 @@ bool BuildDevMapLevel(std::vector<uint8_t>& level, std::string& report, const De
         report = text;
         return false;
     };
+    g_SpaceBottom = layout && !layout->brushes.empty() ? kMapSpaceBottom : kSpace[1].lo;
     // the header: tag, version, the source path, two u32
     if (r.String() != "3DF!" || r.U32() != kLevelVersion)
         return fail("not a level file of the expected version");
@@ -598,7 +604,7 @@ bool BuildDevMapLevel(std::vector<uint8_t>& level, std::string& report, const De
             floorHandle = U32Of(Find(g, "MGR___lighthandle"));
             haveFloor = true;
             kept.push_back(g);
-        } else if (model == kSkyMesh) {
+        } else if (model == kSkyMesh && !(layout && !layout->skyName.empty())) {
             kept.push_back(g);
         }
     }
@@ -823,6 +829,8 @@ bool BuildDevMapLevel(std::vector<uint8_t>& level, std::string& report, const De
     for (const Tree& t : brushes)
         if (top(t) < top(*floor))
             floor = &t;
+    // a map with brushes of its own stands on them: the floor goes down near the space's bottom, under its lower parts
+    const double floorDrop = layout && !layout->brushes.empty() ? kMapFloorDrop : 0.0;
     for (const Tree& t : brushes) {
         for (size_t h : t.hedrons) {
             for (uint8_t i = 0; i < HedronVertices(d, h); ++i) {
@@ -830,6 +838,8 @@ bool BuildDevMapLevel(std::vector<uint8_t>& level, std::string& report, const De
                 if (&t == floor) {
                     PutF(d, v, GetF(d, v) > kCaveCentreX ? kSpace[0].hi : kSpace[0].lo);
                     PutF(d, v + 8, GetF(d, v + 8) > kCaveCentreZ ? kSpace[2].hi : kSpace[2].lo);
+                    if (floorDrop > 0)
+                        PutF(d, v + 4, GetF(d, v + 4) > kFloorY - 1.0 ? kFloorY - floorDrop : g_SpaceBottom);
                 } else {
                     PutF(d, v + 4, GetF(d, v + 4) + kLift);
                 }
@@ -840,7 +850,10 @@ bool BuildDevMapLevel(std::vector<uint8_t>& level, std::string& report, const De
             const double nx = GetF(d, p), ny = GetF(d, p + 4), nz = GetF(d, p + 8);
             if (&t != floor)
                 PutF(d, p + 12, GetF(d, p + 12) + ny * kLift);
-            else if (std::fabs(nx) > 0.5)
+            else if (std::fabs(ny) > 0.5) {
+                if (floorDrop > 0)
+                    PutF(d, p + 12, ny * (ny > 0 ? kFloorY - floorDrop : g_SpaceBottom));
+            } else if (std::fabs(nx) > 0.5)
                 PutF(d, p + 12, nx * (nx > 0 ? kSpace[0].hi : kSpace[0].lo));
             else if (std::fabs(nz) > 0.5)
                 PutF(d, p + 12, nz * (nz > 0 ? kSpace[2].hi : kSpace[2].lo));
@@ -884,9 +897,43 @@ bool BuildDevMapLevel(std::vector<uint8_t>& level, std::string& report, const De
             }
             boxes.Raw(t.data(), t.size());
         }
+    }
+    // a map's own brushes (convex volumes in the model's coordinates, the level's tree format): placed as its model
+    size_t mapBrushCount = 0;
+    if (layout && !layout->brushes.empty()) {
+        Reader b{ layout->brushes };
+        const double c = std::cos(layout->modelYaw), s = std::sin(layout->modelYaw);
+        const double place[3] = { layout->modelX, kFloorY + layout->modelY, layout->modelZ };
+        while (b.p < layout->brushes.size() && b.ok) {
+            Tree tree;
+            if (!ReadTree(b, &tree) || !b.ok)
+                return fail("the map's brushes");
+            std::vector<uint8_t> t(layout->brushes.begin() + tree.start, layout->brushes.begin() + tree.end);
+            for (size_t h : tree.hedrons) {
+                for (uint8_t i = 0; i < HedronVertices(layout->brushes, h); ++i) {
+                    const size_t v = h - tree.start + 4 + 12 * i;
+                    const double x = GetF(t, v), y = GetF(t, v + 4), z = GetF(t, v + 8);
+                    PutF(t, v, place[0] + c * x + s * z);
+                    PutF(t, v + 4, place[1] + y);
+                    PutF(t, v + 8, place[2] - s * x + c * z);
+                }
+            }
+            for (uint32_t i = 0; i < tree.planeCount; ++i) {
+                const size_t p = tree.planes - tree.start + 16 * i;
+                const double nx = GetF(t, p), ny = GetF(t, p + 4), nz = GetF(t, p + 8);
+                const double wx = c * nx + s * nz, wz = -s * nx + c * nz;
+                PutF(t, p, wx);
+                PutF(t, p + 8, wz);
+                PutF(t, p + 12, GetF(t, p + 12) + wx * place[0] + ny * place[1] + wz * place[2]);
+            }
+            boxes.Raw(t.data(), t.size());
+            ++mapBrushCount;
+        }
+    }
+    if (boxCount + mapBrushCount) {
         uint32_t brushCap;
         std::memcpy(&brushCap, d.data() + brushesCap, 4);
-        const uint32_t total = uint32_t(brushes.size() + boxCount);
+        const uint32_t total = uint32_t(brushes.size() + boxCount + mapBrushCount);
         PutU32(d, brushesCap, std::max(brushCap, total));
         PutU32(d, brushesCount, total);
         // the brush manager: a handle per brush (its id, its class and what it stops), the boxes as the first wall
@@ -896,7 +943,7 @@ bool BuildDevMapLevel(std::vector<uint8_t>& level, std::string& report, const De
         Groups handles;
         if (!count || count->data.size() < 4 || !details || !ReadGroups(details->data, handles) || handles.empty())
             return fail("the brush manager");
-        for (size_t i = 0; i < boxCount; ++i) {
+        for (size_t i = 0; i < boxCount + mapBrushCount; ++i) {
             std::vector<Property> handle = handles[0];
             if (Property* id = Find(handle, "id"); id && id->data.size() >= 4)
                 PutU32(id->data, 0, kDevMapFirstBoxId + uint32_t(i));
@@ -904,7 +951,7 @@ bool BuildDevMapLevel(std::vector<uint8_t>& level, std::string& report, const De
         }
         details->data = WriteGroups(handles);
         PutU32(count->data, 0, uint32_t(handles.size()));
-        say("%zu collision boxes; ", boxCount);
+        say("%zu collision boxes, %zu brushes; ", boxCount, mapBrushCount);
     }
 
     // objects: only what a level needs. With a map's music, the level's own music start is kept: the player's start
@@ -976,14 +1023,39 @@ bool BuildDevMapLevel(std::vector<uint8_t>& level, std::string& report, const De
         }
         say("%zu goto markers; ", layout->markers.size());
     }
+    // A map's own sky: Utapau's backdrop (an IStatic drawn about the ISectorSkybox, "MeshName" its model's name and
+    // folder) draws the map's sky model, turned as the map is; the cloud domes go.
+    const bool ownSky = layout && !layout->skyName.empty();
+    auto skyBackdrop = [&](Object& o) {
+        Property* mesh = Find(o.props, "MeshName");
+        if (!mesh)
+            return false;
+        Reader r{ mesh->data };
+        if (r.String() != "backdrop")
+            return false;
+        Writer w;
+        w.String(layout->skyName);
+        w.String(layout->skyFolder);
+        mesh->data = w.out;
+        if (Property* t = Find(o.props, "Transform"); t && t->data.size() >= 48) {
+            const float c = std::cos(layout->modelYaw), s = std::sin(layout->modelYaw);
+            const float turn[9] = { c, 0, -s, 0, 1, 0, s, 0, c };
+            SetFloats(t, turn);
+        }
+        return true;
+    };
+    bool skyPlaced = false;
     for (Object& o : objects) {
+        const bool sky = o.cls == "IStatic" && Find(o.props, "Skybox Render Priority");
         const bool keep = std::any_of(std::begin(kKeep), std::end(kKeep), [&](const char* c) { return o.cls == c; }) ||
-            // the sky (Utapau's): not around a map of its own (a closed room; outside it, nothing)
-            (o.cls == "IStatic" && Find(o.props, "Skybox Render Priority") && !(layout && !layout->modelName.empty())) ||
+            // the sky (Utapau's): not around a map of its own (a closed room; outside it, nothing), unless it has one
+            (sky && !(layout && !layout->modelName.empty())) || (sky && ownSky && skyBackdrop(o) && (skyPlaced = true)) ||
             (music && (U32Of(Find(o.props, "ID")) == sequencerId || U32Of(Find(o.props, "ID")) == trackId));
         if (keep)
             keptObjects.push_back(std::move(o));
     }
+    if (ownSky)
+        say("sky %s%s%s; ", layout->skyFolder.c_str(), layout->skyName.c_str(), skyPlaced ? "" : " (no backdrop)");
     say("%zu of %zu objects kept", keptObjects.size(), objects.size());
     // a duel: "Head to head arena?" (ILevelProperties +0xCC: the game's Versus start, rounds, HUD and cameras), not a
     // bonus mission, and the two fighters' spawn points (IVaderMultiSpawnPoint, an IPointSpawnPlayer by descent:
