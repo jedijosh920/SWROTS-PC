@@ -69,7 +69,9 @@ add_dependencies(SWROTSCore SWROTSVersion)
 target_compile_definitions(SWROTSCore PRIVATE
   WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
 target_compile_options(SWROTSCore PRIVATE /W3 /GS- /EHsc /Zi /utf-8)
-set_target_properties(SWROTSCore PROPERTIES LINK_FLAGS "/LARGEADDRESSAWARE /SAFESEH:NO /DEBUG")
+# A fixed base (netplay): the port's own state that the game holds pointers to (sound objects, the jumps patched into
+# its libraries) must be at the same addresses on every PC. Relocations are kept, should the address be taken.
+set_target_properties(SWROTSCore PROPERTIES LINK_FLAGS "/LARGEADDRESSAWARE /SAFESEH:NO /DEBUG /BASE:0x50000000 /DYNAMICBASE:NO")
 target_link_libraries(SWROTSCore PRIVATE ntdll bcrypt winmm user32 dbghelp xinput d3d9 d3dcompiler xaudio2 windowscodecs ole32 shell32 comdlg32 uuid hid setupapi propsys)
 
 add_dependencies(SWROTS SWROTSCore)

@@ -130,6 +130,11 @@ uint32_t MemoryLayoutGeneration();
 // off (a rollback could give one back). The arena is made the first time (a change of the memory layout). False when
 // it cannot be made. On the game's main thread at a frame boundary.
 bool SetDeterministicPool(bool on);
+// Netplay: while on (a match, from the reboot into its level), the game's virtual memory and pool blocks are placed by
+// the port in a range reserved at a fixed address (0x20000000, 256 MiB), first-fit, so that every PC gives the game
+// the same addresses. Stays on across reboots. False when the range is taken on this PC.
+bool SetDeterministicAddresses(bool on);
+bool DeterministicAddresses();
 
 // --- File system (file.cpp) ------------------------------------------------
 void FileSystemInit(const Paths& paths);

@@ -188,10 +188,105 @@ KERNEL_EXPORT(173, MmGetPhysicalAddress);
 KERNEL_EXPORT(180, MmQueryAllocationSize);
 
 // ---------------------------------------------------------------------------
+// The fixed range (netplay): while deterministic addresses are on (SetDeterministicAddresses: a netplay match, from
+// the reboot into its level), the game's virtual memory is placed by the port, first-fit in one range reserved at a
+// fixed address, instead of wherever Windows puts it, so that two PCs (or two runs) give the game the same addresses.
+// The range starts with the netplay pool's arena (below). It stays reserved for the process; a reboot decommits it.
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr uintptr_t kFixedBase = 0x20000000;
+constexpr uint32_t kFixedSize = 0x10000000; // 256 MiB
+constexpr uint32_t kArenaSize = 64u << 20;  // the pool's arena, at the start of the range
+constexpr uint32_t kGranularity = 0x10000;  // Windows' allocation granularity, kept for the game's reservations
+
+uint8_t* g_Fixed = nullptr;
+std::atomic<bool> g_DetAddresses{ false };
+std::mutex g_PlaceLock;
+std::map<uintptr_t, uint32_t> g_Placed; // the game's reservations in the range: base -> size
+
+bool EnsureFixed()
+{
+    if (g_Fixed)
+        return true;
+    void* base = VirtualAlloc(reinterpret_cast<void*>(kFixedBase), kFixedSize, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_READWRITE);
+    if (base != reinterpret_cast<void*>(kFixedBase)) {
+        if (base)
+            VirtualFree(base, 0, MEM_RELEASE);
+        LOG_ERROR("Netplay: the fixed range %08X-%08X is taken on this PC; addresses will not be deterministic",
+            uint32_t(kFixedBase), uint32_t(kFixedBase + kFixedSize));
+        return false;
+    }
+    g_Fixed = static_cast<uint8_t*>(base);
+    LOG_INFO("Netplay: fixed range reserved at %p (%u MiB)", base, kFixedSize >> 20);
+    return true;
+}
+
+// The placed reservation containing `p`, or g_Placed.end().
+std::map<uintptr_t, uint32_t>::iterator PlacedAt(const void* p)
+{
+    const uintptr_t a = uintptr_t(p);
+    auto it = g_Placed.upper_bound(a);
+    if (it == g_Placed.begin())
+        return g_Placed.end();
+    --it;
+    return a < it->first + it->second ? it : g_Placed.end();
+}
+
+// First fit after the arena, at the allocation granularity; 0 when the range is full.
+uintptr_t Place(uint32_t size)
+{
+    size = (size + kGranularity - 1) & ~(kGranularity - 1);
+    uintptr_t at = kFixedBase + kArenaSize;
+    for (const auto& [base, length] : g_Placed) {
+        if (at + size <= base)
+            break;
+        at = std::max(at, (base + length + kGranularity - 1) & ~uintptr_t(kGranularity - 1));
+    }
+    if (at + size > kFixedBase + kFixedSize)
+        return 0;
+    g_Placed[at] = size;
+    return at;
+}
+
+bool InFixed(const void* p) { return g_Fixed && uintptr_t(p) >= kFixedBase && uintptr_t(p) < kFixedBase + kFixedSize; }
+
+} // namespace
+
+bool EnsureArena();
+
+bool SetDeterministicAddresses(bool on)
+{
+    if (on && !EnsureFixed())
+        return false;
+    if (on) {
+        std::lock_guard<std::mutex> lock(g_PoolLock); // pool blocks from the arena from now on
+        EnsureArena();
+    }
+    if (on != g_DetAddresses)
+        LOG_INFO("Netplay: deterministic addresses %s", on ? "on" : "off");
+    g_DetAddresses = on;
+    return true;
+}
+
+bool DeterministicAddresses() { return g_DetAddresses; }
+
+// ---------------------------------------------------------------------------
 // System memory and protection
 // ---------------------------------------------------------------------------
 void* XBAPI MmAllocateSystemMemory(ULONG NumberOfBytes, ULONG Protect)
 {
+    if (g_DetAddresses) { // placed in the fixed range (netplay)
+        std::lock_guard<std::mutex> lock(g_PlaceLock);
+        if (const uintptr_t at = Place(NumberOfBytes)) {
+            void* p = VirtualAlloc(reinterpret_cast<void*>(at), NumberOfBytes, MEM_COMMIT, HostProtect(Protect));
+            if (p) {
+                ++g_LayoutGeneration;
+                return p;
+            }
+            g_Placed.erase(at);
+        }
+    }
     // Write-watched, as the game's other memory, for netplay's snapshots (net/state.h).
     void* p = VirtualAlloc(nullptr, NumberOfBytes, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, HostProtect(Protect));
     if (!p)
@@ -206,6 +301,16 @@ void* XBAPI MmAllocateSystemMemory(ULONG NumberOfBytes, ULONG Protect)
 
 ULONG XBAPI MmFreeSystemMemory(void* BaseAddress, ULONG NumberOfBytes)
 {
+    if (InFixed(BaseAddress)) {
+        std::lock_guard<std::mutex> lock(g_PlaceLock);
+        auto it = PlacedAt(BaseAddress);
+        if (it != g_Placed.end()) {
+            VirtualFree(reinterpret_cast<void*>(it->first), it->second, MEM_DECOMMIT);
+            g_Placed.erase(it);
+            ++g_LayoutGeneration;
+        }
+        return (NumberOfBytes + 0xFFF) >> 12;
+    }
     {
         std::lock_guard<std::mutex> lock(g_TrackLock);
         g_VirtualBases.erase(BaseAddress);
@@ -257,6 +362,30 @@ NTSTATUS XBAPI NtAllocateVirtualMemory(void** BaseAddress, ULONG_PTR ZeroBits, U
 {
     SIZE_T size = *AllocationSize;
     const ULONG type = AllocationType & ~kMemNoZero;
+    if (g_Fixed && (g_DetAddresses || InFixed(*BaseAddress))) {
+        // Netplay: new reservations placed in the fixed range; commits in a placed reservation.
+        std::lock_guard<std::mutex> lock(g_PlaceLock);
+        uintptr_t at = 0;
+        if ((type & MEM_RESERVE) && !*BaseAddress && g_DetAddresses)
+            at = Place(uint32_t(size));
+        else if (InFixed(*BaseAddress) && PlacedAt(*BaseAddress) != g_Placed.end())
+            at = uintptr_t(*BaseAddress);
+        if (at) {
+            const uintptr_t begin = at & ~uintptr_t(0xFFF);
+            const uintptr_t end = (uintptr_t(at) + size + 0xFFF) & ~uintptr_t(0xFFF);
+            if ((type & MEM_COMMIT) &&
+                !VirtualAlloc(reinterpret_cast<void*>(begin), end - begin, MEM_COMMIT, HostProtect(Protect))) {
+                LOG_WARN("NtAllocateVirtualMemory: commit %08X+%lu in the fixed range failed", uint32_t(begin), ULONG(size));
+                if (type & MEM_RESERVE)
+                    g_Placed.erase(at);
+                return xbox::X_STATUS_NO_MEMORY;
+            }
+            *BaseAddress = reinterpret_cast<void*>(begin);
+            *AllocationSize = ULONG((type & MEM_RESERVE) ? g_Placed[at] : uint32_t(end - begin));
+            ++g_LayoutGeneration;
+            return xbox::X_STATUS_SUCCESS;
+        }
+    }
     NTSTATUS status = -1;
     // New reservations are write-watched, as the game's other memory, for netplay's snapshots (net/state.h);
     // without it if Windows refuses (the snapshots then compare those pages instead).
@@ -285,6 +414,23 @@ NTSTATUS XBAPI NtAllocateVirtualMemory(void** BaseAddress, ULONG_PTR ZeroBits, U
 
 NTSTATUS XBAPI NtFreeVirtualMemory(void** BaseAddress, ULONG* FreeSize, ULONG FreeType)
 {
+    if (InFixed(*BaseAddress)) {
+        std::lock_guard<std::mutex> lock(g_PlaceLock);
+        auto it = PlacedAt(*BaseAddress);
+        if (it == g_Placed.end())
+            return xbox::X_STATUS_INVALID_PARAMETER;
+        if (FreeType & MEM_RELEASE) {
+            VirtualFree(reinterpret_cast<void*>(it->first), it->second, MEM_DECOMMIT);
+            *FreeSize = it->second;
+            g_Placed.erase(it);
+        } else {
+            const uintptr_t begin = uintptr_t(*BaseAddress) & ~uintptr_t(0xFFF);
+            const uint32_t length = *FreeSize ? *FreeSize : uint32_t(it->first + it->second - begin);
+            VirtualFree(reinterpret_cast<void*>(begin), length, MEM_DECOMMIT);
+        }
+        ++g_LayoutGeneration;
+        return xbox::X_STATUS_SUCCESS;
+    }
     SIZE_T size = *FreeSize;
     if (FreeType & MEM_RELEASE) {
         std::lock_guard<std::mutex> lock(g_TrackLock);
@@ -298,8 +444,15 @@ NTSTATUS XBAPI NtFreeVirtualMemory(void** BaseAddress, ULONG* FreeSize, ULONG Fr
 
 NTSTATUS XBAPI NtQueryVirtualMemory(void* BaseAddress, MEMORY_BASIC_INFORMATION* MemoryInformation)
 {
-    return ::NtQueryVirtualMemory(GetCurrentProcess(), BaseAddress, 0 /*MemoryBasicInformation*/, MemoryInformation,
-        sizeof(MEMORY_BASIC_INFORMATION), nullptr);
+    const NTSTATUS status = ::NtQueryVirtualMemory(GetCurrentProcess(), BaseAddress, 0 /*MemoryBasicInformation*/,
+        MemoryInformation, sizeof(MEMORY_BASIC_INFORMATION), nullptr);
+    if (status >= 0 && InFixed(BaseAddress)) { // the placed reservation, as Windows would show its own
+        std::lock_guard<std::mutex> lock(g_PlaceLock);
+        auto it = PlacedAt(BaseAddress);
+        if (it != g_Placed.end())
+            MemoryInformation->AllocationBase = reinterpret_cast<void*>(it->first);
+    }
+    return status;
 }
 
 KERNEL_EXPORT(184, NtAllocateVirtualMemory);
@@ -318,7 +471,6 @@ KERNEL_EXPORT(217, NtQueryVirtualMemory);
 
 namespace {
 
-constexpr uint32_t kArenaSize = 48u << 20;
 constexpr uint32_t kArenaMagic = 0x4C4F4F50; // 'POOL'
 constexpr int kClasses = 21;                 // block sizes 32 B .. 32 MiB, powers of two
 constexpr uint32_t kDeferred = 8192;
@@ -407,27 +559,39 @@ void HeapFreeBlock(void* p)
 
 } // namespace
 
-bool SetDeterministicPool(bool on)
+// The arena, made the first time: at the start of the fixed range (else anywhere, in the game's virtual memory).
+bool EnsureArena()
 {
-    std::lock_guard<std::mutex> lock(g_PoolLock);
-    if (on && !g_Arena) {
-        // In the game's virtual memory (released when it reboots), write-watched like the rest of it.
-        void* base = VirtualAlloc(nullptr, kArenaSize, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE);
+    if (g_Arena)
+        return true;
+    void* base = nullptr;
+    if (EnsureFixed())
+        base = VirtualAlloc(g_Fixed, kArenaSize, MEM_COMMIT, PAGE_READWRITE);
+    if (!base) {
+        base = VirtualAlloc(nullptr, kArenaSize, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE);
         if (!base) {
             LOG_ERROR("Netplay pool: no room for its %u MiB", kArenaSize >> 20);
             return false;
         }
-        {
-            std::lock_guard<std::mutex> track(g_TrackLock);
-            g_VirtualBases.insert(base);
-            ++g_LayoutGeneration;
-        }
-        g_Arena = static_cast<uint8_t*>(base);
-        ArenaHeader& a = Arena();
-        a.magic = kArenaMagic;
-        a.top = (sizeof(ArenaHeader) + 31) & ~31u;
-        LOG_INFO("Netplay pool: %u MiB at %p", kArenaSize >> 20, base);
+        std::lock_guard<std::mutex> track(g_TrackLock);
+        g_VirtualBases.insert(base); // released when the game reboots
     }
+    ++g_LayoutGeneration;
+    g_Arena = static_cast<uint8_t*>(base);
+    ArenaHeader& a = Arena();
+    a.magic = kArenaMagic;
+    a.top = (sizeof(ArenaHeader) + 31) & ~31u;
+    LOG_INFO("Netplay pool: %u MiB at %p", kArenaSize >> 20, base);
+    return true;
+}
+
+bool UseArena() { return g_Arena && (g_ArenaOn || g_DetAddresses); }
+
+bool SetDeterministicPool(bool on)
+{
+    std::lock_guard<std::mutex> lock(g_PoolLock);
+    if (on && !EnsureArena())
+        return false;
     if (!on && g_Arena && g_ArenaOn) {
         // No rollback can come back now: the heap blocks the game freed meanwhile are freed.
         ArenaHeader& a = Arena();
@@ -445,9 +609,9 @@ bool SetDeterministicPool(bool on)
 void* XBAPI ExAllocatePoolWithTag(ULONG NumberOfBytes, ULONG Tag)
 {
     (void)Tag;
-    if (g_ArenaOn) {
+    if (UseArena()) {
         std::lock_guard<std::mutex> lock(g_PoolLock);
-        if (g_ArenaOn) {
+        if (UseArena()) {
             if (void* p = ArenaAlloc(NumberOfBytes))
                 return p;
             static bool logged = false;
@@ -517,6 +681,15 @@ std::vector<std::pair<uintptr_t, size_t>> GameMemoryRegions()
             }
         }
     }
+    if (g_Fixed) { // the fixed range's committed parts (the pool's arena, the game's placed memory)
+        auto* p = g_Fixed;
+        MEMORY_BASIC_INFORMATION info;
+        while (p < g_Fixed + kFixedSize && VirtualQuery(p, &info, sizeof(info)) && info.AllocationBase == g_Fixed) {
+            if (info.State == MEM_COMMIT && !(info.Protect & (PAGE_GUARD | PAGE_NOACCESS)))
+                regions.push_back({ uintptr_t(info.BaseAddress), info.RegionSize });
+            p += info.RegionSize;
+        }
+    }
     std::lock_guard<std::mutex> lock(g_TrackLock);
     for (void* base : g_VirtualBases) {
         auto* p = static_cast<uint8_t*>(base);
@@ -576,8 +749,22 @@ void ResetMemoryForReboot()
             blocks += HeapFree(GetProcessHeap(), 0, block) ? 1 : 0;
         g_VirtualBases.clear();
         g_PoolBlocks.clear();
-        g_Arena = nullptr; // it was one of the virtual bases
         g_ArenaOn = false;
+        if (g_Arena && g_Arena != g_Fixed)
+            g_Arena = nullptr; // it was one of the virtual bases
+    }
+    if (g_Fixed) { // the fixed range stays reserved: the game's placed memory goes, the arena starts empty
+        std::lock_guard<std::mutex> lock(g_PlaceLock);
+        for (const auto& [base, size] : g_Placed)
+            VirtualFree(reinterpret_cast<void*>(base), size, MEM_DECOMMIT);
+        g_Placed.clear();
+        if (g_Arena == g_Fixed) {
+            VirtualFree(g_Arena, kArenaSize, MEM_DECOMMIT);
+            VirtualAlloc(g_Arena, kArenaSize, MEM_COMMIT, PAGE_READWRITE);
+            ArenaHeader& a = Arena();
+            a.magic = kArenaMagic;
+            a.top = (sizeof(ArenaHeader) + 31) & ~31u;
+        }
     }
     std::lock_guard<std::mutex> lock(g_ContigLock);
     uint64_t used = 0;

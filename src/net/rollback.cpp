@@ -503,8 +503,10 @@ void Stop(const char* why)
     }
     LOG_INFO("Netplay: rollback session ends (%s)", why);
     input::SetPadSource(nullptr);
-    if (!g_Rebooting)
+    if (!g_Rebooting) {
         audio::SetDeterministic(false);
+        kernel::SetDeterministicAddresses(false);
+    }
     kernel::SetDeterministicPool(false);
     kernel::SetFixedClock(false);
     StateDisarm();
@@ -750,9 +752,17 @@ void StartSyncTest(uint32_t distance, uint32_t every)
     g_Mode = Mode::Arming;
 }
 
+bool g_TestBootPending = false; // the test restarted the level: the session survives that reboot
+
 void StartNetTest(bool record, const std::string& name, uint32_t frames)
 {
     Stop("a new one starts");
+    // Both runs start the level the same way: restarted with deterministic addresses, so that everything the
+    // level allocates while it loads is placed the same.
+    if (!kernel::SetDeterministicAddresses(true))
+        LOG_WARN("nettest: no deterministic addresses on this PC");
+    g_TestBootPending = true;
+    kernel::RestartMission();
     g_Distance = 0; // no rollback: frames are only saved (their checksums)
     g_Every = 1;
     g_Test = record ? Test::Record : Test::Compare;
@@ -785,8 +795,14 @@ void ResetRollbackForReboot()
     // The sound layer forgets its model with everything else (audio::ResetForReboot): the game's memory, which the
     // model's packets point into, is about to go.
     g_Rebooting = true;
+    const bool keepTest = g_TestBootPending && g_Mode == Mode::Arming;
     Stop("the game restarts");
     g_Rebooting = false;
+    if (keepTest) { // nettest restarted the level: it starts when the new one has settled
+        g_TestBootPending = false;
+        g_Mode = Mode::Arming;
+        LOG_INFO("nettest: waiting for the restarted level");
+    }
 }
 
 } // namespace swrots::net
