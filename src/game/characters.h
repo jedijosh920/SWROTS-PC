@@ -199,6 +199,9 @@ std::vector<std::string> CharacterClasses(bool all);
 
 // True once a level's player was created since the last boot (a level is running).
 bool PlayerInLevel();
+// The class the level created its player in (as the level names it; empty in the front end, whose "level" has a
+// player of no class, and before a level started).
+const std::string& LevelPlayerClass();
 
 // Whether a change of character restarts the running mission at once ([Debug] AutoRestart, on by
 // default); otherwise it applies from the next level start.

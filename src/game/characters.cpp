@@ -1319,6 +1319,11 @@ bool PlayerInLevel()
     return g_PlayerSpawned;
 }
 
+const std::string& LevelPlayerClass()
+{
+    return g_LevelClassName;
+}
+
 void SetRestartOnChange(bool enabled)
 {
     g_RestartOnChange = enabled;

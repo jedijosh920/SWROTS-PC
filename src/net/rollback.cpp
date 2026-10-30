@@ -273,11 +273,24 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
     if (g_Mode == Mode::Off)
         return swapCount;
     if (g_Mode == Mode::Arming) {
-        // Only the game's own frames in a level: not the movies (their player swaps from threads of its own),
-        // the front end's menus or a level loading.
-        if (!game::PlayerInLevel())
+        // Only the game's own frames in a level, once it has settled: not the movies (their player swaps from
+        // threads of its own), not the front end (a "level" whose player has no class), not a level still loading
+        // (the game allocates memory every frame then, and its main thread waits for the loading threads, which
+        // the fixed clock would hold up). Settled: the same thread swapping, with no allocation, for a second.
+        static uint32_t failures = 0, settled = 0, settledGeneration = 0;
+        static DWORD settledThread = 0;
+        if (!game::PlayerInLevel() || game::LevelPlayerClass().empty()) {
+            settled = 0;
             return swapCount;
-        static uint32_t failures = 0;
+        }
+        const uint32_t generation = kernel::MemoryLayoutGeneration();
+        if (generation != settledGeneration || GetCurrentThreadId() != settledThread) {
+            settledGeneration = generation;
+            settledThread = GetCurrentThreadId();
+            settled = 0;
+        }
+        if (++settled < uint32_t(std::max(30, GetSettings().fpsLimit)))
+            return swapCount;
         g_MainThread = GetCurrentThreadId();
         g_Fps = uint32_t(std::max(1, GetSettings().fpsLimit));
         g_SwapBase = swapCount;
@@ -301,7 +314,7 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
     }
     if (GetCurrentThreadId() != g_MainThread)
         return swapCount; // not the game's frames (e.g. a movie player's)
-    if (!game::PlayerInLevel()) {
+    if (!game::PlayerInLevel() || game::LevelPlayerClass().empty()) {
         Suspend("the level ended");
         return swapCount;
     }
@@ -311,7 +324,15 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
     const uint32_t next = g_Frame + 1;
 
     if (kernel::MemoryLayoutGeneration() != StateLayoutGeneration()) {
-        // The game allocated or freed memory: the snapshots no longer cover it exactly.
+        // The game allocated or freed memory: the snapshots no longer cover it exactly. Several frames in a row:
+        // it is loading something; wait for it to settle (with the PC's clocks: it may wait on its own threads).
+        static uint32_t lastRearmFrame = 0, rearmsInARow = 0;
+        rearmsInARow = next == lastRearmFrame + 1 ? rearmsInARow + 1 : 0;
+        lastRearmFrame = next;
+        if (rearmsInARow >= 3) {
+            Suspend("the game is allocating memory every frame (loading)");
+            return swapCount;
+        }
         g_Resim = false;
         if (!wasResim)
             SampleInputs(next);
