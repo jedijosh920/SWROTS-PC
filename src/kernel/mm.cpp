@@ -384,7 +384,10 @@ NTSTATUS XBAPI NtAllocateVirtualMemory(void** BaseAddress, ULONG_PTR ZeroBits, U
     ULONG AllocationType, ULONG Protect)
 {
     SIZE_T size = *AllocationSize;
-    const ULONG type = AllocationType & ~kMemNoZero;
+    ULONG type = AllocationType & ~kMemNoZero;
+    // A commit with no address reserves too (as on Windows): XAPI's heap makes its large blocks so (RtlAllocateHeap).
+    if ((type & MEM_COMMIT) && !*BaseAddress)
+        type |= MEM_RESERVE;
     if (g_Fixed && (g_DetAddresses || InFixed(*BaseAddress))) {
         // Netplay: new reservations placed in the fixed range; commits in a placed reservation.
         std::lock_guard<std::mutex> lock(g_PlaceLock);
@@ -432,7 +435,7 @@ NTSTATUS XBAPI NtAllocateVirtualMemory(void** BaseAddress, ULONG_PTR ZeroBits, U
     *AllocationSize = ULONG(size);
     if (status < 0)
         LOG_WARN("NtAllocateVirtualMemory(%p, %lu, %08lX) -> %08lX", *BaseAddress, size, AllocationType, status);
-    else if (AllocationType & MEM_RESERVE) {
+    else if (type & MEM_RESERVE) {
         std::lock_guard<std::mutex> lock(g_TrackLock);
         g_VirtualBases.insert(*BaseAddress);
     }
