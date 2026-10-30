@@ -501,11 +501,28 @@ NTSTATUS XBAPI NtQueryVirtualMemory(void* BaseAddress, MEMORY_BASIC_INFORMATION*
 {
     const NTSTATUS status = ::NtQueryVirtualMemory(GetCurrentProcess(), BaseAddress, 0 /*MemoryBasicInformation*/,
         MemoryInformation, sizeof(MEMORY_BASIC_INFORMATION), nullptr);
-    if (status >= 0 && InFixed(BaseAddress)) { // the placed reservation, as Windows would show its own
+    if (status >= 0 && InFixed(BaseAddress) && uintptr_t(BaseAddress) >= kFixedBase + kArenaSize) {
+        // The fixed range is one Windows reservation: as Windows would show the game's own reservations, each placed
+        // one is an allocation of its own (its regions end with it), and what is between them is free.
         std::lock_guard<std::mutex> lock(g_PlaceLock);
+        MEMORY_BASIC_INFORMATION& m = *MemoryInformation;
+        const uintptr_t at = uintptr_t(m.BaseAddress);
         auto it = PlacedAt(BaseAddress);
-        if (it != g_Placed.end())
-            MemoryInformation->AllocationBase = reinterpret_cast<void*>(it->first);
+        if (it != g_Placed.end()) {
+            m.AllocationBase = reinterpret_cast<void*>(it->first);
+            const uintptr_t end = it->first + it->second;
+            if (at + m.RegionSize > end)
+                m.RegionSize = end - at;
+        } else {
+            auto next = g_Placed.upper_bound(uintptr_t(BaseAddress));
+            const uintptr_t end = next == g_Placed.end() ? kFixedBase + kFixedSize : next->first;
+            m.AllocationBase = nullptr;
+            m.AllocationProtect = 0;
+            m.State = MEM_FREE;
+            m.Protect = PAGE_NOACCESS;
+            m.Type = 0;
+            m.RegionSize = end - at;
+        }
     }
     return status;
 }
