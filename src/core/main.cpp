@@ -48,6 +48,7 @@
 #include "kernel/kernel.h"
 #include "kernel/mm.h"
 #include "kernel/reboot.h"
+#include "kernel/sched.h"
 #include "net/rollback.h"
 #include "xapi/xapi.h"
 #include "version.h"
@@ -174,6 +175,8 @@ static BootConfig g_Boot;
 static void StartGame(const void* launchData)
 {
     kernel::BootInit(launchData);
+    if (kernel::SchedActive()) // a netplay match's start: the sound model from the start too
+        audio::SetDeterministic(true);
     kernel::InstallThunks(g_Xbe.KernelThunkAddress());
     kernel::InstallFsPatches();
     xapi::InstallHooks();

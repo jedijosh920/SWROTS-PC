@@ -16,6 +16,8 @@
 #include "kernel/kernel.h"
 #include "kernel/mm.h"
 #include "kernel/reboot.h"
+#include "kernel/clock.h"
+#include "kernel/sched.h"
 #include "net/rollback.h"
 #include "xapi/xapi.h"
 
@@ -425,6 +427,11 @@ static const double kRefreshHz = 60.0;
 // could not stop them and restarted the process).
 static void WaitForVBlank()
 {
+    if (kernel::SchedHolding()) { // the deterministic scheduler: the next vblank of the fixed clock
+        constexpr uint64_t kPeriod = kernel::kClockUnitsPerSecond / 60;
+        kernel::SchedWaitUntil((kernel::FixedClockPeek() / kPeriod + 1) * kPeriod);
+        return;
+    }
     static LARGE_INTEGER freq;
     static LONGLONG epoch = 0;
     if (!freq.QuadPart)

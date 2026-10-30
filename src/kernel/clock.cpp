@@ -2,6 +2,8 @@
 
 #include "kernel/clock.h"
 
+#include "kernel/sched.h"
+
 #include <windows.h>
 
 #include <algorithm>
@@ -20,6 +22,7 @@ constexpr uint32_t kStepsPerFrame = 1024;
 
 std::atomic<bool> g_On{ false };
 std::atomic<uint32_t> g_Thread{ 0 };
+std::atomic<bool> g_AnyThread{ false };
 std::atomic<uint64_t> g_FrameLength{ kClockUnitsPerSecond / 30 };
 // The clock's state, saved and restored with the game (FixedClockState): only what the game's frames do moves it.
 struct ClockState {
@@ -32,12 +35,24 @@ uint32_t g_ReadsMax = 0;
 
 } // namespace
 
-void SetFixedClock(bool on, uint32_t thread)
+void SetFixedClock(bool on, uint32_t thread, bool anyThread)
 {
+    if (on && g_On) { // already on (the scheduler's): its time goes on
+        if (!g_AnyThread)
+            g_Thread = thread;
+        return;
+    }
     g_Thread = thread;
+    g_AnyThread = anyThread;
     g_ReadsMax = 0;
     g_State = { kOrigin, 0, 0 };
     g_On = on;
+}
+
+void FixedClockAdvanceTo(uint64_t time)
+{
+    if (g_State.now < time)
+        g_State.now = time;
 }
 
 bool FixedClockOn() { return g_On; }
@@ -59,7 +74,7 @@ void SetFixedClockFrame(uint32_t frame, uint32_t framesPerSecond)
 
 uint64_t FixedClockNow()
 {
-    if (GetCurrentThreadId() != g_Thread)
+    if (g_AnyThread ? !SchedHolding() : GetCurrentThreadId() != g_Thread)
         return g_State.now;
     // Uncapped: a loop on the main thread waiting for the clock to pass a point (the engine's frame limiter) ends,
     // after the same number of reads every time the frame is played.

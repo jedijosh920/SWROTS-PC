@@ -25,6 +25,7 @@
 #include "kernel/exports.h"
 #include "kernel/host_nt.h"
 #include "kernel/kernel.h"
+#include "kernel/sched.h"
 #include "kernel/reboot.h"
 
 namespace swrots::kernel {
@@ -452,9 +453,30 @@ NTSTATUS XBAPI NtOpenFile(HANDLE* FileHandle, ACCESS_MASK DesiredAccess, xbox::O
     return NtCreateFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, nullptr, 0, ShareAccess, FILE_OPEN, OpenOptions);
 }
 
+// The deterministic scheduler (kernel/sched.h): an asynchronous read or write is finished before it returns (when
+// the PC finishes it is not deterministic), its event set then, and its completion routine run at the thread's
+// next alertable wait, by the scheduler.
+static NTSTATUS FinishIo(NTSTATUS status, xbox::IO_STATUS_BLOCK* IoStatusBlock, xbox::PIO_APC_ROUTINE ApcRoutine,
+    void* ApcContext)
+{
+    if (status == STATUS_PENDING) {
+        auto* iosb = reinterpret_cast<volatile IO_STATUS_BLOCK*>(IoStatusBlock);
+        while (iosb->Status == STATUS_PENDING)
+            SwitchToThread();
+        status = iosb->Status;
+    }
+    if (ApcRoutine && status >= 0)
+        SchedQueueApc(reinterpret_cast<ApcFunction>(ApcRoutine), ApcContext, IoStatusBlock);
+    return status;
+}
+
 NTSTATUS XBAPI NtReadFile(HANDLE FileHandle, HANDLE Event, xbox::PIO_APC_ROUTINE ApcRoutine, void* ApcContext,
     xbox::IO_STATUS_BLOCK* IoStatusBlock, void* Buffer, ULONG Length, LARGE_INTEGER* ByteOffset)
 {
+    if (SchedHolding())
+        return FinishIo(Check("NtReadFile", FileHandle, ::NtReadFile(FileHandle, Event, nullptr, nullptr,
+            reinterpret_cast<PIO_STATUS_BLOCK>(IoStatusBlock), Buffer, Length, ByteOffset, nullptr)),
+            IoStatusBlock, ApcRoutine, ApcContext);
     return Check("NtReadFile", FileHandle, ::NtReadFile(FileHandle, Event, reinterpret_cast<PIO_APC_ROUTINE>(ApcRoutine),
         ApcContext, reinterpret_cast<PIO_STATUS_BLOCK>(IoStatusBlock), Buffer, Length, ByteOffset, nullptr));
 }
@@ -462,6 +484,10 @@ NTSTATUS XBAPI NtReadFile(HANDLE FileHandle, HANDLE Event, xbox::PIO_APC_ROUTINE
 NTSTATUS XBAPI NtWriteFile(HANDLE FileHandle, HANDLE Event, xbox::PIO_APC_ROUTINE ApcRoutine, void* ApcContext,
     xbox::IO_STATUS_BLOCK* IoStatusBlock, void* Buffer, ULONG Length, LARGE_INTEGER* ByteOffset)
 {
+    if (SchedHolding())
+        return FinishIo(Check("NtWriteFile", FileHandle, ::NtWriteFile(FileHandle, Event, nullptr, nullptr,
+            reinterpret_cast<PIO_STATUS_BLOCK>(IoStatusBlock), Buffer, Length, ByteOffset, nullptr)),
+            IoStatusBlock, ApcRoutine, ApcContext);
     return Check("NtWriteFile", FileHandle, ::NtWriteFile(FileHandle, Event, reinterpret_cast<PIO_APC_ROUTINE>(ApcRoutine),
         ApcContext, reinterpret_cast<PIO_STATUS_BLOCK>(IoStatusBlock), Buffer, Length, ByteOffset, nullptr));
 }

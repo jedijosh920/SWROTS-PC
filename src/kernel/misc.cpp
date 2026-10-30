@@ -23,6 +23,7 @@
 #include "core/window.h"
 #include "kernel/mm.h"
 #include "kernel/reboot.h"
+#include "kernel/sched.h"
 #include "kernel/sha1.h"
 
 namespace swrots::kernel {
@@ -538,6 +539,7 @@ void Init(const XbeFile& xbe, const Paths& paths)
 // reboot, in contiguous memory as there.
 void BootInit(const void* launchData)
 {
+    SchedBoot(); // the deterministic scheduler, when a netplay match asked for it
     if (!launchData && !g_PendingLaunchData.empty())
         launchData = g_PendingLaunchData.data();
     LaunchDataPage = nullptr;

@@ -18,6 +18,7 @@
 #include "core/xbe.h"
 #include "game/game.h"
 #include "kernel/kernel.h"
+#include "kernel/sched.h"
 
 namespace swrots::kernel {
 
@@ -156,10 +157,12 @@ XboxThread* AdoptCurrentThread()
 static void __cdecl RunXboxThread(XboxThread* t)
 {
     BindThread(t);
+    SchedThreadStart(t); // the deterministic scheduler: its first turn
     if (t->system)
         t->system(t->start, t->context);
     else
         t->start(t->context);
+    SchedThreadEnd();
 }
 
 // Calls fn(t) on the stack whose top is `top`, and comes back to the caller's.
@@ -256,6 +259,8 @@ HANDLE CreateXboxThread(StartRoutine start, void* context, SystemRoutine system,
     }
     if (threadId)
         *threadId = tid;
+    t->threadId = tid;
+    SchedAddThread(t, suspended); // its turns, in the order threads are made
     if (!suspended)
         ResumeThread(h);
     return h;

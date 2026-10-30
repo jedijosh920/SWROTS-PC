@@ -283,3 +283,24 @@ the reboot on (see above), so that loading takes the same number of frames and t
 Note for real matches: code stubs are taken in the order the port makes them, from the first start of the game. Two
 PCs that did different things before a match (one played a mission) may have made stubs in a different order; the
 stubs should be made at fixed places per patch site, or all made at startup.
+
+### The deterministic scheduler (kernel/sched.cpp)
+
+While a netplay match asks for it (`kernel::SetDeterministicBoot`, from the next start of the game: nettest restarts
+the level with it), the game's threads take turns:
+
+- One game thread runs at a time: it holds the baton. It hands it over only where it waits (`GameWait`: every kernel
+  wait, sleep and critical section), yields (`KeDelayExecutionThread(0)`, `NtYieldExecution`) or waits for the
+  vertical blank, to the next thread in creation order whose wait is over (its handles polled without blocking, or
+  its timeout reached on the fixed clock).
+- When no thread can run, the fixed clock jumps to the earliest timeout or timer: time passes only when the game
+  waits, the same on every PC. Every scheduled thread's clock reads move it on (a busy wait on the clock ends).
+- Timers and DPCs are fired and run by the scheduler, on the thread holding the baton, when the clock reaches them
+  (no timer thread, no DPC thread).
+- Asynchronous file reads and writes finish before they return, their completion routines run at the thread's next
+  alertable wait.
+- The sound model and the fixed clock are on from the start.
+- What only the PC can end (an event set by a host thread) is waited for in real time and counted in the log
+  (`wait(s) only the PC could end`): those are where determinism is still lost.
+- The vertical blank is the fixed clock's: the game runs as fast as the PC allows (pacing to real time is for later,
+  without touching the fixed clock).

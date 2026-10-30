@@ -18,6 +18,8 @@
 #include "kernel/host_nt.h"
 #include "kernel/kernel.h"
 #include "kernel/reboot.h"
+#include "kernel/sched.h"
+#include "kernel/clock.h"
 
 namespace swrots::kernel {
 
@@ -127,7 +129,7 @@ static void DpcThreadMain()
 static void QueueDpc(KDPC* dpc, void* arg1, void* arg2)
 {
     std::lock_guard<std::mutex> lock(g_DpcLock);
-    if (!g_DpcThreadStarted) {
+    if (!g_DpcThreadStarted && !SchedActive()) { // the scheduler runs DPCs itself (RunDueTimersAndDpcs)
         std::thread(DpcThreadMain).detach();
         g_DpcThreadStarted = true;
     }
@@ -278,7 +280,8 @@ static std::condition_variable g_TimerCv;
 static std::unordered_map<KTIMER*, TimerEntry> g_Timers;
 static bool g_TimerThreadStarted = false;
 
-static ULONGLONG NowMs() { return GetTickCount64(); }
+// The fixed clock's milliseconds while the deterministic scheduler runs (it fires the timers), else the PC's.
+static ULONGLONG NowMs() { return SchedActive() ? FixedClockPeek() / 10000 : GetTickCount64(); }
 
 static void TimerThreadMain()
 {
@@ -331,7 +334,7 @@ void XBAPI KeInitializeTimerEx(KTIMER* Timer, ULONG Type)
 BOOLEAN XBAPI KeSetTimerEx(KTIMER* Timer, LARGE_INTEGER DueTime, LONG Period, KDPC* Dpc)
 {
     std::lock_guard<std::mutex> lock(g_TimerLock);
-    if (!g_TimerThreadStarted) {
+    if (!g_TimerThreadStarted && !SchedActive()) { // the scheduler fires them itself (RunDueTimersAndDpcs)
         std::thread(TimerThreadMain).detach();
         g_TimerThreadStarted = true;
     }
@@ -357,6 +360,68 @@ BOOLEAN XBAPI KeCancelTimer(KTIMER* Timer)
     Timer->Header.Inserted = FALSE;
     return g_Timers.erase(Timer) != 0;
 }
+// While the deterministic scheduler runs (kernel/sched.h), it fires timers and runs DPCs itself, on the game thread
+// that holds the baton, when the fixed clock reaches them: the earliest timer's due time, or ~0.
+uint64_t NextTimerDueMs()
+{
+    std::lock_guard<std::mutex> lock(g_TimerLock);
+    uint64_t next = ~0ull;
+    for (const auto& [timer, entry] : g_Timers)
+        next = std::min<uint64_t>(next, entry.due);
+    return next;
+}
+
+bool RunDueTimersAndDpcs(uint64_t nowMs)
+{
+    bool any = false;
+    // Due timers, in due order (then by address: the same on every PC with deterministic addresses).
+    for (;;) {
+        KTIMER* due = nullptr;
+        KDPC* dpc = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_TimerLock);
+            ULONGLONG best = ~0ull;
+            for (const auto& [timer, entry] : g_Timers) {
+                if (entry.due <= nowMs && (entry.due < best || (entry.due == best && timer < due))) {
+                    best = entry.due;
+                    due = timer;
+                }
+            }
+            if (!due)
+                break;
+            TimerEntry& entry = g_Timers[due];
+            dpc = due->Dpc;
+            SignalObject(&due->Header);
+            if (entry.period > 0) {
+                entry.due += ULONGLONG(entry.period);
+            } else {
+                due->Header.Inserted = FALSE;
+                g_Timers.erase(due);
+            }
+        }
+        if (dpc)
+            QueueDpc(dpc, nullptr, nullptr);
+        any = true;
+    }
+    // Queued DPCs, in order, at dispatch level.
+    for (;;) {
+        KDPC* dpc = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_DpcLock);
+            if (g_DpcQueue.empty())
+                break;
+            dpc = g_DpcQueue.front();
+            g_DpcQueue.pop_front();
+            dpc->Inserted = FALSE;
+        }
+        UCHAR old = RaiseIrql(kDispatchLevel);
+        dpc->DeferredRoutine(dpc, dpc->DeferredContext, dpc->SystemArgument1, dpc->SystemArgument2);
+        LowerIrql(old);
+        any = true;
+    }
+    return any;
+}
+
 KERNEL_EXPORT(113, KeInitializeTimerEx);
 KERNEL_EXPORT(150, KeSetTimerEx);
 KERNEL_EXPORT(149, KeSetTimer);
@@ -407,7 +472,14 @@ NTSTATUS XBAPI NtWaitForSingleObjectEx(HANDLE Handle, CHAR WaitMode, BOOLEAN Ale
     return StatusOfWait(GameWait(1, &Handle, FALSE, TimeoutToMs(Timeout), Alertable));
 }
 
-NTSTATUS XBAPI NtYieldExecution() { return ::NtYieldExecution(); }
+NTSTATUS XBAPI NtYieldExecution()
+{
+    if (SchedHolding()) {
+        SchedYield();
+        return X_STATUS_SUCCESS;
+    }
+    return ::NtYieldExecution();
+}
 
 KERNEL_EXPORT(189, NtCreateEvent);
 KERNEL_EXPORT(193, NtCreateSemaphore);
@@ -425,6 +497,10 @@ NTSTATUS XBAPI KeDelayExecutionThread(CHAR WaitMode, BOOLEAN Alertable, LARGE_IN
     if (ms == 0) { // a yield
         if (Rebooting())
             ExitGameThread();
+        if (SchedHolding()) {
+            SchedYield();
+            return X_STATUS_SUCCESS;
+        }
         return ::NtDelayExecution(Alertable, Interval);
     }
     return GameWait(0, nullptr, FALSE, ms, Alertable) == WAIT_IO_COMPLETION ? X_STATUS_USER_APC : X_STATUS_SUCCESS;
@@ -455,6 +531,7 @@ NTSTATUS XBAPI PsCreateSystemThreadEx(HANDLE* ThreadHandle, ULONG ThreadExtensio
 
 void XBAPI PsTerminateSystemThread(NTSTATUS ExitStatus)
 {
+    SchedThreadEnd();
     ExitThread(DWORD(ExitStatus));
 }
 
@@ -465,6 +542,7 @@ NTSTATUS XBAPI NtSuspendThread(HANDLE ThreadHandle, ULONG* PreviousSuspendCount)
 
 NTSTATUS XBAPI NtResumeThread(HANDLE ThreadHandle, ULONG* PreviousSuspendCount)
 {
+    SchedResumed(ThreadHandle);
     return ::NtResumeThread(ThreadHandle, PreviousSuspendCount);
 }
 

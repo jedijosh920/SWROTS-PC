@@ -18,6 +18,7 @@
 #include "input/controls.h"
 #include "kernel/clock.h"
 #include "kernel/kernel.h"
+#include "kernel/sched.h"
 #include "net/state.h"
 #include "net/watch.h"
 
@@ -486,9 +487,11 @@ void Suspend(const char* why)
     StopWatch("the session paused");
     LOG_INFO("Netplay: rollback session paused (%s)", why);
     input::SetPadSource(nullptr);
-    audio::SetDeterministic(false);
+    if (!kernel::SchedActive()) { // the deterministic scheduler keeps them on for the whole start of the game
+        audio::SetDeterministic(false);
+        kernel::SetFixedClock(false);
+    }
     kernel::SetDeterministicPool(false);
-    kernel::SetFixedClock(false);
     StateDisarm();
     g_Mode = Mode::Arming;
     g_Resim = false;
@@ -508,11 +511,14 @@ void Stop(const char* why)
     LOG_INFO("Netplay: rollback session ends (%s)", why);
     input::SetPadSource(nullptr);
     if (!g_Rebooting) {
-        audio::SetDeterministic(false);
+        if (!kernel::SchedActive())
+            audio::SetDeterministic(false);
         kernel::SetDeterministicAddresses(false);
+        kernel::SetDeterministicBoot(false);
     }
     kernel::SetDeterministicPool(false);
-    kernel::SetFixedClock(false);
+    if (!kernel::SchedActive())
+        kernel::SetFixedClock(false);
     StateDisarm();
     g_Mode = Mode::Off;
     g_Resim = false;
@@ -635,8 +641,10 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
         kernel::SetDeterministicPool(true); // pool blocks from an arena the snapshots cover
         if (!Arm(frameStack, 0)) {
             kernel::SetDeterministicPool(false);
-            audio::SetDeterministic(false);
-            kernel::SetFixedClock(false);
+            if (!kernel::SchedActive()) {
+                audio::SetDeterministic(false);
+                kernel::SetFixedClock(false);
+            }
             if (++failures == 600) // ten to twenty seconds of frames
                 Stop("the snapshots could not be armed");
             return swapCount;
@@ -765,6 +773,7 @@ void StartNetTest(bool record, const std::string& name, uint32_t frames)
     // level allocates while it loads is placed the same.
     if (!kernel::SetDeterministicAddresses(true))
         LOG_WARN("nettest: no deterministic addresses on this PC");
+    kernel::SetDeterministicBoot(true); // the game's threads take turns, on the fixed clock, from the restart on
     g_TestBootPending = true;
     kernel::RestartMission();
     g_Distance = 0; // no rollback: frames are only saved (their checksums)

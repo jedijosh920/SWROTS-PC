@@ -13,7 +13,11 @@ inline constexpr uint64_t kClockUnitsPerSecond = 10000000;
 
 // Turns the fixed clock on or off. `thread` is the host thread id of the game's main thread (the one that plays
 // the frames): only its reads move the clock on within a frame (below); other threads read the frame's start.
-void SetFixedClock(bool on, uint32_t thread = 0);
+// `anyThread` (the deterministic scheduler, kernel/sched.h): every scheduled thread's reads move it on, not one
+// thread's. Turning it on while it is on keeps its time.
+void SetFixedClock(bool on, uint32_t thread = 0, bool anyThread = false);
+// The scheduler moves it on to `time` (100 ns units) when no game thread can run (never back).
+void FixedClockAdvanceTo(uint64_t time);
 bool FixedClockOn();
 
 // The frame being played: its start is `frame` frames of 1/`framesPerSecond` s after the fixed clock's origin.

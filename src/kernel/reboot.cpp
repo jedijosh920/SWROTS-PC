@@ -27,6 +27,7 @@
 #include "game/game.h"
 #include "kernel/kernel.h"
 #include "kernel/reboot.h"
+#include "kernel/sched.h"
 
 namespace swrots::kernel {
 
@@ -194,10 +195,21 @@ bool UntrackGameHandle(HANDLE h)
     return g_GameHandles.erase(h) != 0;
 }
 
-void ExitGameThread() { ExitThread(0); }
+void ExitGameThread()
+{
+    SchedThreadEnd(); // the baton goes on (deterministic scheduler)
+    ExitThread(0);
+}
+
+HANDLE RebootEvent() { return g_RebootEvent; }
 
 DWORD GameWait(DWORD count, const HANDLE* handles, BOOL waitAll, DWORD ms, BOOL alertable)
 {
+    if (SchedHolding()) { // the deterministic scheduler: the wait is a turn handed over
+        if (g_Rebooting)
+            ExitGameThread();
+        return SchedWait(count, handles, waitAll, ms, alertable);
+    }
     if (!CurrentThread())
         return count ? WaitForMultipleObjectsEx(count, handles, waitAll, ms, alertable) : SleepEx(ms, alertable);
     if (count == 0) {
