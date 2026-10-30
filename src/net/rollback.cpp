@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "audio/audio.h"
@@ -184,6 +185,231 @@ bool PadFromSession(int port, input::GamePad& pad, uint32_t& packet)
     return true;
 }
 
+// --- The cross-run determinism test (nettest) ---------------------------------------------------------------------
+// Lockstep needs two PCs to start a match in the same state and to compute the same frames from the same inputs.
+// `nettest record <name>` writes, when the session starts, all the memory it covers (netplay\<name>.mem next to the
+// executable), then each frame's inputs and checksum, and every second every page's hash (<name>.frames); `nettest
+// compare <name>`, in another run, compares its memory with the recorded one when its session starts, plays the
+// recorded inputs, and reports the first frame whose checksum differs and which pages differ.
+
+enum class Test { None, Record, Compare };
+
+#pragma pack(push, 1)
+struct TestFrame {
+    uint32_t frame;
+    uint64_t checksum;
+    input::GamePad pads[kPorts];
+    uint32_t packets[kPorts];
+    uint32_t hashCount; // page hashes following (every second), else 0
+};
+#pragma pack(pop)
+
+Test g_Test = Test::None;
+std::string g_TestName;
+uint32_t g_TestFrames = 0;    // frames to record
+FILE* g_TestOut = nullptr;
+std::vector<TestFrame> g_TestRecorded;
+std::vector<std::vector<uint64_t>> g_TestHashes; // the recorded page hashes, by frame / hash interval
+uint32_t g_TestFirstBad = ~0u;
+uint32_t g_TestMismatches = 0;
+
+std::wstring TestPath(const char* extension)
+{
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring dir(exe);
+    dir = dir.substr(0, dir.find_last_of(L"\\/")) + L"\\netplay";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    std::wstring name(g_TestName.begin(), g_TestName.end());
+    return dir + L"\\" + name + L"." + std::wstring(extension, extension + std::strlen(extension));
+}
+
+struct DumpRegion {
+    char name[40];
+    uint32_t base, size, watched;
+};
+
+void TestDumpMemory()
+{
+    FILE* f = _wfopen(TestPath("mem").c_str(), L"wb");
+    if (!f) {
+        LOG_ERROR("nettest: cannot write the memory dump");
+        return;
+    }
+    StateForEachRegion(
+        [](const char* name, const uint8_t* base, uint32_t size, bool watched, void* ctx) {
+            DumpRegion r = {};
+            std::snprintf(r.name, sizeof(r.name), "%s", name);
+            r.base = uint32_t(uintptr_t(base));
+            r.size = size;
+            r.watched = watched;
+            std::fwrite(&r, sizeof(r), 1, static_cast<FILE*>(ctx));
+            std::fwrite(base, 1, size, static_cast<FILE*>(ctx));
+        },
+        f);
+    const long bytes = std::ftell(f);
+    std::fclose(f);
+    LOG_INFO("nettest: memory at the session's start written (%.1f MiB)", bytes / 1048576.0);
+}
+
+void TestCompareMemory()
+{
+    FILE* f = _wfopen(TestPath("mem").c_str(), L"rb");
+    if (!f) {
+        LOG_ERROR("nettest: no recorded memory to compare with (nettest record first)");
+        return;
+    }
+    struct Ctx {
+        FILE* f;
+        uint32_t regions = 0, moved = 0, differingRegions = 0, words = 0, shown = 0;
+        uint64_t differingBytes = 0;
+        std::vector<uint8_t> buffer;
+        std::string report;
+    } ctx;
+    ctx.f = f;
+    StateForEachRegion(
+        [](const char* name, const uint8_t* base, uint32_t size, bool, void* p) {
+            Ctx& c = *static_cast<Ctx*>(p);
+            ++c.regions;
+            DumpRegion r = {};
+            char line[200];
+            if (std::fread(&r, sizeof(r), 1, c.f) != 1) {
+                if (c.shown++ < 80) {
+                    std::snprintf(line, sizeof(line), "\n  %-24s %p: not in the recording", name, base);
+                    c.report += line;
+                }
+                return;
+            }
+            c.buffer.resize(r.size);
+            std::fread(c.buffer.data(), 1, r.size, c.f);
+            if (r.base != uint32_t(uintptr_t(base)) || r.size != size || std::strcmp(r.name, name) != 0) {
+                ++c.moved;
+                if (c.shown++ < 80) {
+                    std::snprintf(line, sizeof(line), "\n  %-24s %p %u KiB, recorded: %s %08X %u KiB", name, base,
+                        size / 1024, r.name, r.base, r.size / 1024);
+                    c.report += line;
+                }
+                return;
+            }
+            uint32_t regionWords = 0;
+            for (uint32_t at = 0; at + 4 <= size; at += 4) {
+                uint32_t was, now;
+                std::memcpy(&was, c.buffer.data() + at, 4);
+                std::memcpy(&now, base + at, 4);
+                if (was == now)
+                    continue;
+                ++regionWords;
+                if (c.shown++ < 80) {
+                    std::snprintf(line, sizeof(line), "\n  %-24s %08X: %08X recorded, %08X here", name,
+                        uint32_t(uintptr_t(base + at)), was, now);
+                    c.report += line;
+                }
+            }
+            if (regionWords) {
+                ++c.differingRegions;
+                c.words += regionWords;
+            }
+        },
+        &ctx);
+    std::fclose(f);
+    LOG_INFO("nettest: memory at the session's start: %u regions, %u placed differently, %u differing in %u word(s)%s",
+        ctx.regions, ctx.moved, ctx.differingRegions, ctx.words, ctx.report.c_str());
+}
+
+void TestLoadFrames()
+{
+    g_TestRecorded.clear();
+    g_TestHashes.clear();
+    FILE* f = _wfopen(TestPath("frames").c_str(), L"rb");
+    if (!f) {
+        LOG_ERROR("nettest: no recorded frames");
+        return;
+    }
+    TestFrame t;
+    while (std::fread(&t, sizeof(t), 1, f) == 1) {
+        g_TestRecorded.push_back(t);
+        std::vector<uint64_t> hashes(t.hashCount);
+        if (t.hashCount)
+            std::fread(hashes.data(), sizeof(uint64_t), t.hashCount, f);
+        g_TestHashes.push_back(std::move(hashes));
+    }
+    std::fclose(f);
+    LOG_INFO("nettest: %zu recorded frames", g_TestRecorded.size());
+}
+
+void TestRecordFrame(uint32_t frame, uint64_t checksum)
+{
+    if (!g_TestOut)
+        return;
+    const FrameInputs& in = InputsOf(frame);
+    TestFrame t = {};
+    t.frame = frame;
+    t.checksum = checksum;
+    std::memcpy(t.pads, in.pads, sizeof(t.pads));
+    std::memcpy(t.packets, in.packets, sizeof(t.packets));
+    std::vector<uint64_t> hashes;
+    if (frame % g_Fps == 0) {
+        StateCopyPageHashes(hashes);
+        t.hashCount = uint32_t(hashes.size());
+    }
+    std::fwrite(&t, sizeof(t), 1, g_TestOut);
+    if (t.hashCount)
+        std::fwrite(hashes.data(), sizeof(uint64_t), hashes.size(), g_TestOut);
+    if (frame >= g_TestFrames) {
+        std::fclose(g_TestOut);
+        g_TestOut = nullptr;
+        LOG_INFO("nettest: %u frames recorded", frame);
+    }
+}
+
+// Compare: the recorded inputs of `frame` instead of the PC's.
+bool TestInputs(uint32_t frame)
+{
+    if (frame >= g_TestRecorded.size())
+        return false;
+    const TestFrame& t = g_TestRecorded[frame];
+    FrameInputs& in = InputsOf(frame);
+    in.frame = frame;
+    std::memcpy(in.pads, t.pads, sizeof(in.pads));
+    std::memcpy(in.packets, t.packets, sizeof(in.packets));
+    return true;
+}
+
+void TestCompareFrame(uint32_t frame, uint64_t checksum)
+{
+    if (frame >= g_TestRecorded.size()) {
+        if (frame == g_TestRecorded.size())
+            LOG_INFO("nettest: end of the recording at frame %u: %u frame(s) differed, the first at %d", frame,
+                g_TestMismatches, g_TestFirstBad == ~0u ? -1 : int(g_TestFirstBad));
+        return;
+    }
+    const TestFrame& t = g_TestRecorded[frame];
+    if (t.checksum != checksum) {
+        ++g_TestMismatches;
+        if (g_TestFirstBad == ~0u) {
+            g_TestFirstBad = frame;
+            LOG_WARN("nettest: frame %u differs from the recording (the first)", frame);
+        }
+    }
+    // Every second: which pages differ (the first times).
+    const std::vector<uint64_t>& recorded = g_TestHashes[frame];
+    static uint32_t reports = 0;
+    if (!recorded.empty() && t.checksum != checksum && reports < 6) {
+        ++reports;
+        std::vector<uint64_t> now;
+        StateCopyPageHashes(now);
+        std::string text;
+        uint32_t count = 0;
+        for (uint32_t i = 0; i < now.size() && i < recorded.size(); ++i) {
+            if (now[i] == recorded[i])
+                continue;
+            if (count++ < 24)
+                text += "\n  " + StatePageName(i);
+        }
+        LOG_WARN("nettest: at frame %u, %u page(s) differ from the recording:%s", frame, count, text.c_str());
+    }
+}
+
 // --- the session -------------------------------------------------------------------------------------------------
 
 StateConfig Config()
@@ -271,6 +497,10 @@ void Stop(const char* why)
     if (g_Mode == Mode::Running)
         LogStats("end");
     StopWatch("the session ended");
+    if (g_TestOut) {
+        std::fclose(g_TestOut);
+        g_TestOut = nullptr;
+    }
     LOG_INFO("Netplay: rollback session ends (%s)", why);
     input::SetPadSource(nullptr);
     if (!g_Rebooting)
@@ -285,6 +515,9 @@ void Stop(const char* why)
 // Arms a new session where the game is now (the memory changed shape, or the snapshots could not go on).
 void Rearm(const void* frameStack, uint32_t frame, const char* why)
 {
+    if (g_Test != Test::None && g_Stats.rearms == 0)
+        LOG_WARN("nettest: a new snapshot session at frame %u (%s): the checksums from here on are of a new start",
+            frame, why);
     ++g_Stats.rearms;
     if (g_Stats.rearms <= 10)
         LOG_WARN("Netplay: new snapshot session at frame %u: %s", frame, why);
@@ -408,8 +641,20 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
         audio::OnFrame();
         WatchSetFrame(0, false);
         g_Mode = Mode::Running;
-        LOG_INFO("SyncTest: on, back %u frames every %u frames, at %u fps, the game's main thread %lu", g_Distance,
-            g_Every, g_Fps, g_MainThread);
+        if (g_Test == Test::Record) {
+            TestDumpMemory();
+            g_TestOut = _wfopen(TestPath("frames").c_str(), L"wb");
+            TestRecordFrame(0, StateChecksum(0));
+            LOG_INFO("nettest: recording %u frames as '%s'", g_TestFrames, g_TestName.c_str());
+        } else if (g_Test == Test::Compare) {
+            TestCompareMemory();
+            TestLoadFrames();
+            TestInputs(0);
+            TestCompareFrame(0, StateChecksum(0));
+        } else {
+            LOG_INFO("SyncTest: on, back %u frames every %u frames, at %u fps, the game's main thread %lu", g_Distance,
+                g_Every, g_Fps, g_MainThread);
+        }
         return g_SwapBase + g_Frame;
     }
     if (GetCurrentThreadId() != g_MainThread)
@@ -474,7 +719,12 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
         }
     } else {
         g_Checksums[next % kHistory] = checksum;
-        SampleInputs(next);
+        if (g_Test != Test::Compare || !TestInputs(next))
+            SampleInputs(next);
+        if (g_Test == Test::Record)
+            TestRecordFrame(next, checksum);
+        else if (g_Test == Test::Compare)
+            TestCompareFrame(next, checksum);
         if (g_Distance && next >= g_ArmFrame + g_Distance && next % g_Every == 0)
             BeginCheck(frameStack);
         if (g_Stats.frames % (g_Fps * 30) == 0)
@@ -492,10 +742,24 @@ bool RollbackActive() { return g_Mode == Mode::Running; }
 void StartSyncTest(uint32_t distance, uint32_t every)
 {
     Stop("a new one starts");
+    g_Test = Test::None;
     g_Distance = std::clamp<uint32_t>(distance, 1, 30);
     g_WatchRound = 0;
     g_Watched.clear();
     g_Every = std::max<uint32_t>(every, 1);
+    g_Mode = Mode::Arming;
+}
+
+void StartNetTest(bool record, const std::string& name, uint32_t frames)
+{
+    Stop("a new one starts");
+    g_Distance = 0; // no rollback: frames are only saved (their checksums)
+    g_Every = 1;
+    g_Test = record ? Test::Record : Test::Compare;
+    g_TestName = name;
+    g_TestFrames = std::max<uint32_t>(frames, 60);
+    g_TestFirstBad = ~0u;
+    g_TestMismatches = 0;
     g_Mode = Mode::Arming;
 }
 

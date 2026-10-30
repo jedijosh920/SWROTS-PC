@@ -681,6 +681,24 @@ std::string StateDescribeDifferences(const std::vector<uint64_t>& before, size_t
     return text;
 }
 
+void StateForEachRegion(RegionVisitor visit, void* context)
+{
+    for (const Region& r : g_S.regions)
+        visit(r.name, r.base, r.size, r.watched, context);
+}
+
+std::string StatePageName(uint32_t page)
+{
+    if (page >= g_S.pages)
+        return "?";
+    const Region& r = RegionOfPage(page);
+    char line[96];
+    std::snprintf(line, sizeof(line), "%s %p (+0x%X)", r.name, PageAddress(r, page), uint32_t(PageAddress(r, page) - r.base));
+    return line;
+}
+
+uint32_t StatePageCount() { return g_S.pages; }
+
 void RegisterHostState(const char* name, void* data, uint32_t size) { g_HostStates.push_back({ name, data, size }); }
 
 void ExcludeFromChecksum(const void* data, uint32_t size, const char* why)

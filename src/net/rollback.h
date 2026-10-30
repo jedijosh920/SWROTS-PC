@@ -26,6 +26,10 @@ bool RollbackActive();
 
 // SyncTest: from the next frame on, every `every` frames, back `distance` frames and played again.
 void StartSyncTest(uint32_t distance, uint32_t every);
+// The cross-run determinism test (lockstep): records the memory at the session's start, then each frame's inputs
+// and checksums, as `name` (netplay\<name>.* next to the executable); or compares a run with such a recording, the
+// recorded inputs played. Results in the log.
+void StartNetTest(bool record, const std::string& name, uint32_t frames);
 void StopRollback();
 // A line about the session for the console.
 std::string RollbackStatus();

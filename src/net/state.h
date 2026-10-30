@@ -74,6 +74,13 @@ bool StateKeepExpected();
 void StateDifferingWords(const std::vector<uint64_t>& before, std::vector<uint32_t>& out, size_t max);
 std::string StateDescribeDifferences(const std::vector<uint64_t>& before, size_t max);
 
+// The memory the session covers, region by region (name, address, size, write-watched), in address order.
+using RegionVisitor = void (*)(const char* name, const uint8_t* base, uint32_t size, bool watched, void* context);
+void StateForEachRegion(RegionVisitor visit, void* context);
+// Every page's hash (StateCopyPageHashes) is in this order: a page's index, described (region, address).
+std::string StatePageName(uint32_t page);
+uint32_t StatePageCount();
+
 // Port code that keeps simulation state in its own variables registers them (before a session starts): they are
 // saved and restored with the game.
 void RegisterHostState(const char* name, void* data, uint32_t size);

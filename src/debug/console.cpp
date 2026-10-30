@@ -1017,6 +1017,21 @@ void SyncTest(const std::vector<std::string>& words)
     Print(LineKind::Output, "  SyncTest from the next frame: back %d frames every %d frame(s)", distance, every);
 }
 
+// nettest record|compare <name> [<frames>]: the cross-run determinism test for lockstep (net/rollback.h).
+void NetTest(const std::vector<std::string>& words)
+{
+    const bool record = words.size() >= 3 && _stricmp(words[1].c_str(), "record") == 0;
+    const bool compare = words.size() >= 3 && _stricmp(words[1].c_str(), "compare") == 0;
+    if (!record && !compare) {
+        Print(LineKind::Output, "  nettest record <name> [<frames>] | nettest compare <name>");
+        return;
+    }
+    const int frames = words.size() >= 4 ? std::atoi(words[3].c_str()) : 1800;
+    net::StartNetTest(record, words[2], uint32_t(std::max(frames, 60)));
+    Print(LineKind::Output, "  nettest %s '%s' from the next settled level frame (results in the log)",
+        record ? "record" : "compare", words[2].c_str());
+}
+
 // Returns false when the line is for the game's own console.
 bool RunPortCommand(uint8_t* console, const std::string& line)
 {
@@ -1048,7 +1063,7 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         command != "infiniteforce" && command != "memory" && command != "team" &&
         command != "findrefs" && command != "despawn" && command != "characters" && command != "scale" &&
         command != "screenshot" && command != "coop" &&
-        command != "devmap" && command != "hvv" && command != "versus" && command != "mission" && command != "kill" && command != "synctest")
+        command != "devmap" && command != "hvv" && command != "versus" && command != "mission" && command != "kill" && command != "synctest" && command != "nettest")
         return false;
     Print(LineKind::Output, "> %s", line.c_str());
     if (command == "duelist") {
@@ -1067,6 +1082,8 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         FreeCamera(words);
     } else if (command == "synctest") {
         SyncTest(words);
+    } else if (command == "nettest") {
+        NetTest(words);
     } else if (command == "saber") {
         Saber(words);
     } else if (command == "spawn") {
@@ -1287,7 +1304,7 @@ void RunQueuedConsoleCommands()
             // and gone while a level loads).
             const std::vector<std::string> words = Words(line);
             static const char* const kStandalone[] = { "player", "variants", "meshes", "restart", "autorestart",
-                "duelist", "freecam", "saber", "spawn", "peek", "infiniteforce", "memory", "team", "findrefs", "despawn", "characters", "scale", "screenshot", "coop", "devmap", "hvv", "versus", "mission", "kill", "synctest", "clear", "cls" };
+                "duelist", "freecam", "saber", "spawn", "peek", "infiniteforce", "memory", "team", "findrefs", "despawn", "characters", "scale", "screenshot", "coop", "devmap", "hvv", "versus", "mission", "kill", "synctest", "nettest", "clear", "cls" };
             const bool standalone = !words.empty() && std::any_of(std::begin(kStandalone), std::end(kStandalone),
                 [&](const char* c) { return _stricmp(words[0].c_str(), c) == 0; });
             if (standalone) {
