@@ -662,19 +662,22 @@ void* __cdecl PortraitForCharacter(uint8_t* manager, const char* name, int head,
                 return record.face;
             }
         }
-    if (!custom || custom->hudFace.empty() || head || !manager)
+    // its own portrait, or player 2's in a Versus mirror
+    static const std::string kNoFace;
+    const std::string& face = custom ? CustomFaceOf(character, *custom) : kNoFace;
+    if (!custom || face.empty() || head || !manager)
         return PortraitLookupHook(manager, nullptr, name, head);
-    if (void* found = g_OriginalPortraitLookup(manager, nullptr, custom->hudFace.c_str(), 0))
+    if (void* found = g_OriginalPortraitLookup(manager, nullptr, face.c_str(), 0))
         return found;
-    MakeGeneratedResource(custom->hudFace + ".stx"); // a built-in fighter's, a copy of a disc picture
-    PortraitRecord record = { LoadInterfaceTexture(custom->hudFace.c_str(), true), nullptr, custom->hudFace.c_str() };
+    MakeGeneratedResource(face + ".stx"); // a built-in fighter's, a copy of a disc picture
+    PortraitRecord record = { LoadInterfaceTexture(face.c_str(), true), nullptr, face.c_str() };
     if (!record.face) {
-        LOG_WARN("Characters: %s's HUD portrait %s did not load", custom->className.c_str(), custom->face.c_str());
+        LOG_WARN("Characters: %s's HUD portrait %s did not load", custom->className.c_str(), face.c_str());
         return PortraitLookupHook(manager, nullptr, name, head);
     }
     reinterpret_cast<void(__fastcall*)(void*, void*, const PortraitRecord*)>(uintptr_t(kPortraitListAdd))(
         manager + 0x260, nullptr, &record);
-    LOG_INFO("Characters: %s's HUD portrait %s loaded", custom->className.c_str(), custom->face.c_str());
+    LOG_INFO("Characters: %s's HUD portrait %s loaded", custom->className.c_str(), face.c_str());
     return record.face;
 }
 
@@ -724,13 +727,14 @@ __declspec(naked) void PortraitCallStub()
 // implement in the character's setup (slot 0x390, 0x155680: +0x438 near its end), while the game's thread already
 // ticks the level's objects: a character whose setup came late (bodies of mods' own read from loose files, behind a
 // custom map's big level) was activated without it and crashed writing its +0x228 (0x16E175), now and then. Such a
-// tick is now skipped until the setup made the implement (the loader waits on the game's thread meanwhile: that
-// thread must go on).
+// tick is now skipped (the loader waits on the game's thread meanwhile: that thread must go on), and since that first
+// tick is the only one the game gives (the activation's), CharactersFrame gives it again once the setup made the
+// implement.
 constexpr uint32_t kCharacterTick = 0x00158790, kCharacterTickContinue = 0x0015879A;
 constexpr uint8_t kCharacterTickBytes[] = { 0x51, 0x56, 0x8B, 0xF1, 0x8A, 0x86, 0xC2, 0x01, 0x00, 0x00 };
 constexpr uint32_t kSaberTick = 0x00280790, kSaberTickContinue = 0x00280799;
 constexpr uint8_t kSaberTickBytes[] = { 0x56, 0x57, 0x8B, 0xF1, 0xE8, 0xF7, 0x7F, 0xED, 0xFF }; // ... call 0x158790
-constexpr uint32_t kActivationSlot = 0x214;
+constexpr uint32_t kActivationSlot = 0x214, kTickSlot = 0xB4;
 constexpr uint32_t kScriptActivations[] = { 0x00267350, 0x0015ABF0, 0x002815F0, 0x002A0C00 }; // all start 0x15ABF0
 constexpr uint32_t kCharacterTickPending = 0x1C2, kCharacterActivationPending = 0x110, kCharacterScript = 0x438;
 std::unordered_set<const uint8_t*> g_WaitingSetup; // reported once
@@ -803,6 +807,15 @@ __declspec(naked) void SaberTickStub()
 }
 
 } // namespace
+
+int DressMirrorPlayer2(uint8_t* fighter, int variant, const std::string& mesh)
+{
+    // Kept for the boot, as the spawns' (a duel may create player 2 more than once; an earlier one may still be there)
+    static std::list<OwnedList> owned;
+    owned.emplace_back();
+    std::string body = mesh;
+    return Dress(fighter, variant, "", "", body, owned.back(), "Versus player 2");
+}
 
 int VariantOnDisc(const void* character, int preferred)
 {
@@ -989,6 +1002,43 @@ struct NeutralSpawn {
     float health;
 };
 std::vector<NeutralSpawn> g_Neutrals;
+
+// The characters whose first tick (their activation) was skipped, waiting for their setup (TickWaits): given it once
+// the setup made their script implement (their tick, vtable slot 0xB4, through the hooks above: the activation goes on).
+namespace {
+// Its tick once its setup made the implement; 0 while not; -1 when it is gone (or not a character the hooks know).
+intptr_t ReadyTick(const uint8_t* c)
+{
+    __try {
+        if (!*reinterpret_cast<const volatile uint32_t*>(c + kCharacterScript))
+            return 0;
+        const uintptr_t tick = (*reinterpret_cast<const uintptr_t* const*>(c))[kTickSlot / 4];
+        return tick == kCharacterTick || tick == kSaberTick ? intptr_t(tick) : -1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+} // namespace
+
+void CharactersFrame()
+{
+    std::vector<const uint8_t*> waiting;
+    AcquireSRWLockExclusive(&g_WaitingSetupLock);
+    waiting.assign(g_WaitingSetup.begin(), g_WaitingSetup.end());
+    ReleaseSRWLockExclusive(&g_WaitingSetupLock);
+    for (const uint8_t* c : waiting) {
+        const intptr_t tick = ReadyTick(c);
+        if (tick == 0)
+            continue;
+        AcquireSRWLockExclusive(&g_WaitingSetupLock);
+        g_WaitingSetup.erase(c);
+        ReleaseSRWLockExclusive(&g_WaitingSetupLock);
+        if (tick < 0)
+            continue;
+        LOG_INFO("Characters: %p set up, its first tick given again", c);
+        reinterpret_cast<void(__fastcall*)(const uint8_t*, void*)>(tick)(c, nullptr); // through the hooks: activated
+    }
+}
 
 void InstallCharacters()
 {

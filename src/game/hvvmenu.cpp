@@ -252,7 +252,7 @@ std::string MapPicture(const CustomMap& map, const char* name)
 void __fastcall ArenaBuildHook(uint8_t* list, void*)
 {
     reinterpret_cast<ArenaFn>(uintptr_t(kArenaBuild))(list, nullptr);
-    const auto& maps = CustomMaps();
+    const std::vector<const CustomMap*> maps = CustomMapsFor(MapMode::Versus);
     g_FirstCustomRow = -1;
     if (maps.empty())
         return;
@@ -266,7 +266,7 @@ void __fastcall ArenaBuildHook(uint8_t* list, void*)
         }
     for (size_t i = 0; i < maps.size(); ++i) {
         const std::string id = "IDS_PORT_ARENA_" + std::to_string(i);
-        SetMenuText(id.c_str(), Wide(maps[i].name));
+        SetMenuText(id.c_str(), Wide(maps[i]->name));
         struct {
             uint32_t map;
             const wchar_t* text;
@@ -305,9 +305,9 @@ void __fastcall ArenaBuildHook(uint8_t* list, void*)
 // The custom map of an arena row, or null.
 const CustomMap* RowMap(int row)
 {
-    const auto& maps = CustomMaps();
+    const std::vector<const CustomMap*> maps = CustomMapsFor(MapMode::Versus);
     const int k = g_FirstCustomRow < 0 ? -1 : row - g_FirstCustomRow;
-    return k >= 0 && k < int(maps.size()) ? &maps[size_t(k)] : nullptr;
+    return k >= 0 && k < int(maps.size()) ? maps[size_t(k)] : nullptr;
 }
 
 uint8_t* SetRecord(uint8_t* item, int index)
@@ -399,8 +399,8 @@ void VersusLaunch(std::string& arguments)
 // The chosen map's id (empty: the dev map's floor).
 std::string MapChoice()
 {
-    const auto& maps = CustomMaps();
-    return g_MapChoice > 0 && g_MapChoice <= int(maps.size()) ? maps[size_t(g_MapChoice - 1)].id : std::string();
+    const std::vector<const CustomMap*> maps = CustomMapsFor(MapMode::HeroesVsVillains);
+    return g_MapChoice > 0 && g_MapChoice <= int(maps.size()) ? maps[size_t(g_MapChoice - 1)]->id : std::string();
 }
 
 // --- The setup and line-up screens ---------------------------------------------------------------------------------
@@ -628,9 +628,9 @@ bool g_BfHeroes = true;
 std::vector<const CustomMap*> BfMaps()
 {
     std::vector<const CustomMap*> maps;
-    for (const CustomMap& m : CustomMaps())
-        if (!m.commandPosts.empty())
-            maps.push_back(&m);
+    for (const CustomMap* m : CustomMapsFor(MapMode::Battlefront))
+        if (!m->commandPosts.empty())
+            maps.push_back(m);
     return maps;
 }
 
@@ -775,7 +775,7 @@ void Step(int row, int by)
     case 1: g_LivesChoice = wrap(g_LivesChoice + by, int(std::size(kLivesChoices))); break;
     case 2: g_HealthChoice = wrap(g_HealthChoice + by, int(std::size(kHealthChoices))); break;
     case 3: g_Intro = !g_Intro; break;
-    case 4: g_MapChoice = wrap(g_MapChoice + by, int(CustomMaps().size()) + 1); break;
+    case 4: g_MapChoice = wrap(g_MapChoice + by, int(CustomMapsFor(MapMode::HeroesVsVillains).size()) + 1); break;
     default: return;
     }
     UpdateTexts();

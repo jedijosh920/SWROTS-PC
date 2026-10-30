@@ -13,6 +13,7 @@
 #include "core/log.h"
 #include "core/patch.h"
 #include "game/characters.h"
+#include "game/customchars.h"
 #include "game/game.h"
 #include "game/resources.h"
 #include "game/roster.h"
@@ -73,7 +74,7 @@ constexpr uint32_t kVariantSite = 0x0027B87E;
 constexpr uint32_t kVariantContinue = 0x0027B88B;
 constexpr uint8_t kVariantBytes[] = { 0x8B, 0x14, 0x8D, 0xC0, 0xC1, 0x5C, 0x00, 0x89, 0x97, 0xE8, 0x01, 0x00, 0x00 };
 
-int32_t __stdcall FighterVariant(int tableIndex, int slot, const uint8_t* fighter)
+int32_t ChosenVariant(int tableIndex, int slot, const uint8_t* fighter)
 {
     if (slot >= kDuelistCount) // an extra fighter (roster.cpp); the table has the nine
         return VariantOnDisc(fighter, 0);
@@ -81,6 +82,20 @@ int32_t __stdcall FighterVariant(int tableIndex, int slot, const uint8_t* fighte
     if (!Replaced(slot) || !fighter)
         return variant;
     return VariantOnDisc(fighter, 0);
+}
+
+int32_t __stdcall FighterVariant(int tableIndex, int slot, const uint8_t* fighter)
+{
+    int32_t variant = ChosenVariant(tableIndex, slot, fighter);
+    // player 2 (tableIndex slot * 2 + player) of a mirror duel: a custom character's body for player 2 (Mesh2=)
+    const CustomCharacter* custom = fighter ? CustomCharacterOf(fighter) : nullptr;
+    if (custom && !custom->mesh2.empty()) {
+        const bool mirror = BothPlayersChose(custom->className.c_str());
+        LOG_INFO("Versus: %s is player %d%s", custom->className.c_str(), (tableIndex & 1) + 1, mirror ? " of a mirror" : "");
+        if ((tableIndex & 1) && mirror)
+            variant = DressMirrorPlayer2(const_cast<uint8_t*>(fighter), variant, custom->mesh2);
+    }
+    return variant;
 }
 
 __declspec(naked) void FighterVariantStub()

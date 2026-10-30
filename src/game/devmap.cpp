@@ -359,7 +359,13 @@ void DevMapFrame()
         if (fallen != g_Fallen.end() || *reinterpret_cast<const float*>(c + kHealth) <= 0 || c[kDead])
             continue;
         g_Fallen.push_back(id);
-        LOG_INFO("Dev map: character %08X fell below KillHeight= (%.0f): its instant kill", id, killY);
+        { // where, in the map's own coordinates (map.ini's x z)
+            const float* at = reinterpret_cast<const float*>(c + kTransform + 48);
+            const float cy = std::cos(g_Map->yaw), sy = std::sin(g_Map->yaw);
+            const float dx = at[0] - kDevMapMiddleX, dz = at[2] - kDevMapMiddleZ;
+            LOG_INFO("Dev map: character %08X fell below KillHeight= (%.0f) at the map's %.0f %.0f: its instant kill",
+                id, killY, g_Map->middle[0] + cy * dx - sy * dz, g_Map->middle[1] + sy * dx + cy * dz);
+        }
         using InstantKill = void(__fastcall*)(uint8_t*, void*, uint32_t);
         const auto kill = reinterpret_cast<InstantKill>((*reinterpret_cast<void* const* const*>(c))[kInstantKillSlot / 4]);
         kill(c, nullptr, 0);

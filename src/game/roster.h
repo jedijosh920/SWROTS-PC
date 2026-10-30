@@ -9,6 +9,9 @@ namespace swrots::game {
 // game's Random) for characters on the disc that were never versus fighters. At every boot.
 void InstallRoster();
 
+// Versus: both players chose this class (a mirror duel).
+bool BothPlayersChose(const char* className);
+
 // Copies the game's nine fighter classes (kDuelistClasses) into the roster's table, which the duel
 // reads by slot; after every change to the game's table (the duelist command).
 void SyncRosterClasses();

@@ -40,6 +40,7 @@ the human characters are 73-75 units tall):
 ```ini
 [Map]
 Name=Mos Eisley Cantina          ; as shown
+Modes=Versus HvV Battlefront     ; the modes that offer it (optional; all of them when left out)
 Music=mus_m13_templebattle01_lp  ; its music (optional): a music slot of the game, the track beside map.ini
 Model=maps\cantina\cantina       ; its model under meshes\, without .msh
 Vertices=10234                   ; the model's vertex count (all its parts)
@@ -65,6 +66,11 @@ CharacterAmbient=0.26 0.23 0.20  ; the characters' ambient light (the dev map's 
 Lights=0.6                       ; the level's point lights' intensity, scaled
 ```
 
+`Modes=` keeps a map to some modes: `Versus` (its row on the Select Arena screen), `HvV` (Heroes vs Villains' Map
+row) and `Battlefront` (its setup screen, for a map with command posts), separated by spaces or commas. A duel arena
+says `Modes=Versus`, a large map `Modes=HvV Battlefront`. The console's `devmap`, `hvv map` and `versus ... map` take
+any map.
+
 The map is turned and moved so that the middle between its two lines is the dev map's middle and the heroes face the
 villains along +z: the intro's camera, the line-up and the end are then the same as on the floor.
 
@@ -74,13 +80,21 @@ A map with command posts can host [Battlefront](../battlefront.md) (it is then o
 
 ```ini
 [Battlefront]
-CommandPosts=0 0; 300 250; -280 -160; 560 -480   ; the posts (x z, separated by ";"), named A, B, C... in this order
+CommandPosts=0 0; 300 250 140; -280 -160; 560 -480   ; the posts (x z, separated by ";"), named A, B, C... in this order
 CloneStart=700 245                               ; where the clones start (x z)
 DroidStart=-720 -120                             ; and the droids
 ```
 
 Without the starts, the clones start on the heroes' line and the droids on the villains'. Each side starts with the
 post nearest its start. Keep the posts on open floor, inside `Bounds=`, a few hundred units apart.
+
+A post on a floor of its own (a bridge, a landing pad) gives that floor's height after its x z, in the map's own y
+(as `Floor=`; without it, a post is on `Floor=`): its marker stands there, and only fighters on that floor (within
+180 units of its height) count for it, not those on a street under the bridge. The computer's troopers walk straight
+to a post, so one going for a raised post from a floor more than 100 units below is brought up onto it once within
+700 units, before it walks under that floor into whatever lies below. It is not brought up again within 8 seconds,
+and after three times in a row that did not keep it on that floor (it fell back to a lower one) it walks as the others
+do until it reaches a post: place a raised post where there is room around it, on a floor the game holds fighters on.
 
 ## Collision of its own
 
