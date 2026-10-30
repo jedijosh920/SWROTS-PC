@@ -280,6 +280,29 @@ bool SetDeterministicAddresses(bool on)
 
 bool DeterministicAddresses() { return g_DetAddresses; }
 
+std::string DescribeFixedAddress(uintptr_t address)
+{
+    if (!InFixed(reinterpret_cast<void*>(address)))
+        return {};
+    char text[160];
+    std::lock_guard<std::mutex> lock(g_PlaceLock);
+    auto it = PlacedAt(reinterpret_cast<void*>(address));
+    if (it != g_Placed.end()) {
+        std::snprintf(text, sizeof(text), "in the fixed range, placed %08X+%X", uint32_t(it->first), it->second);
+    } else {
+        auto next = g_Placed.upper_bound(address);
+        uint32_t before = 0, beforeSize = 0;
+        if (next != g_Placed.begin()) {
+            auto prev = std::prev(next);
+            before = uint32_t(prev->first);
+            beforeSize = prev->second;
+        }
+        std::snprintf(text, sizeof(text), "in the fixed range, not placed (before it %08X+%X, after %08X)", before,
+            beforeSize, next == g_Placed.end() ? 0u : uint32_t(next->first));
+    }
+    return text;
+}
+
 void* AllocFixedThreadMemory(uint32_t size)
 {
     if (!g_DetAddresses || !g_Fixed)

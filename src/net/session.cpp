@@ -355,6 +355,10 @@ struct Session {
     Check lastLocal = {}, lastRemote = {};
     bool desync = false;
     uint32_t desyncFrame = 0;
+    // The game's data at the last check (for a desync's report: written next to the executable).
+    std::vector<uint8_t> checkedData;
+    uint32_t checkedFrame = 0;
+    uint64_t checkedTrace = 0;
 
     Settings saved;          // the guest's own settings, given back after the match
     bool settingsSaved = false;
@@ -485,6 +489,17 @@ void CompareChecksLocked()
             LOG_ERROR("Online: the two games parted (desync) at frame %u: %016llX here, %016llX there", r.frame,
                 c.hash, r.hash);
             SetMessage("the two games parted (desync) at frame " + std::to_string(r.frame));
+            if (g_S.checkedFrame == r.frame && !g_S.checkedData.empty()) { // the data as checked, for a comparison
+                wchar_t instance[64] = {};
+                GetEnvironmentVariableW(L"SWROTS_INSTANCE", instance, 64);
+                const std::wstring path = ExeDirectory() + L"\\netplay\\desync-" + (instance[0] ? instance : (g_S.host ? L"host" : L"guest")) + L".bin";
+                std::vector<uint8_t> out(8);
+                std::memcpy(out.data(), &g_S.checkedTrace, 8);
+                out.insert(out.end(), g_S.checkedData.begin(), g_S.checkedData.end());
+                WriteWholeFile(path, out.data(), out.size());
+                LOG_INFO("Online: the game's data at frame %u written to %ls (scheduler trace %016llX)", r.frame,
+                    path.c_str(), g_S.checkedTrace);
+            }
         }
         return;
     }
@@ -1193,8 +1208,15 @@ void OnlineFrame()
     }
     // A check of the game's course at the start of every kHashEvery-th frame (the same point on both PCs).
     if (next % kHashEvery == 0) {
+        const auto* data = reinterpret_cast<const uint8_t*>(uintptr_t(0x00612BE0));
+        const size_t dataSize = 0x00962BF8 - 0x00612BE0;
         uint64_t h = kernel::SchedTraceHash();
-        h = HashBlock(reinterpret_cast<const void*>(uintptr_t(0x00612BE0)), 0x00962BF8 - 0x00612BE0, h);
+        if (!g_S.desync) { // kept until the other's check for this frame came (a desync's report)
+            g_S.checkedData.assign(data, data + dataSize);
+            g_S.checkedFrame = next;
+            g_S.checkedTrace = h;
+        }
+        h = HashBlock(data, dataSize, h);
         g_S.checks[(next / kHashEvery) % std::size(g_S.checks)] = { next, h };
         g_S.lastLocal = { next, h };
         if (next % (kHashEvery * 10) == 0)

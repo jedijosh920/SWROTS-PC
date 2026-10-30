@@ -151,6 +151,8 @@ bool SetDeterministicPool(bool on);
 // the same addresses. Stays on across reboots. False when the range is taken on this PC.
 bool SetDeterministicAddresses(bool on);
 bool DeterministicAddresses();
+// Diagnostics: where an address is in the fixed range (its placed reservation, or none); empty outside it.
+std::string DescribeFixedAddress(uintptr_t address);
 // While deterministic addresses are on: committed memory for a game thread's own use (its stack, its thread object
 // and TLS), at an address the same on every PC, outside what netplay's snapshots cover. Null otherwise. Freed by
 // the next reboot.

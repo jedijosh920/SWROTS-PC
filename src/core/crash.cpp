@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <dbghelp.h>
 #include <intrin.h>
+#include <string>
 
 #include "core/log.h"
 #include "game/game.h"
@@ -192,6 +193,22 @@ static LONG __stdcall TopLevelFilter(EXCEPTION_POINTERS* info)
 
 // First-chance logging: the game may handle some exceptions itself, so these
 // are only recorded, not treated as fatal.
+// An access violation's address and what is there (Windows' view, the fixed range's).
+static void LogAccessViolation(const EXCEPTION_RECORD* record)
+{
+    if (record->NumberParameters < 2)
+        return;
+    const uintptr_t at = record->ExceptionInformation[1];
+    MEMORY_BASIC_INFORMATION m = {};
+    VirtualQuery(reinterpret_cast<void*>(at), &m, sizeof(m));
+    LOG_WARN("    %s %08X: region %p+%X (%s, protect %lX), allocation %p", record->ExceptionInformation[0] == 1 ? "writing" : "reading",
+        uint32_t(at), m.BaseAddress, uint32_t(m.RegionSize),
+        m.State == MEM_COMMIT ? "committed" : m.State == MEM_RESERVE ? "reserved" : "free", m.Protect, m.AllocationBase);
+    const std::string placed = kernel::DescribeFixedAddress(at);
+    if (!placed.empty())
+        LOG_WARN("    %s", placed.c_str());
+}
+
 static LONG __stdcall FirstChance(EXCEPTION_POINTERS* info)
 {
     static volatile LONG s_logged = 0;
@@ -203,6 +220,8 @@ static LONG __stdcall FirstChance(EXCEPTION_POINTERS* info)
         char where[160];
         DescribeAddress(info->ContextRecord->Eip, where, sizeof(where));
         LOG_WARN("First-chance exception %08lX at %s", code, where);
+        if (code == EXCEPTION_ACCESS_VIOLATION)
+            LogAccessViolation(info->ExceptionRecord);
         // For the first few, list likely return addresses into game code.
         if (s_logged <= 2) {
             const CONTEXT* c = info->ContextRecord;
