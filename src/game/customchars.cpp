@@ -236,6 +236,20 @@ struct ForcedLine {
 };
 ForcedLine g_Forced;
 
+// The lines logged this start, by character and line (or event, for its base's): each once, or a long fight's grunts
+// and pains would flood the log (cleared at every start).
+std::vector<std::pair<const CustomCharacter*, std::string>> g_LoggedLines;
+
+bool FirstLog(const CustomCharacter* custom, const char* key)
+{
+    const std::string k = key ? key : "?";
+    for (const auto& l : g_LoggedLines)
+        if (l.first == custom && _stricmp(l.second.c_str(), k.c_str()) == 0)
+            return false;
+    g_LoggedLines.push_back({ custom, k });
+    return true;
+}
+
 // For an event a custom character has no lines for, the lines of related events it may have (else its base's line).
 // Its base's efforts (grunts, pain: line numbers 900 and up) take its EFF or HIT lines.
 constexpr const char* kVoiceFallbacks[][3] = {
@@ -304,12 +318,13 @@ int __fastcall StartEntryHook(uint8_t* engine, void*, uint8_t* speaker, int entr
             ++turn;
             if (duel)
                 g_DuelLine = {};
-            LOG_INFO("Custom characters: %s says %s (%s)", custom->className.c_str(), line, name);
+            if (FirstLog(custom, line))
+                LOG_INFO("Custom characters: %s says %s (%s)", custom->className.c_str(), line, name);
         }
         return result;
     }
     const int result = g_StartEntry(engine, nullptr, speaker, entry, a, b, c);
-    if (result) {
+    if (result && FirstLog(custom, (std::string("base:") + (name ? name : "?")).c_str())) {
         const char* id = *reinterpret_cast<const char* const*>(e + 0x10);
         LOG_INFO("Custom characters: %s says its base's %s (%s): no line of its own for it", custom->className.c_str(),
             id ? id : "?", name ? name : "?");
@@ -1536,6 +1551,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
     g_PooledLines.clear();
     g_LineTurns.clear();
     g_SpeakerTexts.clear();
+    g_LoggedLines.clear();
     g_Mods = mods;
     ReadCharacters(mods);
     g_PictureCopies.clear();

@@ -292,7 +292,7 @@ any number of lines fit) and, when the dialogue engine starts one of the charact
 it. For an event it has no lines for, it says those of a related one it has (KIL: WIN then TNT; WIN: KIL, TNT;
 INT: TNT, BAT; FSE: BAT, TNT; TNT: BAT, KIL; BAT: TNT, FSE), and for its base's efforts (lines numbered 900 and
 up: pains, grunts) its `EFF` lines (jumps, falls) or its `HIT` lines, a pain's `HIT` first; only what it has none
-of stays its base's (logged). The lines take turns per event (a turn passes only when the
+of stays its base's (logged once per character and event each start). The lines take turns per event (a turn passes only when the
 engine starts or queues one). Player 2 of a Versus mirror (both players chose it: its look's texture suffix
 `_duel`) says its `[Voice2]` lines instead, when the file has that section (the same events and fallbacks; its files
 in the same `voice` folder). Subtitles show with the game's subtitles on (the Settings menu, or `set subtitles true`).
