@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <map>
 #include <mutex>
 #include <unordered_set>
@@ -668,6 +669,31 @@ void XBAPI ExFreePool(void* P)
         ++a.deferredLost;
     }
     HeapFreeBlock(P);
+}
+
+void* GameAlloc(uint32_t size)
+{
+    if (g_DetAddresses) {
+        std::lock_guard<std::mutex> lock(g_PoolLock);
+        if (UseArena())
+            if (void* p = ArenaAlloc(size)) {
+                std::memset(p, 0, size);
+                return p;
+            }
+    }
+    return HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, size);
+}
+
+void GameFree(void* p)
+{
+    if (!p)
+        return;
+    if (InArena(p)) {
+        std::lock_guard<std::mutex> lock(g_PoolLock);
+        ArenaFree(p);
+        return;
+    }
+    HeapFree(GetProcessHeap(), 0, p);
 }
 
 ULONG XBAPI ExQueryPoolBlockSize(void* PoolBlock)

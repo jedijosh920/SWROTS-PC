@@ -601,7 +601,7 @@ static KEVENT* EventProxyFor(HANDLE handle)
     HANDLE dup = nullptr;
     if (!DuplicateHandle(GetCurrentProcess(), handle, GetCurrentProcess(), &dup, 0, FALSE, DUPLICATE_SAME_ACCESS))
         return nullptr;
-    auto* ev = static_cast<KEVENT*>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(KEVENT)));
+    auto* ev = static_cast<KEVENT*>(GameAlloc(sizeof(KEVENT))); // the game holds it (netplay: a fixed address)
     ev->Header.Type = EventNotificationObject;
     ev->Header.Size = sizeof(KEVENT) / sizeof(LONG);
     ev->Header.Inserted = kProxyMarker;
@@ -727,7 +727,7 @@ void ResetDispatcherForReboot()
             CloseHandle(event);
         g_ObjectEvents.clear();
         for (auto& [handle, proxy] : g_EventProxies)
-            HeapFree(GetProcessHeap(), 0, proxy);
+            GameFree(proxy);
         g_EventProxies.clear();
     }
     // A stopped thread may have held it (game code at raised IRQL).

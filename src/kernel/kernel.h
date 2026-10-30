@@ -144,6 +144,11 @@ bool DeterministicAddresses();
 // and TLS), at an address the same on every PC, outside what netplay's snapshots cover. Null otherwise. Freed by
 // the next reboot.
 void* AllocFixedThreadMemory(uint32_t size);
+// Memory the port hands to the game (a sound buffer's data, a surface header, an event object): zeroed, from the
+// netplay pool's arena while deterministic addresses are on (the same address on every PC, saved with the game),
+// else from the heap. GameFree takes either.
+void* GameAlloc(uint32_t size);
+void GameFree(void* p);
 
 // --- File system (file.cpp) ------------------------------------------------
 void FileSystemInit(const Paths& paths);

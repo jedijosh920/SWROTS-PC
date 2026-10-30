@@ -69,7 +69,7 @@ static void ResetPushBuffer()
 // Allocates an Xbox surface header + contiguous memory, as the XDK would.
 static Surface* CreateXboxSurface(UINT width, UINT height, DWORD format, UINT bytesPerPixel)
 {
-    auto* s = static_cast<Surface*>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(Surface)));
+    auto* s = static_cast<Surface*>(kernel::GameAlloc(sizeof(Surface))); // the game holds it (netplay: fixed)
     UINT pitch = (width * bytesPerPixel + 63) & ~63u;
     void* mem = kernel::MmAllocateContiguousMemoryEx(pitch * height, 0, 0xFFFFFFFF, 0x1000, PAGE_READWRITE);
     s->Common = 1 | COMMON_TYPE_SURFACE | COMMON_D3DCREATED;
@@ -188,6 +188,18 @@ static HRESULT __stdcall XbCreateDevice(UINT adapter, DWORD deviceType, HWND foc
     // The XDK's device is a static object inside the D3D library's data; XDK
     // code that runs natively addresses it directly as well as via D3D__pDevice.
     g_XboxDevice = reinterpret_cast<uint8_t*>(uintptr_t(xbox_globals::kDeviceObject));
+    // The game writes its commands into it and keeps pointers to it: with deterministic addresses (netplay) it is
+    // made again at every start of the game in the fixed range (which a reboot empties), else once, anywhere.
+    static bool fixedPushBuffer = false;
+    if (fixedPushBuffer)
+        g_PushBuffer = nullptr; // it went with the reboot
+    fixedPushBuffer = false;
+    if (kernel::DeterministicAddresses()) {
+        if (auto* fixed = static_cast<uint8_t*>(kernel::AllocFixedThreadMemory(kPushBufferSize))) {
+            g_PushBuffer = fixed;
+            fixedPushBuffer = true;
+        }
+    }
     if (!g_PushBuffer)
         g_PushBuffer = static_cast<uint8_t*>(VirtualAlloc(nullptr, kPushBufferSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
     std::memset(g_XboxDevice, 0, xbox_globals::kDeviceObjectSize);

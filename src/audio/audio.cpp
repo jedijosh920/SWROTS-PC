@@ -573,7 +573,18 @@ struct SoundBuffer : Voice {
     LONG refCount = 1;
     uint8_t* data = nullptr;
     DWORD bytes = 0;
-    std::unique_ptr<uint8_t[]> owned;
+    // Its own data (a buffer made with a size): the game writes into it (Lock) and keeps pointers to it, so it comes
+    // from kernel::GameAlloc (netplay: a fixed address, saved with the game).
+    struct OwnedData {
+        uint8_t* p = nullptr;
+        ~OwnedData() { reset(); }
+        void reset(uint8_t* q = nullptr)
+        {
+            kernel::GameFree(p);
+            p = q;
+        }
+        uint8_t* get() const { return p; }
+    } owned;
     std::vector<int16_t> decoded; // Xbox ADPCM, converted at play time
     bool playing = false;
     bool looping = false;
@@ -1445,7 +1456,7 @@ static HRESULT CreateBuffer(const BufferDesc* desc, SoundBuffer** out)
     if (desc->lpwfxFormat)
         b->format = *desc->lpwfxFormat;
     if (desc->dwBufferBytes) {
-        b->owned.reset(new uint8_t[desc->dwBufferBytes]());
+        b->owned.reset(static_cast<uint8_t*>(kernel::GameAlloc(desc->dwBufferBytes)));
         b->data = b->owned.get();
         b->bytes = desc->dwBufferBytes;
     }
