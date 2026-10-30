@@ -675,7 +675,7 @@ static DWORD __stdcall SwapFrame(const void* frameStack, DWORD flags)
         NoteFrameTime();
     CollectResources(g_State.swapCount);
     const DWORD result = net::FrameBoundary(frameStack, g_State.swapCount);
-    g_ScrubStack = net::RollbackActive() ? 1 : 0;
+    g_ScrubStack = net::RollbackActive() || kernel::SchedActive() ? 1 : 0;
     return result;
 }
 

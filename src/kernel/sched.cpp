@@ -54,7 +54,21 @@ thread_local SThread* t_Self = nullptr;
 
 struct Stats {
     uint64_t switches = 0, waits = 0, polls = 0, clockJumps = 0, external = 0, timers = 0;
+    uint64_t trace = 0x84222325CBF29CE4ull; // a running hash of the turns (which thread, at what time)
 } g_Stats;
+
+// Each turn into the trace; every 2048 turns a log line, so that two runs' logs show where they part.
+void Trace(SThread* next, uint64_t now)
+{
+    uint32_t index = 0;
+    for (uint32_t i = 0; i < g_Threads.size(); ++i)
+        if (g_Threads[i] == next)
+            index = i;
+    g_Stats.trace = (g_Stats.trace ^ (uint64_t(index) << 48) ^ now) * 0x100000001B3ull;
+    if (g_Stats.switches % 2048 == 0)
+        LOG_INFO("Scheduler trace: turn %llu, clock %llu, %zu threads, hash %016llX, %llu waits only the PC ended",
+            g_Stats.switches, now, g_Threads.size(), g_Stats.trace, g_Stats.external);
+}
 
 constexpr uint64_t kUnitsPerMs = 10000;
 
@@ -155,6 +169,7 @@ void SwitchAway(SThread* self, std::unique_lock<std::mutex>& lock)
     if (next == self)
         return;
     ++g_Stats.switches;
+    Trace(next, FixedClockPeek());
     SetEvent(next->go);
     lock.unlock();
     HANDLE wait[2] = { self->go, RebootEvent() };
@@ -163,6 +178,33 @@ void SwitchAway(SThread* self, std::unique_lock<std::mutex>& lock)
         ExitGameThread();
     lock.lock();
 }
+
+// Zeroes up to `bytes` of the stack below the caller's (down to the TEB's limit): the game reads uninitialised locals,
+// which would otherwise hold what the PC's wait functions (or the port's code) left there, which differs from run to
+// run and from PC to PC.
+__declspec(naked) void __stdcall ScrubBelow(uint32_t bytes)
+{
+    __asm {
+        push edi
+        mov ecx, [esp + 8]
+        lea edi, [esp - 4]
+        mov eax, edi
+        sub eax, dword ptr fs:[8]
+        cmp ecx, eax
+        jbe size_ok
+        mov ecx, eax
+    size_ok:
+        shr ecx, 2
+        xor eax, eax
+        std
+        rep stosd
+        cld
+        pop edi
+        ret 4
+    }
+}
+
+constexpr uint32_t kScrubBytes = 0x10000;
 
 void RunApcs(SThread* self)
 {
@@ -225,6 +267,8 @@ void SchedAddThread(XboxThread* t, bool suspended)
     s->go = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     s->state = suspended ? State::Suspended : State::Ready;
     g_Threads.push_back(s);
+    LOG_INFO("Scheduler: thread %zu made%s at clock %llu, after %llu turns", g_Threads.size() - 1,
+        suspended ? " suspended" : "", FixedClockPeek(), g_Stats.switches);
 }
 
 void SchedResumed(HANDLE thread)
@@ -302,6 +346,7 @@ DWORD SchedWait(DWORD count, const HANDLE* handles, BOOL waitAll, DWORD ms, BOOL
     SwitchAway(self, lock);
     const DWORD result = self->result;
     lock.unlock();
+    ScrubBelow(kScrubBytes);
     if (result == WAIT_IO_COMPLETION)
         RunApcs(self);
     return result;
@@ -315,6 +360,8 @@ void SchedYield()
     std::unique_lock<std::mutex> lock(g_Lock);
     self->state = State::Ready;
     SwitchAway(self, lock);
+    lock.unlock();
+    ScrubBelow(kScrubBytes);
 }
 
 void SchedWaitUntil(uint64_t time)
@@ -334,6 +381,8 @@ void SchedWaitUntil(uint64_t time)
     self->deadline = time;
     self->state = State::Waiting;
     SwitchAway(self, lock);
+    lock.unlock();
+    ScrubBelow(kScrubBytes);
 }
 
 void SchedQueueApc(ApcFunction routine, void* context, void* ioStatus)
