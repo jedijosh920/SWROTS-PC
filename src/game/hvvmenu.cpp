@@ -1107,8 +1107,8 @@ void InstallHvvMenu()
         std::memcmp(reinterpret_cast<const void*>(uintptr_t(kChildSwitch)), kChildSwitchBytes, sizeof kChildSwitchBytes) == 0) {
         g_Transition = reinterpret_cast<ScreenFn>(transition);
         g_ChildSwitch = reinterpret_cast<ScreenFn>(childSwitch);
-        PatchJump(kTransition, reinterpret_cast<const void*>(&TransitionHook));
-        PatchJump(kChildSwitch, reinterpret_cast<const void*>(&ChildSwitchHook));
+        PatchHook(kTransition, reinterpret_cast<const void*>(&TransitionHook));
+        PatchHook(kChildSwitch, reinterpret_cast<const void*>(&ChildSwitchHook));
     }
     g_HvvMode = false;
     g_PickSlot = -1;

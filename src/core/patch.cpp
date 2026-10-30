@@ -3,7 +3,11 @@
 #include <windows.h>
 #include <cstring>
 
+#include "core/gates.h"
 #include "core/log.h"
+#include "kernel/sched.h"
+
+#include <map>
 
 namespace swrots {
 
@@ -21,6 +25,20 @@ void PatchJump(uint32_t address, const void* target)
     int32_t rel = int32_t(uintptr_t(target) - (address + 5));
     std::memcpy(code + 1, &rel, 4);
     PatchBytes(address, code, sizeof(code));
+}
+
+void PatchHook(uint32_t address, const void* target)
+{
+    if (kernel::SchedActive()) {
+        // A slot per hooked address, in the order they are first hooked (the same on every PC).
+        static std::map<uint32_t, uint32_t> slots;
+        auto it = slots.find(address);
+        if (it == slots.end())
+            it = slots.emplace(address, kGateHookFirst + uint32_t(slots.size())).first;
+        if (const void* gate = HostCallGate(it->second, target))
+            target = gate;
+    }
+    PatchJump(address, target);
 }
 
 void PatchCall(uint32_t address, const void* target, uint32_t length)

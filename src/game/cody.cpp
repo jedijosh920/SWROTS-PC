@@ -945,7 +945,7 @@ void InstallCody()
         if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kDroidStateManager)), kStateManagerBytes, sizeof kStateManagerBytes) == 0) {
             static uint8_t* stub = Trampoline(kDroidStateManager, kStateManagerBytes, sizeof kStateManagerBytes);
             g_OriginalDroidStateManager = reinterpret_cast<StateManagerFn>(stub);
-            PatchJump(kDroidStateManager, reinterpret_cast<const void*>(&DroidStateManagerHook));
+            PatchHook(kDroidStateManager, reinterpret_cast<const void*>(&DroidStateManagerHook));
         } else {
             LOG_WARN("Cody: unexpected code at the battle droid's turn; the droid commander has no kit");
         }

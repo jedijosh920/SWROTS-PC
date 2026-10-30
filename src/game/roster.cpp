@@ -686,7 +686,7 @@ void* Detour(uint32_t address, const uint8_t* prologue, uint32_t length, const v
     stub[length] = 0xE9;
     int32_t back = int32_t(address + length) - int32_t(uintptr_t(stub) + length + 5);
     std::memcpy(stub + length + 1, &back, 4);
-    PatchJump(address, hook);
+    PatchHook(address, hook);
     return stub;
 }
 
@@ -1158,8 +1158,8 @@ void InstallRoster()
         Detour(kSetBodies, kSetBodiesPrologue, sizeof(kSetBodiesPrologue), reinterpret_cast<const void*>(&BodiesHook)));
     g_OriginalIsLocked = reinterpret_cast<IsLockedFn>(
         Detour(kIsLocked, kIsLockedPrologue, sizeof(kIsLockedPrologue), reinterpret_cast<const void*>(&IsLockedHook)));
-    PatchJump(kSlotName, reinterpret_cast<const void*>(&SlotNameHook));
-    PatchJump(kSlotTitle, reinterpret_cast<const void*>(&SlotTitleHook));
+    PatchHook(kSlotName, reinterpret_cast<const void*>(&SlotNameHook));
+    PatchHook(kSlotTitle, reinterpret_cast<const void*>(&SlotTitleHook));
     // Asked for by their source names; the PAK has the compiled .xbl_xml.
     RegisterResourcePatch("interfc\\front_end\\xml\\select_jedi.xml", &PatchSelectScreen);
     RegisterResourcePatch("interfc\\front_end\\xml\\select_arena.xml", &PatchArenaScreen);

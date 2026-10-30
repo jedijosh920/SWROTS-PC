@@ -154,7 +154,7 @@ void InstallGameFixes()
 {
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kCharacterNamed)), kCharacterNamedBytes,
             sizeof(kCharacterNamedBytes)) == 0)
-        PatchJump(kCharacterNamed, reinterpret_cast<const void*>(&CharacterNamed));
+        PatchHook(kCharacterNamed, reinterpret_cast<const void*>(&CharacterNamed));
     else
         LOG_WARN("Game fix: character name check does not match; not patched");
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kHashPoolTakeSite)), kHashPoolTakeBytes,

@@ -5,6 +5,9 @@
 #include <windows.h>
 
 #include <cstring>
+#include <map>
+#include <mutex>
+#include <string>
 
 #include "core/log.h"
 
@@ -124,6 +127,65 @@ __declspec(naked) void GateReturn()
 }
 
 } // namespace
+
+namespace {
+
+alignas(16) uint8_t g_StringPool[1 << 20];
+uint32_t g_StringPoolUsed = 0;
+std::mutex g_StringLock;
+std::map<std::string, const char*> g_Strings;
+std::map<std::wstring, const wchar_t*> g_TextsPooled;
+
+void* PoolTake(uint32_t bytes)
+{
+    bytes = (bytes + 3) & ~3u;
+    if (g_StringPoolUsed + bytes > sizeof(g_StringPool)) {
+        static bool logged = false;
+        if (!logged)
+            LOG_WARN("Gates: the pool of the game's strings is full (not deterministic from here)");
+        logged = true;
+        return nullptr;
+    }
+    void* p = g_StringPool + g_StringPoolUsed;
+    g_StringPoolUsed += bytes;
+    return p;
+}
+
+} // namespace
+
+const char* GameString(const char* text)
+{
+    if (!text)
+        return nullptr;
+    std::lock_guard<std::mutex> lock(g_StringLock);
+    auto it = g_Strings.find(text);
+    if (it != g_Strings.end())
+        return it->second;
+    const size_t bytes = std::strlen(text) + 1;
+    auto* p = static_cast<char*>(PoolTake(uint32_t(bytes)));
+    if (!p)
+        return text;
+    std::memcpy(p, text, bytes);
+    g_Strings.emplace(text, p);
+    return p;
+}
+
+const wchar_t* GameText(const wchar_t* text)
+{
+    if (!text)
+        return nullptr;
+    std::lock_guard<std::mutex> lock(g_StringLock);
+    auto it = g_TextsPooled.find(text);
+    if (it != g_TextsPooled.end())
+        return it->second;
+    const size_t bytes = (std::wcslen(text) + 1) * sizeof(wchar_t);
+    auto* p = static_cast<wchar_t*>(PoolTake(uint32_t(bytes)));
+    if (!p)
+        return text;
+    std::memcpy(p, text, bytes);
+    g_TextsPooled.emplace(text, p);
+    return p;
+}
 
 bool IsCodeAddress(const void* address)
 {

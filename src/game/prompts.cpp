@@ -968,7 +968,7 @@ void InstallPrompts(const std::wstring& cache)
             return s;
         }();
         g_OriginalTextureOf = reinterpret_cast<TextureOfFn>(stub);
-        PatchJump(kTextureOf, reinterpret_cast<const void*>(&TextureOfHook));
+        PatchHook(kTextureOf, reinterpret_cast<const void*>(&TextureOfHook));
     }
     SetMenuTextRedirect(&RedirectText);
 }

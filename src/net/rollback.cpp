@@ -349,7 +349,7 @@ void TestCompareMemory()
             Ctx& c = *static_cast<Ctx*>(p);
             ++c.regions;
             DumpRegion r = {};
-            char line[200];
+            char line[400];
             if (std::fread(&r, sizeof(r), 1, c.f) != 1) {
                 if (c.shown++ < 80) {
                     std::snprintf(line, sizeof(line), "\n  %-24s %p: not in the recording", name, base);
@@ -376,7 +376,7 @@ void TestCompareMemory()
                 std::memcpy(&now, base + at, 4);
                 if (was == now)
                     continue;
-                if (regionWords++ < 4) {
+                if (regionWords++ < 12) {
                     std::snprintf(line, sizeof(line), " %08X:%08X/%08X", uint32_t(uintptr_t(base + at)), was, now);
                     words += line;
                 }

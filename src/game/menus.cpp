@@ -10,6 +10,7 @@
 #include <mutex>
 #include <unordered_map>
 
+#include "core/gates.h"
 #include "core/log.h"
 #include "core/patch.h"
 #include "game/resources.h"
@@ -51,7 +52,7 @@ void* __fastcall TableFindHook(uint8_t* table, void*, uint32_t* out, const uint3
             std::lock_guard<std::mutex> lock(g_TextLock); // or one of the port's own texts
             auto it = g_Texts.find(redirected);
             if (out && it != g_Texts.end()) {
-                *out = uint32_t(reinterpret_cast<uintptr_t>(it->second.get()));
+                *out = uint32_t(reinterpret_cast<uintptr_t>(GameText(it->second.get())));
                 return result;
             }
         }
@@ -61,7 +62,7 @@ void* __fastcall TableFindHook(uint8_t* table, void*, uint32_t* out, const uint3
         std::lock_guard<std::mutex> lock(g_TextLock);
         auto it = g_Texts.find(*key);
         if (it != g_Texts.end())
-            *out = uint32_t(reinterpret_cast<uintptr_t>(it->second.get()));
+            *out = uint32_t(reinterpret_cast<uintptr_t>(GameText(it->second.get())));
     }
     return result;
 }
@@ -89,7 +90,7 @@ void __fastcall HudSetupHook(uint8_t* hud, void*)
         struct {
             const char* name;
             uint8_t* prototype;
-        } entry = { handler.name.c_str(), handler.make() };
+        } entry = { GameString(handler.name.c_str()), handler.make() };
         if (entry.prototype)
             reinterpret_cast<void(__fastcall*)(uint8_t*, void*, const void*)>(uintptr_t(kAddHandler))(hud + kHudHandlers,
                 nullptr, &entry);
@@ -109,7 +110,7 @@ void __fastcall ShellSetupHook(uint8_t* shell, void*)
         struct {
             const char* name;
             uint8_t* prototype;
-        } entry = { handler.name.c_str(), handler.make() };
+        } entry = { GameString(handler.name.c_str()), handler.make() };
         if (entry.prototype)
             reinterpret_cast<void(__fastcall*)(uint8_t*, void*, const void*)>(uintptr_t(kAddHandler))(shell + kHudHandlers,
                 nullptr, &entry);
@@ -288,12 +289,12 @@ void InstallMenus()
     static uint8_t* shellStub = Trampoline(kShellSetup, kHudSetupBytes, sizeof(kHudSetupBytes));
     g_OriginalTableFind = reinterpret_cast<TableFindFn>(tableStub);
     g_OriginalHudSetup = reinterpret_cast<HudSetupFn>(hudStub);
-    PatchJump(kTableFind, reinterpret_cast<const void*>(&TableFindHook));
-    PatchJump(kHudSetup, reinterpret_cast<const void*>(&HudSetupHook));
+    PatchHook(kTableFind, reinterpret_cast<const void*>(&TableFindHook));
+    PatchHook(kHudSetup, reinterpret_cast<const void*>(&HudSetupHook));
     RegisterResourcePatch(kGuiList, &PatchGuiList);
     if (matches(kShellSetup, kHudSetupBytes, sizeof(kHudSetupBytes))) {
         g_OriginalShellSetup = reinterpret_cast<HudSetupFn>(shellStub);
-        PatchJump(kShellSetup, reinterpret_cast<const void*>(&ShellSetupHook));
+        PatchHook(kShellSetup, reinterpret_cast<const void*>(&ShellSetupHook));
         RegisterResourcePatch(kShellList, &PatchShellList);
     }
     const auto pushes = [&](uint32_t at, uint32_t text) {

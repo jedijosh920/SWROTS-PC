@@ -1604,7 +1604,7 @@ void InstallResourceHooks(const std::wstring& gameData, const std::wstring& mods
     int32_t rel = int32_t(kSceneResRead + 6) - int32_t(uintptr_t(stub) + 11);
     std::memcpy(stub + 7, &rel, 4);
     g_OriginalRead = reinterpret_cast<ReadFn>(stub);
-    PatchJump(kSceneResRead, reinterpret_cast<const void*>(&ReadHook));
+    PatchHook(kSceneResRead, reinterpret_cast<const void*>(&ReadHook));
 
     // Trampoline: the displaced "sub esp, 0x10C" (6 bytes), then jump back.
     g_FolderCapacity.clear(); // a rebooted game's scenes and image blocks are new
@@ -1619,7 +1619,7 @@ void InstallResourceHooks(const std::wstring& gameData, const std::wstring& mods
     rel = int32_t(kSceneLoadResource + 6) - int32_t(uintptr_t(loadStub) + 11);
     std::memcpy(loadStub + 7, &rel, 4);
     g_OriginalSceneLoad = reinterpret_cast<SceneLoadFn>(loadStub);
-    PatchJump(kSceneLoadResource, reinterpret_cast<const void*>(&SceneLoadHook));
+    PatchHook(kSceneLoadResource, reinterpret_cast<const void*>(&SceneLoadHook));
 
     // Trampoline: the displaced "sub esp, 0x74 / push ebx / xor ebx, ebx" (6 bytes), then jump back.
     uint8_t* manualStub = AllocStub(16);
@@ -1638,7 +1638,7 @@ void InstallResourceHooks(const std::wstring& gameData, const std::wstring& mods
     rel = int32_t(kAnimationLookup + 5) - int32_t(uintptr_t(lookupStub) + 10);
     std::memcpy(lookupStub + 6, &rel, 4);
     g_OriginalAnimationLookup = reinterpret_cast<AnimationLookupFn>(lookupStub);
-    PatchJump(kAnimationLookup, reinterpret_cast<const void*>(&AnimationLookupHook));
+    PatchHook(kAnimationLookup, reinterpret_cast<const void*>(&AnimationLookupHook));
 
     // Trampoline: the displaced "sub esp, 0x158" (6 bytes), then jump back.
     uint8_t* tableStub = AllocStub(16);
@@ -1648,7 +1648,7 @@ void InstallResourceHooks(const std::wstring& gameData, const std::wstring& mods
     rel = int32_t(kOpenCharacterTable + 6) - int32_t(uintptr_t(tableStub) + 11);
     std::memcpy(tableStub + 7, &rel, 4);
     g_OriginalOpenCharacterTable = reinterpret_cast<OpenCharacterTableFn>(tableStub);
-    PatchJump(kOpenCharacterTable, reinterpret_cast<const void*>(&OpenCharacterTableHook));
+    PatchHook(kOpenCharacterTable, reinterpret_cast<const void*>(&OpenCharacterTableHook));
 
     // Trampoline: the displaced "push ecx / mov eax, [esp + 8]" (5 bytes), then jump back.
     uint8_t* eventStub = AllocStub(16);
@@ -1658,8 +1658,8 @@ void InstallResourceHooks(const std::wstring& gameData, const std::wstring& mods
     rel = int32_t(kLoadEventTable + 5) - int32_t(uintptr_t(eventStub) + 10);
     std::memcpy(eventStub + 6, &rel, 4);
     g_OriginalLoadEventTable = reinterpret_cast<LoadEventTableFn>(eventStub);
-    PatchJump(kLoadEventTable, reinterpret_cast<const void*>(&LoadEventTableHook));
-    PatchJump(kPackerOpenManual, reinterpret_cast<const void*>(&OpenManualHook));
+    PatchHook(kLoadEventTable, reinterpret_cast<const void*>(&LoadEventTableHook));
+    PatchHook(kPackerOpenManual, reinterpret_cast<const void*>(&OpenManualHook));
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kPackerEndManual)), kPackerEndManualBytes,
             sizeof(kPackerEndManualBytes)) == 0) {
         PatchJump(kPackerEndManual, reinterpret_cast<const void*>(&PackerEndManualGuard));

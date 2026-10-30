@@ -14,11 +14,17 @@ namespace swrots {
 
 constexpr uint32_t kGateKernelSlots = 400;  // kernel exports, by ordinal
 constexpr uint32_t kGateSdkFirst = 400;     // XDK replacements, by symbol index
+constexpr uint32_t kGateHookFirst = 3072;  // the port's own hooks of the game's functions (PatchHook)
 constexpr uint32_t kGateSlots = 4096;
 
 // The gate of `slot`, which calls `target` (any calling convention: every register and the flags pass through, as
 // does the stack; the target sees its arguments where it expects them). Null when the slot is out of range.
 const void* HostCallGate(uint32_t slot, const void* target);
+
+// A string the port hands to the game (which may keep its address), at a fixed place in core.dll: the same text gets
+// the same address on every PC, given the same order of first uses (netplay). The same text, the same pointer.
+const char* GameString(const char* text);
+const wchar_t* GameText(const wchar_t* text);
 
 // Whether `address` is code (a kernel export may be a variable: those get no gate).
 bool IsCodeAddress(const void* address);

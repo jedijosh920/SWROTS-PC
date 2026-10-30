@@ -1081,7 +1081,7 @@ void HookReactions(ReactionWrapper wrapper)
         return s;
     }();
     g_OriginalReactionCall = reinterpret_cast<ReactionCallFn>(stub);
-    PatchJump(kReactionCall, reinterpret_cast<const void*>(&ReactionCallHook));
+    PatchHook(kReactionCall, reinterpret_cast<const void*>(&ReactionCallHook));
 }
 
 // Neutral spawns and the health they had: one that loses health was attacked, and riots.
@@ -1150,7 +1150,7 @@ void InstallCharacters()
         const int32_t back = int32_t(kIsEnemy + 8) - int32_t(uintptr_t(stub) + 13);
         std::memcpy(stub + 9, &back, 4);
         g_OriginalIsEnemy = reinterpret_cast<IsEnemyFn>(stub);
-        PatchJump(kIsEnemy, reinterpret_cast<const void*>(&IsEnemyHook));
+        PatchHook(kIsEnemy, reinterpret_cast<const void*>(&IsEnemyHook));
         const uint8_t* call = reinterpret_cast<const uint8_t*>(uintptr_t(kProvokeCall));
         if (call[0] == 0xE8 && kProvokeCall + 5 + *reinterpret_cast<const int32_t*>(call + 1) == kProvoke)
             PatchCall(kProvokeCall, reinterpret_cast<const void*>(&ProvokeHook), 5);
@@ -1222,7 +1222,7 @@ void InstallCharacters()
     int32_t rel = int32_t(kSpawnPlayer + 5) - int32_t(uintptr_t(stub) + 10);
     std::memcpy(stub + 6, &rel, 4);
     g_OriginalSpawnPlayer = reinterpret_cast<SpawnPlayerFn>(stub);
-    PatchJump(kSpawnPlayer, reinterpret_cast<const void*>(&SpawnPlayerHook));
+    PatchHook(kSpawnPlayer, reinterpret_cast<const void*>(&SpawnPlayerHook));
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kPlayerVariantSite)), kPlayerVariantBytes,
             sizeof(kPlayerVariantBytes)) == 0) {
         PatchJump(kPlayerVariantSite, reinterpret_cast<const void*>(&PlayerVariantStub));
@@ -1238,7 +1238,7 @@ void InstallCharacters()
         int32_t back = int32_t(kPortraitLookup + 7) - int32_t(uintptr_t(portraitStub) + 12);
         std::memcpy(portraitStub + 8, &back, 4);
         g_OriginalPortraitLookup = reinterpret_cast<PortraitLookupFn>(portraitStub);
-        PatchJump(kPortraitLookup, reinterpret_cast<const void*>(&PortraitLookupHook));
+        PatchHook(kPortraitLookup, reinterpret_cast<const void*>(&PortraitLookupHook));
         const int32_t lookup = int32_t(kPortraitLookup) - int32_t(kHudPortraitCall + 5);
         if (*reinterpret_cast<const uint8_t*>(uintptr_t(kHudPortraitCall)) == 0xE8 &&
             std::memcmp(reinterpret_cast<const void*>(uintptr_t(kHudPortraitCall + 1)), &lookup, 4) == 0)

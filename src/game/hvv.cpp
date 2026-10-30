@@ -1045,7 +1045,7 @@ void InstallEffectHooks()
     g_SlowOwner = g_LockCameraOwner = nullptr;
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kScriptSlowMotion)), kScriptSlowMotionBytes,
             sizeof kScriptSlowMotionBytes) == 0)
-        PatchJump(kScriptSlowMotion, reinterpret_cast<const void*>(&ScriptSlowMotion));
+        PatchHook(kScriptSlowMotion, reinterpret_cast<const void*>(&ScriptSlowMotion));
     else
         LOG_WARN("HvV: the slow-motion call is not as expected; other fighters' slow motion reaches the player");
     int hooked = 0;
