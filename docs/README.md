@@ -54,5 +54,6 @@ Notes on the game's engine, from its own executable and from related games.
 - [Battlefront](battlefront.md): the conquest mode (command posts, tickets, heroes for points), and how it is built
 - [Heroes vs Villains](research/heroes-vs-villains.md): the team mode (main menu, `hvv`): how it is built and what
   was tried
+- [Netplay](research/netplay.md): online Versus and co-op with rollback (in progress): the design, and SyncTest
 - [Levels](research/levels.md): how a level is built (the level file, collision brushes, sectors, lights, objects),
   and a developer test map made from one

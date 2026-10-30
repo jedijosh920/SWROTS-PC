@@ -10,6 +10,7 @@
 #include "core/log.h"
 #include "core/patch.h"
 #include "game/game.h"
+#include "kernel/clock.h"
 #include "kernel/kernel.h"
 
 namespace swrots::xapi {
@@ -38,21 +39,50 @@ void RegisterSdkPassthrough(const char* symbolName)
 
 // ---------------------------------------------------------------------------
 // Clock. XAPI reads the TSC and assumes the Xbox's 733 MHz CPU; use the host's
-// performance counter at its real frequency instead.
+// performance counter instead, always shown at 10 MHz: the game then sees the same
+// frequency on every PC, and the fixed clock (kernel/clock.h, netplay) is in those units.
 // ---------------------------------------------------------------------------
-static BOOL __stdcall XQueryPerformanceCounter(LARGE_INTEGER* counter) { return QueryPerformanceCounter(counter); }
-static BOOL __stdcall XQueryPerformanceFrequency(LARGE_INTEGER* frequency) { return QueryPerformanceFrequency(frequency); }
-
-// The engine's own timer reads the TSC directly (see game::kEngineTimerNow);
-// return the host clock in the same Xbox units, 733,333,333 / 16 Hz.
-static uint32_t EngineTimerTicks()
+static LONGLONG HostQpcFrequency()
 {
     static const LONGLONG freq = [] {
         LARGE_INTEGER f;
         QueryPerformanceFrequency(&f);
         return f.QuadPart;
     }();
+    return freq;
+}
+
+static BOOL __stdcall XQueryPerformanceCounter(LARGE_INTEGER* counter)
+{
+    if (kernel::FixedClockOn()) {
+        counter->QuadPart = LONGLONG(kernel::FixedClockNow());
+        return TRUE;
+    }
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    const LONGLONG freq = HostQpcFrequency();
+    constexpr LONGLONG kRate = LONGLONG(kernel::kClockUnitsPerSecond);
+    counter->QuadPart = now.QuadPart / freq * kRate + now.QuadPart % freq * kRate / freq;
+    return TRUE;
+}
+
+static BOOL __stdcall XQueryPerformanceFrequency(LARGE_INTEGER* frequency)
+{
+    frequency->QuadPart = LONGLONG(kernel::kClockUnitsPerSecond);
+    return TRUE;
+}
+
+// The engine's own timer reads the TSC directly (see game::kEngineTimerNow);
+// return the host clock in the same Xbox units, 733,333,333 / 16 Hz.
+static uint32_t EngineTimerTicks()
+{
     constexpr LONGLONG kRate = 733333333 / 16;
+    if (kernel::FixedClockOn()) { // netplay: the frame's time (kernel/clock.h)
+        const uint64_t t = kernel::FixedClockNow();
+        constexpr uint64_t kUnits = kernel::kClockUnitsPerSecond;
+        return uint32_t(t / kUnits * kRate + t % kUnits * kRate / kUnits);
+    }
+    const LONGLONG freq = HostQpcFrequency();
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
     return uint32_t(now.QuadPart / freq * kRate + now.QuadPart % freq * kRate / freq);

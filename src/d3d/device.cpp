@@ -16,6 +16,7 @@
 #include "kernel/kernel.h"
 #include "kernel/mm.h"
 #include "kernel/reboot.h"
+#include "net/rollback.h"
 #include "xapi/xapi.h"
 
 namespace swrots::d3d {
@@ -621,29 +622,65 @@ static void ApplyFpsLimit()
     game::ApplyDevOptions(renderer);
 }
 
-static DWORD __stdcall XbSwap(DWORD flags)
+// The end of every game frame. `frameStack` is where the game's part of the stack starts (XbSwap below): netplay's
+// rollback (net/rollback.h) saves the frame there, and may bring back an earlier one, the game then carrying on
+// from that frame's Swap. A frame played again (a resimulation) is not shown and does not wait for the display.
+static DWORD __stdcall SwapFrame(const void* frameStack, DWORD flags)
 {
     (void)flags;
-    UploadCpuWrittenBackBuffer();
-    PresentFrame();
+    const bool shown = !net::Resimulating();
+    if (shown) {
+        UploadCpuWrittenBackBuffer();
+        PresentFrame();
+    }
     ApplyFpsLimit();
-    debug::MenuAfterFrame();
+    if (shown)
+        debug::MenuAfterFrame();
     NoteFrame();
 
     DWORD interval = XboxRenderStates()[RS_PRESENTATIONINTERVAL];
     if (interval == 0)
         interval = g_State.pp.FullScreen_PresentationInterval;
     // D3DPRESENT_INTERVAL_IMMEDIATE (0x80000000) presents without waiting.
-    if (!(interval & 0x80000000)) {
+    if (shown && !(interval & 0x80000000)) {
         DWORD vblanks = interval == 0 ? 1 : interval;
         for (DWORD i = 0; i < vblanks && i < 4; ++i)
             WaitForVBlank();
     }
 
     ++g_State.swapCount;
-    NoteFrameTime();
+    if (shown)
+        NoteFrameTime();
     CollectResources(g_State.swapCount);
-    return g_State.swapCount;
+    return net::FrameBoundary(frameStack, g_State.swapCount);
+}
+
+// D3DDevice_Swap (stdcall, one argument). The game's callee-saved registers (ebp, ebx, esi, edi), its x87 control
+// word and SSE control register are pushed first, so that the game's part of the stack, from them up, is all a
+// frame boundary is: restoring it (a rollback) restores the registers the game gets back too.
+static __declspec(naked) void XbSwap()
+{
+    __asm {
+        push ebp
+        push ebx
+        push esi
+        push edi
+        sub esp, 8
+        fnstcw word ptr [esp]
+        stmxcsr dword ptr [esp + 4]
+        mov eax, esp
+        push dword ptr [eax + 28] // flags: past the 8 bytes, the 4 registers and the return address
+        push eax                  // frameStack
+        call SwapFrame
+        fldcw word ptr [esp]
+        ldmxcsr dword ptr [esp + 4]
+        add esp, 8
+        pop edi
+        pop esi
+        pop ebx
+        pop ebp
+        ret 4
+    }
 }
 
 static void __stdcall XbGetDisplayMode(DisplayMode* mode)

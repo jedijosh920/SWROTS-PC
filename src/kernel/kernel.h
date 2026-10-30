@@ -120,6 +120,11 @@ MemoryUsage QueryMemoryUsage();
 // The game's committed memory regions (contiguous allocations and the committed parts of its virtual
 // allocations), for research scans. Any thread.
 std::vector<std::pair<uintptr_t, size_t>> GameMemoryRegions();
+// The game's pool blocks (ExAllocatePoolWithTag: on the PC's heap) and their sizes. Any thread.
+std::vector<std::pair<uintptr_t, size_t>> GamePoolBlocks();
+// A number that moves on whenever the game allocates or frees memory (contiguous, virtual, system or pool), so
+// netplay's snapshots (net/state.h) know when the memory they cover has changed shape. Any thread.
+uint32_t MemoryLayoutGeneration();
 
 // --- File system (file.cpp) ------------------------------------------------
 void FileSystemInit(const Paths& paths);

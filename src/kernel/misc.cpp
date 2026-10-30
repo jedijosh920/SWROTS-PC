@@ -14,6 +14,7 @@
 #include "core/crash.h"
 #include "core/log.h"
 #include "core/xbe.h"
+#include "kernel/clock.h"
 #include "kernel/exports.h"
 #include "kernel/host_nt.h"
 #include "kernel/kernel.h"
@@ -66,12 +67,17 @@ static void TickThreadMain()
     ULONGLONG start = GetTickCount64();
     for (;;) {
         Sleep(1);
-        KeTickCount = ULONG(GetTickCount64() - start);
+        // Under the fixed clock (netplay) it shows the frame's time, even between two frame boundaries.
+        KeTickCount = FixedClockOn() ? FixedClockTickCount() : ULONG(GetTickCount64() - start);
     }
 }
 
 void XBAPI KeQuerySystemTime(LARGE_INTEGER* CurrentTime)
 {
+    if (FixedClockOn()) {
+        CurrentTime->QuadPart = LONGLONG(FixedClockSystemTime());
+        return;
+    }
     FILETIME ft;
     GetSystemTimeAsFileTime(&ft);
     CurrentTime->LowPart = ft.dwLowDateTime;
@@ -80,6 +86,8 @@ void XBAPI KeQuerySystemTime(LARGE_INTEGER* CurrentTime)
 
 ULONGLONG XBAPI KeQueryInterruptTime()
 {
+    if (FixedClockOn())
+        return FixedClockNow();
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
     return ULONGLONG((now.QuadPart - g_BootQpc.QuadPart) * 10000000.0 / double(g_QpcFreq.QuadPart));

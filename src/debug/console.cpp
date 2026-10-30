@@ -8,6 +8,7 @@
 #include <iterator>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -26,6 +27,7 @@
 #include "game/missions.h"
 #include "game/versus.h"
 #include "kernel/kernel.h"
+#include "net/rollback.h"
 
 namespace swrots::debug {
 
@@ -991,6 +993,30 @@ void FreeCamera(const std::vector<std::string>& words)
     }
 }
 
+// synctest [<distance> [<every>]] | off | (nothing): netplay's rollback check (net/rollback.h): every <every>
+// frames (1), back <distance> frames (4) and played again; the checksums must come out the same. Results in the log.
+void SyncTest(const std::vector<std::string>& words)
+{
+    if (words.size() >= 2 && _stricmp(words[1].c_str(), "off") == 0) {
+        net::StopRollback();
+        Print(LineKind::Output, "  SyncTest off (results in the log)");
+        return;
+    }
+    if (words.size() < 2) {
+        Print(LineKind::Output, "  %s", net::RollbackStatus().c_str());
+        Print(LineKind::Output, "  synctest <distance> [<every>] starts it, synctest off stops it");
+        return;
+    }
+    const int distance = std::atoi(words[1].c_str());
+    const int every = words.size() >= 3 ? std::atoi(words[2].c_str()) : 1;
+    if (distance < 1 || distance > 30 || every < 1) {
+        Print(LineKind::Output, "  synctest <distance 1-30> [<every 1+>]");
+        return;
+    }
+    net::StartSyncTest(uint32_t(distance), uint32_t(every));
+    Print(LineKind::Output, "  SyncTest from the next frame: back %d frames every %d frame(s)", distance, every);
+}
+
 // Returns false when the line is for the game's own console.
 bool RunPortCommand(uint8_t* console, const std::string& line)
 {
@@ -1022,7 +1048,7 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         command != "infiniteforce" && command != "memory" && command != "team" &&
         command != "findrefs" && command != "despawn" && command != "characters" && command != "scale" &&
         command != "screenshot" && command != "coop" &&
-        command != "devmap" && command != "hvv" && command != "versus" && command != "mission" && command != "kill")
+        command != "devmap" && command != "hvv" && command != "versus" && command != "mission" && command != "kill" && command != "synctest")
         return false;
     Print(LineKind::Output, "> %s", line.c_str());
     if (command == "duelist") {
@@ -1039,6 +1065,8 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         AutoRestart(words);
     } else if (command == "freecam") {
         FreeCamera(words);
+    } else if (command == "synctest") {
+        SyncTest(words);
     } else if (command == "saber") {
         Saber(words);
     } else if (command == "spawn") {
@@ -1259,7 +1287,7 @@ void RunQueuedConsoleCommands()
             // and gone while a level loads).
             const std::vector<std::string> words = Words(line);
             static const char* const kStandalone[] = { "player", "variants", "meshes", "restart", "autorestart",
-                "duelist", "freecam", "saber", "spawn", "peek", "infiniteforce", "memory", "team", "findrefs", "despawn", "characters", "scale", "screenshot", "coop", "devmap", "hvv", "versus", "mission", "kill", "clear", "cls" };
+                "duelist", "freecam", "saber", "spawn", "peek", "infiniteforce", "memory", "team", "findrefs", "despawn", "characters", "scale", "screenshot", "coop", "devmap", "hvv", "versus", "mission", "kill", "synctest", "clear", "cls" };
             const bool standalone = !words.empty() && std::any_of(std::begin(kStandalone), std::end(kStandalone),
                 [&](const char* c) { return _stricmp(words[0].c_str(), c) == 0; });
             if (standalone) {

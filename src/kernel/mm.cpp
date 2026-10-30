@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <map>
 #include <mutex>
 #include <unordered_set>
@@ -39,6 +40,8 @@ static std::map<uint32_t, uint32_t> g_ContigUsed; // offset -> size
 static std::mutex g_TrackLock;
 static std::unordered_set<void*> g_VirtualBases; // NtAllocateVirtualMemory / MmAllocateSystemMemory
 static std::unordered_set<void*> g_PoolBlocks;   // ExAllocatePoolWithTag
+// Moves on whenever the game allocates or frees memory (MemoryLayoutGeneration).
+static std::atomic<uint32_t> g_LayoutGeneration{ 0 };
 
 void ContiguousInit(void* base, uint32_t size)
 {
@@ -105,6 +108,7 @@ void* XBAPI MmAllocateContiguousMemoryEx(ULONG NumberOfBytes, ULONG_PTR LowestAc
         if (aligned + size < start + len)
             g_ContigFree[aligned + size] = start + len - (aligned + size);
         g_ContigUsed[aligned] = size;
+        ++g_LayoutGeneration;
 
         void* p = reinterpret_cast<void*>(uintptr_t(g_ContigBase + aligned));
         if (!VirtualAlloc(p, size, MEM_COMMIT, HostProtect(ProtectionType)))
@@ -131,6 +135,7 @@ void XBAPI MmFreeContiguousMemory(void* BaseAddress)
     }
     uint32_t size = it->second;
     g_ContigUsed.erase(it);
+    ++g_LayoutGeneration;
     VirtualFree(BaseAddress, size, MEM_DECOMMIT);
 
     // Insert and coalesce with neighbours.
@@ -186,10 +191,14 @@ KERNEL_EXPORT(180, MmQueryAllocationSize);
 // ---------------------------------------------------------------------------
 void* XBAPI MmAllocateSystemMemory(ULONG NumberOfBytes, ULONG Protect)
 {
-    void* p = VirtualAlloc(nullptr, NumberOfBytes, MEM_RESERVE | MEM_COMMIT, HostProtect(Protect));
+    // Write-watched, as the game's other memory, for netplay's snapshots (net/state.h).
+    void* p = VirtualAlloc(nullptr, NumberOfBytes, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, HostProtect(Protect));
+    if (!p)
+        p = VirtualAlloc(nullptr, NumberOfBytes, MEM_RESERVE | MEM_COMMIT, HostProtect(Protect));
     if (p) {
         std::lock_guard<std::mutex> lock(g_TrackLock);
         g_VirtualBases.insert(p);
+        ++g_LayoutGeneration;
     }
     return p;
 }
@@ -199,6 +208,7 @@ ULONG XBAPI MmFreeSystemMemory(void* BaseAddress, ULONG NumberOfBytes)
     {
         std::lock_guard<std::mutex> lock(g_TrackLock);
         g_VirtualBases.erase(BaseAddress);
+        ++g_LayoutGeneration;
     }
     VirtualFree(BaseAddress, 0, MEM_RELEASE);
     return (NumberOfBytes + 0xFFF) >> 12;
@@ -245,8 +255,21 @@ NTSTATUS XBAPI NtAllocateVirtualMemory(void** BaseAddress, ULONG_PTR ZeroBits, U
     ULONG AllocationType, ULONG Protect)
 {
     SIZE_T size = *AllocationSize;
-    NTSTATUS status = ::NtAllocateVirtualMemory(GetCurrentProcess(), BaseAddress, ZeroBits, &size,
-        AllocationType & ~kMemNoZero, HostProtect(Protect));
+    const ULONG type = AllocationType & ~kMemNoZero;
+    NTSTATUS status = -1;
+    // New reservations are write-watched, as the game's other memory, for netplay's snapshots (net/state.h);
+    // without it if Windows refuses (the snapshots then compare those pages instead).
+    if (type & MEM_RESERVE) {
+        void* base = *BaseAddress;
+        status = ::NtAllocateVirtualMemory(GetCurrentProcess(), &base, ZeroBits, &size, type | MEM_WRITE_WATCH,
+            HostProtect(Protect));
+        if (status >= 0)
+            *BaseAddress = base;
+        else
+            size = *AllocationSize;
+    }
+    if (status < 0)
+        status = ::NtAllocateVirtualMemory(GetCurrentProcess(), BaseAddress, ZeroBits, &size, type, HostProtect(Protect));
     *AllocationSize = ULONG(size);
     if (status < 0)
         LOG_WARN("NtAllocateVirtualMemory(%p, %lu, %08lX) -> %08lX", *BaseAddress, size, AllocationType, status);
@@ -254,6 +277,8 @@ NTSTATUS XBAPI NtAllocateVirtualMemory(void** BaseAddress, ULONG_PTR ZeroBits, U
         std::lock_guard<std::mutex> lock(g_TrackLock);
         g_VirtualBases.insert(*BaseAddress);
     }
+    if (status >= 0)
+        ++g_LayoutGeneration; // a reservation, or pages committed in one
     return status;
 }
 
@@ -264,6 +289,7 @@ NTSTATUS XBAPI NtFreeVirtualMemory(void** BaseAddress, ULONG* FreeSize, ULONG Fr
         std::lock_guard<std::mutex> lock(g_TrackLock);
         g_VirtualBases.erase(*BaseAddress);
     }
+    ++g_LayoutGeneration;
     NTSTATUS status = ::NtFreeVirtualMemory(GetCurrentProcess(), BaseAddress, &size, FreeType);
     *FreeSize = ULONG(size);
     return status;
@@ -289,6 +315,7 @@ void* XBAPI ExAllocatePoolWithTag(ULONG NumberOfBytes, ULONG Tag)
     if (p) {
         std::lock_guard<std::mutex> lock(g_TrackLock);
         g_PoolBlocks.insert(p);
+        ++g_LayoutGeneration;
     }
     return p;
 }
@@ -298,6 +325,7 @@ void XBAPI ExFreePool(void* P)
     {
         std::lock_guard<std::mutex> lock(g_TrackLock);
         g_PoolBlocks.erase(P);
+        ++g_LayoutGeneration;
     }
     HeapFree(GetProcessHeap(), 0, P);
 }
@@ -341,6 +369,17 @@ std::vector<std::pair<uintptr_t, size_t>> GameMemoryRegions()
     }
     return regions;
 }
+
+std::vector<std::pair<uintptr_t, size_t>> GamePoolBlocks()
+{
+    std::vector<std::pair<uintptr_t, size_t>> blocks;
+    std::lock_guard<std::mutex> lock(g_TrackLock);
+    for (void* block : g_PoolBlocks)
+        blocks.push_back({ uintptr_t(block), HeapSize(GetProcessHeap(), 0, block) });
+    return blocks;
+}
+
+uint32_t MemoryLayoutGeneration() { return g_LayoutGeneration; }
 
 MemoryUsage QueryMemoryUsage()
 {

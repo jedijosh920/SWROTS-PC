@@ -709,13 +709,13 @@ static void __stdcall XbInputClose(HANDLE device)
         static_cast<Port*>(device)->open = false;
 }
 
-static DWORD __stdcall XbInputGetState(HANDLE device, XInputState* state)
+static std::atomic<PadSource> g_PadSource{ nullptr };
+
+void SetPadSource(PadSource source) { g_PadSource = source; }
+
+// What port `index`'s player holds now (the keyboard and mouse, controllers, the test inputs).
+static void ReadPortLive(DWORD index, XGamepad& g)
 {
-    auto* port = static_cast<Port*>(device);
-    if (!port || !port->open)
-        return ERROR_DEVICE_NOT_CONNECTED;
-    DWORD index = DWORD(port - g_Ports);
-    XGamepad g = {};
     if (index == 0 && g_HoldPlayer) { // held back: only A or Start pressed is noted (TakeHeldPress)
         XGamepad held = {};
         if (!RunningInBackground())
@@ -780,6 +780,36 @@ static DWORD __stdcall XbInputGetState(HANDLE device, XInputState* state)
             g.bAnalogButtons[XB_Y] = 0;
         }
     }
+}
+
+static_assert(sizeof(XGamepad) == sizeof(GamePad), "GamePad is XGamepad");
+
+void ReadLivePad(int port, GamePad& pad)
+{
+    XGamepad g = {};
+    if (port >= 0 && port < int(std::size(g_Ports)))
+        ReadPortLive(DWORD(port), g);
+    std::memcpy(&pad, &g, sizeof(pad));
+}
+
+static DWORD __stdcall XbInputGetState(HANDLE device, XInputState* state)
+{
+    auto* port = static_cast<Port*>(device);
+    if (!port || !port->open)
+        return ERROR_DEVICE_NOT_CONNECTED;
+    const DWORD index = DWORD(port - g_Ports);
+    if (const PadSource source = g_PadSource) { // netplay: the frame's input, the same however often it is read
+        GamePad pad;
+        uint32_t packet = 0;
+        if (source(int(index), pad, packet)) {
+            std::memcpy(&port->last, &pad, sizeof(pad));
+            state->dwPacketNumber = packet;
+            std::memcpy(&state->Gamepad, &pad, sizeof(pad));
+            return ERROR_SUCCESS;
+        }
+    }
+    XGamepad g = {};
+    ReadPortLive(index, g);
     if (std::memcmp(&g, &port->last, sizeof(g)) != 0) {
         port->last = g;
         ++port->packet;

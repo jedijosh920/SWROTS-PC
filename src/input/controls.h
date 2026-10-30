@@ -6,6 +6,7 @@
 
 #include <windows.h>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -78,6 +79,24 @@ bool Player2Shooting();
 // A game controller port's left stick as the game last read it (the keyboard's movement keys included for player 1),
 // -1..1 each, up positive; false when the port is not open.
 bool LeftStick(int port, float& x, float& y);
+
+// A controller's state as the game reads it (the Xbox's XINPUT_GAMEPAD): digital buttons (d-pad, Start, Back, the
+// sticks' clicks), the 8 analog buttons' pressure (A, B, X, Y, Black, White, the triggers), the sticks.
+struct GamePad {
+    uint16_t buttons;
+    uint8_t analog[8];
+    int16_t thumbs[4]; // left x, left y, right x, right y
+};
+static_assert(sizeof(GamePad) == 18, "GamePad is the Xbox's XINPUT_GAMEPAD");
+
+// What a port's player holds now, as the game would read it without netplay (the keyboard and mouse, controllers,
+// the test inputs). Netplay samples it once a frame.
+void ReadLivePad(int port, GamePad& pad);
+// Netplay (net/rollback.h): the game's reads of ports 0-3 are answered by `source` instead of the PC's devices, as
+// long as it returns true: the pad for the frame being played and its packet number (which moves on whenever
+// the pad changes). Null for none.
+using PadSource = bool (*)(int port, GamePad& pad, uint32_t& packet);
+void SetPadSource(PadSource source);
 
 // The game rebooted in-process: its controller ports are closed again.
 void ResetPortsForReboot();

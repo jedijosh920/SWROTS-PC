@@ -42,9 +42,10 @@ target_link_libraries(SWROTS PRIVATE kernel32 user32)
 # ---------------------------------------------------------------------------
 file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS
   src/core/*.cpp src/kernel/*.cpp src/xapi/*.cpp src/game/*.cpp src/input/*.cpp src/d3d/*.cpp src/audio/*.cpp
-  src/debug/*.cpp)
+  src/debug/*.cpp src/net/*.cpp)
 file(GLOB_RECURSE CORE_HEADERS CONFIGURE_DEPENDS
-  src/core/*.h src/kernel/*.h src/xapi/*.h src/game/*.h src/game/*.inc src/input/*.h src/d3d/*.h src/debug/*.h)
+  src/core/*.h src/kernel/*.h src/xapi/*.h src/game/*.h src/game/*.inc src/input/*.h src/d3d/*.h src/debug/*.h
+  src/net/*.h)
 
 # Dear ImGui (third_party/imgui, MIT): the debug menu.
 set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui)
