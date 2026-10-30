@@ -831,7 +831,8 @@ static HRESULT __stdcall StreamProcess(Stream* h, MediaPacket* input, MediaPacke
 // while the model runs is kept (a rollback may bring it back); one whose slot is taken again was dropped by a
 // rollback and is destroyed first.
 
-constexpr uint32_t kModelVoices = 256;
+constexpr uint32_t kModelVoices = 2048;
+constexpr uint32_t kModelStreams = 64; // streams' packet queues (streams are few; buffers many)
 constexpr uint32_t kModelPackets = 32;
 constexpr uint32_t kModelCallbacks = 128;
 constexpr uint64_t kModelUnits = 10000000; // the fixed clock's units per second
@@ -861,8 +862,13 @@ struct ModelVoice {
     // streams
     uint32_t maxPackets;
     uint32_t head, count;
+    int32_t queue; // its packet queue in ModelState::queues, or -1
     XmoCallback callback;
     void* context;
+};
+
+struct ModelQueue {
+    uint32_t used;
     ModelPacket packets[kModelPackets];
 };
 
@@ -878,6 +884,7 @@ struct ModelState {
     uint32_t callbackCount;
     uint32_t pad;
     ModelCallback callbacks[kModelCallbacks];
+    ModelQueue queues[kModelStreams];
     ModelVoice voices[kModelVoices];
 };
 
@@ -891,6 +898,31 @@ alignas(16) static uint8_t g_Arena[kModelVoices][kArenaRoom];
 static Voice* g_ArenaObject[kModelVoices] = {}; // the object built in each room, if any
 
 static uint64_t ModelNow() { return kernel::FixedClockPeek(); }
+
+static ModelPacket* QueueOf(ModelVoice& m) { return g_Model.queues[m.queue].packets; }
+
+// A packet queue for a stream (false when all are taken: the stream then completes its packets at once).
+static bool ModelTakeQueue(ModelVoice& m)
+{
+    for (uint32_t i = 0; i < kModelStreams; ++i) {
+        if (!g_Model.queues[i].used) {
+            g_Model.queues[i].used = 1;
+            m.queue = int32_t(i);
+            return true;
+        }
+    }
+    m.queue = -1;
+    return false;
+}
+
+static void ModelFreeSlot(ModelVoice& m)
+{
+    if (m.queue >= 0)
+        g_Model.queues[m.queue].used = 0;
+    m.queue = -1;
+    m.count = 0;
+    m.used = 0;
+}
 
 static uint32_t ModelRate(const ModelVoice& m)
 {
@@ -979,6 +1011,7 @@ static void ModelAdopt(Voice* v, int slot, LONG refCount)
     ModelVoice& m = g_Model.voices[slot];
     m = ModelVoice{};
     m.used = 1;
+    m.queue = -1;
     m.isStream = v->isStream;
     m.refCount = refCount;
     ModelSetFormat(m, v->format);
@@ -1034,7 +1067,7 @@ static void StreamQueueCallback(ModelVoice& m, const MediaPacket& p, DWORD statu
 
 static void StreamCompleteHead(ModelVoice& m, HRESULT status)
 {
-    ModelPacket& head = m.packets[m.head];
+    ModelPacket& head = QueueOf(m)[m.head];
     MediaPacket& p = head.packet;
     if (p.pdwCompletedSize)
         *p.pdwCompletedSize = status == XMP_STATUS_SUCCESS ? p.dwMaxSize : 0;
@@ -1052,7 +1085,7 @@ static void StreamAdvance(ModelVoice& m)
         return;
     const uint64_t now = ModelNow();
     while (m.count) {
-        const uint64_t end = m.startTime + SamplesToTime(m.packets[m.head].samples, ModelRate(m));
+        const uint64_t end = m.startTime + SamplesToTime(QueueOf(m)[m.head].samples, ModelRate(m));
         if (end > now)
             break;
         m.startTime = end;
@@ -1082,6 +1115,8 @@ static void ModelOn()
     g_Model.callbackCount = 0;
     for (ModelVoice& m : g_Model.voices)
         m = ModelVoice{};
+    for (ModelQueue& q : g_Model.queues)
+        q.used = 0;
     uint32_t adopted = 0;
     // Objects living in the arena (from an earlier session) keep their room's slot: a slot's room is only ever its
     // own object's. The others take the free slots after.
@@ -1110,6 +1145,7 @@ static void ModelOn()
             auto* st = static_cast<Stream*>(v);
             ModelAdopt(v, slot, st->refCount);
             ModelVoice& m = g_Model.voices[slot];
+            ModelTakeQueue(m);
             m.maxPackets = st->maxPackets;
             m.callback = st->callback;
             m.context = st->context;
@@ -1117,9 +1153,9 @@ static void ModelOn()
             m.startTime = now;
             std::lock_guard<std::mutex> lock(st->packetLock);
             for (auto& p : st->queued) {
-                if (m.count == kModelPackets)
+                if (m.queue < 0 || m.count == kModelPackets)
                     break;
-                ModelPacket& mp = m.packets[(m.head + m.count++) % kModelPackets];
+                ModelPacket& mp = QueueOf(m)[(m.head + m.count++) % kModelPackets];
                 mp.packet = p->packet;
                 mp.samples = p->pcm.empty() ? ModelSamples(m, p->packet.dwMaxSize)
                                             : uint32_t(p->pcm.size() / std::max<DWORD>(1, v->Channels()));
@@ -1169,7 +1205,7 @@ static void ModelOff()
             {
                 std::lock_guard<std::mutex> lock(st->packetLock);
                 for (uint32_t i = 0; i < m.count; ++i) {
-                    const MediaPacket& p = m.packets[(m.head + i) % kModelPackets].packet;
+                    const MediaPacket& p = QueueOf(m)[(m.head + i) % kModelPackets].packet;
                     bool found = false;
                     for (auto& q : st->queued) {
                         if (q->modelOnly && q->packet.pdwStatus == p.pdwStatus && q->packet.pContext == p.pContext) {
@@ -1218,8 +1254,7 @@ static ULONG __stdcall StreamRelease(Stream* h)
     if (ModelVoice* m = ModelOf(s)) {
         const LONG n = --m->refCount;
         if (n == 0) { // kept: a rollback may bring it back
-            m->count = 0;
-            m->used = 0;
+            ModelFreeSlot(*m);
             s->FlushAll();
         }
         return ULONG(n);
@@ -1288,7 +1323,7 @@ static HRESULT __stdcall StreamProcess(Stream* h, MediaPacket* input, MediaPacke
             *input->pdwStatus = DWORD(XMP_STATUS_PENDING);
         if (input->pdwCompletedSize)
             *input->pdwCompletedSize = 0;
-        if (m->count == kModelPackets) { // more than the model holds: done at once
+        if (m->queue < 0 || m->count == kModelPackets) { // more than the model holds: done at once
             if (input->pdwCompletedSize)
                 *input->pdwCompletedSize = input->dwMaxSize;
             if (input->pdwStatus)
@@ -1298,7 +1333,7 @@ static HRESULT __stdcall StreamProcess(Stream* h, MediaPacket* input, MediaPacke
         }
         if (!m->count && !m->paused)
             m->startTime = ModelNow();
-        ModelPacket& mp = m->packets[(m->head + m->count++) % kModelPackets];
+        ModelPacket& mp = QueueOf(*m)[(m->head + m->count++) % kModelPackets];
         mp.packet = *input;
         mp.samples = ModelSamples(*m, input->dwMaxSize);
         if (!m->paused)
@@ -1462,6 +1497,7 @@ static HRESULT __stdcall XbDirectSoundCreateStream(const StreamDesc* desc, void*
     if (room) {
         ModelAdopt(s, slot, 1);
         ModelVoice& m = g_Model.voices[slot];
+        ModelTakeQueue(m);
         m.maxPackets = s->maxPackets;
         m.callback = s->callback;
         m.context = s->context;
@@ -1574,7 +1610,7 @@ static ULONG __stdcall XbBufRelease(SoundBuffer* b)
     if (ModelVoice* m = ModelOf(b)) {
         const LONG n = --m->refCount;
         if (n == 0) { // kept: a rollback may bring it back
-            m->used = 0;
+            ModelFreeSlot(*m);
             if (b->source)
                 b->source->Stop();
             b->playing = false;

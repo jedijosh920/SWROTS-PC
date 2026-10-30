@@ -125,6 +125,11 @@ std::vector<std::pair<uintptr_t, size_t>> GamePoolBlocks();
 // A number that moves on whenever the game allocates or frees memory (contiguous, virtual, system or pool), so
 // netplay's snapshots (net/state.h) know when the memory they cover has changed shape. Any thread.
 uint32_t MemoryLayoutGeneration();
+// Netplay: while on, pool blocks (ExAllocatePoolWithTag) come from a deterministic allocator in an arena of the
+// game's virtual memory, which the snapshots cover, and heap blocks the game frees are only freed when it is turned
+// off (a rollback could give one back). The arena is made the first time (a change of the memory layout). False when
+// it cannot be made. On the game's main thread at a frame boundary.
+bool SetDeterministicPool(bool on);
 
 // --- File system (file.cpp) ------------------------------------------------
 void FileSystemInit(const Paths& paths);

@@ -40,6 +40,7 @@ static std::map<uint32_t, uint32_t> g_ContigUsed; // offset -> size
 static std::mutex g_TrackLock;
 static std::unordered_set<void*> g_VirtualBases; // NtAllocateVirtualMemory / MmAllocateSystemMemory
 static std::unordered_set<void*> g_PoolBlocks;   // ExAllocatePoolWithTag
+static std::mutex g_PoolLock; // the netplay pool
 // Moves on whenever the game allocates or frees memory (MemoryLayoutGeneration).
 static std::atomic<uint32_t> g_LayoutGeneration{ 0 };
 
@@ -308,9 +309,153 @@ KERNEL_EXPORT(217, NtQueryVirtualMemory);
 // ---------------------------------------------------------------------------
 // Pool
 // ---------------------------------------------------------------------------
+// --- The deterministic pool (netplay) ---------------------------------------------------------
+// While netplay's rollback runs, pool blocks come from an arena of the port's (in the game's virtual memory, so the
+// snapshots cover it, write-watched), whose allocator keeps all its state inside the arena: a frame played again
+// gets the same blocks at the same addresses, and a rollback undoes allocations with the rest of the memory. Blocks
+// on the PC's heap from before the session that the game frees meanwhile are only freed when the session ends (a
+// rollback could give the game one back): their list is in the arena too.
+
+namespace {
+
+constexpr uint32_t kArenaSize = 48u << 20;
+constexpr uint32_t kArenaMagic = 0x4C4F4F50; // 'POOL'
+constexpr int kClasses = 21;                 // block sizes 32 B .. 32 MiB, powers of two
+constexpr uint32_t kDeferred = 8192;
+
+struct ArenaHeader {
+    uint32_t magic;
+    uint32_t top;               // offset of the first byte never handed out
+    uint32_t free[kClasses];    // each class's free list (offsets, 0 = empty)
+    uint32_t deferredCount;
+    uint32_t deferredLost;
+    void* deferred[kDeferred];  // heap blocks the game freed during the session
+};
+
+struct BlockHeader { // 16 bytes before each block
+    uint32_t magic;
+    uint32_t sizeClass;
+    uint32_t requested;
+    uint32_t next; // in a free list
+};
+
+uint8_t* g_Arena = nullptr;
+std::atomic<bool> g_ArenaOn{ false };
+
+ArenaHeader& Arena() { return *reinterpret_cast<ArenaHeader*>(g_Arena); }
+
+bool InArena(const void* p)
+{
+    return g_Arena && p >= g_Arena && p < g_Arena + kArenaSize;
+}
+
+int ClassFor(uint32_t bytes)
+{
+    const uint32_t need = bytes + sizeof(BlockHeader);
+    for (int c = 0; c < kClasses; ++c)
+        if ((32u << c) >= need)
+            return c;
+    return -1;
+}
+
+void* ArenaAlloc(uint32_t bytes)
+{
+    ArenaHeader& a = Arena();
+    const int c = ClassFor(bytes);
+    if (c < 0)
+        return nullptr;
+    const uint32_t size = 32u << c;
+    uint32_t at = a.free[c];
+    if (at) {
+        a.free[c] = reinterpret_cast<BlockHeader*>(g_Arena + at)->next;
+    } else {
+        if (a.top + size > kArenaSize)
+            return nullptr;
+        at = a.top;
+        a.top += size;
+    }
+    auto* h = reinterpret_cast<BlockHeader*>(g_Arena + at);
+    h->magic = kArenaMagic;
+    h->sizeClass = uint32_t(c);
+    h->requested = bytes;
+    h->next = 0;
+    return h + 1;
+}
+
+void ArenaFree(void* p)
+{
+    auto* h = static_cast<BlockHeader*>(p) - 1;
+    if (h->magic != kArenaMagic || h->sizeClass >= uint32_t(kClasses)) {
+        LOG_WARN("ExFreePool(%p): not a block of the netplay pool", p);
+        return;
+    }
+    ArenaHeader& a = Arena();
+    h->magic = 0;
+    h->next = a.free[h->sizeClass];
+    a.free[h->sizeClass] = uint32_t(reinterpret_cast<uint8_t*>(h) - g_Arena);
+}
+
+void HeapFreeBlock(void* p)
+{
+    {
+        std::lock_guard<std::mutex> lock(g_TrackLock);
+        g_PoolBlocks.erase(p);
+        ++g_LayoutGeneration;
+    }
+    HeapFree(GetProcessHeap(), 0, p);
+}
+
+} // namespace
+
+bool SetDeterministicPool(bool on)
+{
+    std::lock_guard<std::mutex> lock(g_PoolLock);
+    if (on && !g_Arena) {
+        // In the game's virtual memory (released when it reboots), write-watched like the rest of it.
+        void* base = VirtualAlloc(nullptr, kArenaSize, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE);
+        if (!base) {
+            LOG_ERROR("Netplay pool: no room for its %u MiB", kArenaSize >> 20);
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> track(g_TrackLock);
+            g_VirtualBases.insert(base);
+            ++g_LayoutGeneration;
+        }
+        g_Arena = static_cast<uint8_t*>(base);
+        ArenaHeader& a = Arena();
+        a.magic = kArenaMagic;
+        a.top = (sizeof(ArenaHeader) + 31) & ~31u;
+        LOG_INFO("Netplay pool: %u MiB at %p", kArenaSize >> 20, base);
+    }
+    if (!on && g_Arena && g_ArenaOn) {
+        // No rollback can come back now: the heap blocks the game freed meanwhile are freed.
+        ArenaHeader& a = Arena();
+        for (uint32_t i = 0; i < a.deferredCount; ++i)
+            HeapFreeBlock(a.deferred[i]);
+        if (a.deferredCount || a.deferredLost)
+            LOG_INFO("Netplay pool: %u freed heap block(s) released at the session's end%s", a.deferredCount,
+                a.deferredLost ? " (some were released at once: the list was full)" : "");
+        a.deferredCount = a.deferredLost = 0;
+    }
+    g_ArenaOn = on && g_Arena;
+    return !on || g_Arena;
+}
+
 void* XBAPI ExAllocatePoolWithTag(ULONG NumberOfBytes, ULONG Tag)
 {
     (void)Tag;
+    if (g_ArenaOn) {
+        std::lock_guard<std::mutex> lock(g_PoolLock);
+        if (g_ArenaOn) {
+            if (void* p = ArenaAlloc(NumberOfBytes))
+                return p;
+            static bool logged = false;
+            if (!logged)
+                LOG_WARN("Netplay pool: full (%lu bytes asked); blocks from the heap, not deterministic", NumberOfBytes);
+            logged = true;
+        }
+    }
     void* p = HeapAlloc(GetProcessHeap(), 0, NumberOfBytes);
     if (p) {
         std::lock_guard<std::mutex> lock(g_TrackLock);
@@ -322,14 +467,29 @@ void* XBAPI ExAllocatePoolWithTag(ULONG NumberOfBytes, ULONG Tag)
 
 void XBAPI ExFreePool(void* P)
 {
-    {
-        std::lock_guard<std::mutex> lock(g_TrackLock);
-        g_PoolBlocks.erase(P);
-        ++g_LayoutGeneration;
+    if (InArena(P)) {
+        std::lock_guard<std::mutex> lock(g_PoolLock);
+        ArenaFree(P);
+        return;
     }
-    HeapFree(GetProcessHeap(), 0, P);
+    if (g_ArenaOn) {
+        std::lock_guard<std::mutex> lock(g_PoolLock);
+        ArenaHeader& a = Arena();
+        if (a.deferredCount < kDeferred) {
+            a.deferred[a.deferredCount++] = P;
+            return;
+        }
+        ++a.deferredLost;
+    }
+    HeapFreeBlock(P);
 }
-ULONG XBAPI ExQueryPoolBlockSize(void* PoolBlock) { return ULONG(HeapSize(GetProcessHeap(), 0, PoolBlock)); }
+
+ULONG XBAPI ExQueryPoolBlockSize(void* PoolBlock)
+{
+    if (InArena(PoolBlock))
+        return (static_cast<BlockHeader*>(PoolBlock) - 1)->requested;
+    return ULONG(HeapSize(GetProcessHeap(), 0, PoolBlock));
+}
 
 KERNEL_EXPORT(15, ExAllocatePoolWithTag);
 KERNEL_EXPORT(17, ExFreePool);
@@ -416,6 +576,8 @@ void ResetMemoryForReboot()
             blocks += HeapFree(GetProcessHeap(), 0, block) ? 1 : 0;
         g_VirtualBases.clear();
         g_PoolBlocks.clear();
+        g_Arena = nullptr; // it was one of the virtual bases
+        g_ArenaOn = false;
     }
     std::lock_guard<std::mutex> lock(g_ContigLock);
     uint64_t used = 0;

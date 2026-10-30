@@ -257,6 +257,7 @@ void Suspend(const char* why)
     LOG_INFO("Netplay: rollback session paused (%s)", why);
     input::SetPadSource(nullptr);
     audio::SetDeterministic(false);
+    kernel::SetDeterministicPool(false);
     kernel::SetFixedClock(false);
     StateDisarm();
     g_Mode = Mode::Arming;
@@ -274,6 +275,7 @@ void Stop(const char* why)
     input::SetPadSource(nullptr);
     if (!g_Rebooting)
         audio::SetDeterministic(false);
+    kernel::SetDeterministicPool(false);
     kernel::SetFixedClock(false);
     StateDisarm();
     g_Mode = Mode::Off;
@@ -391,7 +393,9 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
         g_Resim = false;
         SetClock();
         audio::SetDeterministic(true); // the sound model's state is saved with it too
+        kernel::SetDeterministicPool(true); // pool blocks from an arena the snapshots cover
         if (!Arm(frameStack, 0)) {
+            kernel::SetDeterministicPool(false);
             audio::SetDeterministic(false);
             kernel::SetFixedClock(false);
             if (++failures == 600) // ten to twenty seconds of frames
