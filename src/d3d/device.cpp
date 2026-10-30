@@ -622,6 +622,9 @@ static void ApplyFpsLimit()
     game::ApplyDevOptions(renderer);
 }
 
+// Whether the Swap zeroes the stack below the game's frame (XbSwap): while netplay's rollback runs.
+static volatile uint8_t g_ScrubStack = 0;
+
 // The end of every game frame. `frameStack` is where the game's part of the stack starts (XbSwap below): netplay's
 // rollback (net/rollback.h) saves the frame there, and may bring back an earlier one, the game then carrying on
 // from that frame's Swap. A frame played again (a resimulation) is not shown and does not wait for the display.
@@ -652,7 +655,9 @@ static DWORD __stdcall SwapFrame(const void* frameStack, DWORD flags)
     if (shown)
         NoteFrameTime();
     CollectResources(g_State.swapCount);
-    return net::FrameBoundary(frameStack, g_State.swapCount);
+    const DWORD result = net::FrameBoundary(frameStack, g_State.swapCount);
+    g_ScrubStack = net::RollbackActive() ? 1 : 0;
+    return result;
 }
 
 // D3DDevice_Swap (stdcall, one argument). The game's callee-saved registers (ebp, ebx, esi, edi), its x87 control
@@ -672,6 +677,23 @@ static __declspec(naked) void XbSwap()
         push dword ptr [eax + 28] // flags: past the 8 bytes, the 4 registers and the return address
         push eax                  // frameStack
         call SwapFrame
+        // Netplay: the stack below the game's frame is zeroed (down to its committed limit, the TEB's StackLimit),
+        // so the game's next calls find the same leftovers whatever the port did during the Swap (presenting, the
+        // debug menu, logging) and whether the frame was shown or played again: the game reads uninitialised
+        // locals, and SyncTest found them in its memory. Written downwards, from just below esp.
+        test byte ptr [g_ScrubStack], 1
+        jz no_scrub
+        mov edx, eax
+        lea edi, [esp - 4]
+        mov ecx, edi
+        sub ecx, dword ptr fs:[8]
+        shr ecx, 2
+        xor eax, eax
+        std
+        rep stosd
+        cld
+        mov eax, edx
+    no_scrub:
         fldcw word ptr [esp]
         ldmxcsr dword ptr [esp + 4]
         add esp, 8
