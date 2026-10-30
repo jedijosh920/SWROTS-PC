@@ -90,6 +90,7 @@ struct Session {
 Session g_S;
 std::vector<HostState> g_HostStates;
 std::vector<Exclusion> g_Exclusions;
+std::vector<Exclusion> g_SectionExclusions; // found by FindRegions, for the session
 StateCosts g_Costs;
 const char* g_LastError = "";
 
@@ -250,6 +251,7 @@ bool CanWatch(void* base, uint32_t size)
 
 void FindRegions()
 {
+    g_SectionExclusions.clear();
     // The game's allocations: contiguous memory, virtual and system memory.
     for (const auto& [base, size] : kernel::GameMemoryRegions()) {
         auto* p = reinterpret_cast<uint8_t*>(base);
@@ -269,6 +271,12 @@ void FindRegions()
             s.VirtualAddress + s.VirtualSize, s.Flags, (s.Flags & kXbeSectionWritable) ? " (covered)" : "");
         if (!(s.Flags & kXbeSectionWritable))
             continue;
+        // The graphics libraries' data (render states, matrices, the push buffer) is written by the port's D3D layer
+        // and only shapes the picture: kept, but out of the checksum (the write watch found it differing when a
+        // frame is played again, since a frame not shown is not drawn the same way).
+        if (std::strcmp(sectionName, "D3D") == 0 || std::strcmp(sectionName, "D3DX") == 0 ||
+            std::strcmp(sectionName, "XGRPH") == 0)
+            g_SectionExclusions.push_back({ s.VirtualAddress, s.VirtualAddress + s.VirtualSize, "graphics library data" });
         char name[40];
         std::snprintf(name, sizeof(name), "image %s", sectionName);
         const uint32_t begin = s.VirtualAddress & ~(kPage - 1);
@@ -315,7 +323,9 @@ void FindRegions()
 void ApplyExclusions()
 {
     g_S.excluded.assign(g_S.pages, 0);
-    for (const Exclusion& e : g_Exclusions) {
+    std::vector<Exclusion> all = g_Exclusions;
+    all.insert(all.end(), g_SectionExclusions.begin(), g_SectionExclusions.end());
+    for (const Exclusion& e : all) {
         for (const Region& r : g_S.regions) {
             const uintptr_t begin = std::max(e.begin, uintptr_t(r.base));
             const uintptr_t end = std::min(e.end, uintptr_t(r.base) + r.size);

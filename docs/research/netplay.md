@@ -176,3 +176,29 @@ What it tells us:
 
   Next: name these addresses with the symbol map, and find which thread writes them (a write watch per page between
   two boundaries, or hardware breakpoints on the first words found).
+
+### What makes a frame played again differ (2026-10-30, continued)
+
+`net/watch.cpp` watches the words SyncTest finds differing with the CPU's debug registers (data breakpoints on
+write, on every game thread) and logs who writes them. Over two five-minute runs, with the game disassembled from
+the player's own `default.xbe` (`objdump` on its sections mapped at their addresses):
+
+1. **Every differing word is written by the game's main thread**, never by its streaming, sound or DPC threads.
+   Some are written with addresses of the main thread's stack, or copied from stack slots (`0x22DB73`:
+   `mov [0x7E63AC], edx` with `edx = [esp+0x2c]`), and earlier reports found text in game memory: the game reads
+   **uninitialised locals**, whose leftovers depend on what ran on the stack before (the port presents and draws
+   its menu in frames shown, not in frames played again). The Swap thunk now zeroes the stack below the game's
+   frame at every boundary while rollback runs.
+2. **The port's D3D layer** writes the graphics libraries' data (`D3D` section: render states, matrices), which
+   differs when a frame is not drawn the same way. It only shapes the picture: those sections stay in the snapshot
+   but out of the checksum.
+3. **Sound** (what remains): lists, counters and time-like floats of the game's sound code differ. The game asks
+   the port's DirectSound layer whether a buffer still plays (`GetStatus`), where it is (`GetCurrentPosition`), the
+   audio clock (`DirectSoundGetSampleTime`, from the PC's clock), whether a stream packet is done (callbacks from
+   `DirectSoundDoWork`): all answered from XAudio2's real playback, which moves on in real time, not with the
+   frames. During a rollback session these answers must come from a model of the playback on the fixed clock (a
+   buffer started at frame *n* at frequency *f* is at sample *(t - t_n) × f*; a stream packet is done once the
+   model has played it), saved with the snapshots, with XAudio2 only following it for what is heard. Sounds started
+   in frames played again must not be heard twice (the model knows which sounds it already started).
+
+Next: the deterministic audio model, then SyncTest again on the developer map and in a story mission.
