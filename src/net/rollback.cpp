@@ -12,6 +12,7 @@
 
 #include "core/log.h"
 #include "core/settings.h"
+#include "game/characters.h"
 #include "input/controls.h"
 #include "kernel/clock.h"
 #include "kernel/kernel.h"
@@ -153,16 +154,36 @@ void LogStats(const char* when)
 // Starts a snapshot session at the current frame boundary, the frame about to be played being `frame`.
 bool Arm(const void* frameStack, uint32_t frame)
 {
+    if (!StatePrepare(Config(), frameStack))
+        return false;
     uint64_t checksum = 0;
     StopTheWorld();
-    const bool armed = StateArm(Config(), frameStack, frame, checksum);
+    const bool armed = StateArm(frameStack, frame, checksum);
     StartTheWorld();
-    if (!armed)
+    if (!armed) {
+        LOG_WARN("Netplay: the snapshots could not be armed at frame %u: %s", frame, StateLastError());
+        StateDisarm();
         return false;
+    }
+    StateLogArmed();
     g_Frame = g_ArmFrame = frame;
     g_Checksums[frame % kHistory] = checksum;
     g_Resim = false;
     return true;
+}
+
+// Back to waiting for a level (the session's clocks and inputs off): a level ended, or the snapshots could not
+// be armed; SyncTest starts again by itself in the next level, or at the next frame.
+void Suspend(const char* why)
+{
+    if (g_Mode == Mode::Running)
+        LogStats("paused");
+    LOG_INFO("Netplay: rollback session paused (%s)", why);
+    input::SetPadSource(nullptr);
+    kernel::SetFixedClock(false);
+    StateDisarm();
+    g_Mode = Mode::Arming;
+    g_Resim = false;
 }
 
 void Stop(const char* why)
@@ -188,7 +209,7 @@ void Rearm(const void* frameStack, uint32_t frame, const char* why)
     else if (g_Stats.rearms == 11)
         LOG_WARN("Netplay: more new snapshot sessions; no longer logged");
     if (!Arm(frameStack, frame))
-        Stop("the snapshots could not be armed again");
+        Suspend("the snapshots could not be armed again");
 }
 
 // SyncTest: back `distance` frames, to play them again.
@@ -252,6 +273,11 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
     if (g_Mode == Mode::Off)
         return swapCount;
     if (g_Mode == Mode::Arming) {
+        // Only the game's own frames in a level: not the movies (their player swaps from threads of its own),
+        // the front end's menus or a level loading.
+        if (!game::PlayerInLevel())
+            return swapCount;
+        static uint32_t failures = 0;
         g_MainThread = GetCurrentThreadId();
         g_Fps = uint32_t(std::max(1, GetSettings().fpsLimit));
         g_SwapBase = swapCount;
@@ -261,9 +287,11 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
             in.frame = ~0u;
         SampleInputs(0);
         if (!Arm(frameStack, 0)) {
-            Stop("the snapshots could not be armed");
+            if (++failures == 600) // ten to twenty seconds of frames
+                Stop("the snapshots could not be armed");
             return swapCount;
         }
+        failures = 0;
         kernel::SetFixedClock(true, g_MainThread);
         SetClock();
         input::SetPadSource(&PadFromSession);
@@ -273,6 +301,10 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
     }
     if (GetCurrentThreadId() != g_MainThread)
         return swapCount; // not the game's frames (e.g. a movie player's)
+    if (!game::PlayerInLevel()) {
+        Suspend("the level ended");
+        return swapCount;
+    }
 
     const bool wasResim = g_Resim;
     NoteFrameTime(wasResim);

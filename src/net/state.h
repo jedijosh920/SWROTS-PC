@@ -14,8 +14,9 @@
 // at the last save, which tells what changed and gives the journal its "before". Every page has a hash, and the
 // frame's checksum is their sum, kept up to date page by page (for SyncTest and desync detection).
 //
-// Save and load run on the game's main thread at a frame boundary, the game's other threads suspended (the caller
-// does that: net/rollback.cpp). They allocate nothing.
+// Arm, save and load run on the game's main thread at a frame boundary, the game's other threads suspended (the
+// caller does that: net/rollback.cpp). They take no lock and allocate nothing; failures are only logged afterwards
+// (StateLastError).
 // See docs/research/netplay.md.
 
 #include <cstdint>
@@ -32,11 +33,17 @@ struct StateConfig {
     uint32_t stackKiB = 256; // the most of the main thread's stack a frame may use above the frame boundary
 };
 
-// Starts a session at a frame boundary on the game's main thread: finds the memory to keep, takes the shadow copy
-// and saves `frame` (the frame about to be played). `frameStack`: where the game's part of the main thread's stack
-// starts at the frame boundary (see the Swap thunk in d3d/device.cpp); every later save and load must come from
-// the same place. False, logged, when it cannot.
-bool StateArm(const StateConfig& config, const void* frameStack, uint32_t frame, uint64_t& checksum);
+// Starts a session at a frame boundary on the game's main thread, in two steps:
+//  - StatePrepare, with the game's other threads running: finds the memory to keep and allocates the buffers
+//    (it takes locks, allocates and logs, which must not happen while those threads are suspended: one of them
+//    may hold the lock). `frameStack`: where the game's part of the main thread's stack starts at the frame
+//    boundary (see the Swap thunk in d3d/device.cpp); every later save and load must come from the same place.
+//  - StateArm, with them suspended: takes the shadow copy and saves `frame` (the frame about to be played). It
+//    takes no lock and allocates nothing. False when the game's memory changed shape since StatePrepare.
+// StateLogArmed then logs what the session covers (threads running again).
+bool StatePrepare(const StateConfig& config, const void* frameStack);
+bool StateArm(const void* frameStack, uint32_t frame, uint64_t& checksum);
+void StateLogArmed();
 void StateDisarm();
 bool StateArmed();
 // The memory layout generation (kernel::MemoryLayoutGeneration) the session was armed with: when the game

@@ -254,16 +254,21 @@ void FindRegions()
         const bool contiguous = base >= 0x80000000u;
         AddRegion(p, uint32_t(size), CanWatch(p, uint32_t(size)), contiguous ? "contiguous" : "virtual");
     }
-    // The image's writable data (its .data and .bss); its code is the port's to patch, and is not state.
+    // The image's writable sections. The XBE marks its data sections executable too (and some code sections
+    // writable), so the flags alone do not tell data from code: every writable section is covered. Code the port
+    // patched at boot stays as it is and costs only the comparison.
     const auto* header = reinterpret_cast<const XbeHeader*>(uintptr_t(game::kImageBase));
     const auto* sections = reinterpret_cast<const XbeSectionHeader*>(uintptr_t(header->SectionHeadersAddress));
     for (uint32_t i = 0; i < header->NumberOfSections; ++i) {
         const XbeSectionHeader& s = sections[i];
-        if (!(s.Flags & kXbeSectionWritable) || (s.Flags & kXbeSectionExecutable))
+        const char* sectionName =
+            s.SectionNameAddress ? reinterpret_cast<const char*>(uintptr_t(s.SectionNameAddress)) : "?";
+        LOG_DEBUG("Netplay: section %-10s %08X-%08X flags %X%s", sectionName, s.VirtualAddress,
+            s.VirtualAddress + s.VirtualSize, s.Flags, (s.Flags & kXbeSectionWritable) ? " (covered)" : "");
+        if (!(s.Flags & kXbeSectionWritable))
             continue;
         char name[40];
-        std::snprintf(name, sizeof(name), "image %s",
-            s.SectionNameAddress ? reinterpret_cast<const char*>(uintptr_t(s.SectionNameAddress)) : "?");
+        std::snprintf(name, sizeof(name), "image %s", sectionName);
         const uint32_t begin = s.VirtualAddress & ~(kPage - 1);
         const uint32_t end = (s.VirtualAddress + s.VirtualSize + kPage - 1) & ~(kPage - 1);
         AddRegion(reinterpret_cast<uint8_t*>(uintptr_t(begin)), end - begin, false, name);
@@ -353,10 +358,9 @@ bool SaveStack(FrameRecord& record, const void* frameStack)
 
 // --- the session -----------------------------------------------------------------------------------------------
 
-bool StateArm(const StateConfig& config, const void* frameStack, uint32_t frame, uint64_t& checksum)
+bool StatePrepare(const StateConfig& config, const void* frameStack)
 {
     StateDisarm();
-    const auto start = std::chrono::steady_clock::now();
     g_S.config = config;
     g_S.generation = kernel::MemoryLayoutGeneration();
     g_S.frameStack = static_cast<const uint8_t*>(frameStack);
@@ -370,7 +374,6 @@ bool StateArm(const StateConfig& config, const void* frameStack, uint32_t frame,
     FindRegions();
     ApplyExclusions();
 
-    // The shadow copy: every page as it is now.
     g_S.shadow = static_cast<uint8_t*>(VirtualAlloc(nullptr, size_t(g_S.pages) * kPage, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
     const uint32_t slots = config.journalMiB * (0x100000 / kPage);
     g_S.slotData = static_cast<uint8_t*>(VirtualAlloc(nullptr, size_t(slots) * kPage, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
@@ -384,44 +387,63 @@ bool StateArm(const StateConfig& config, const void* frameStack, uint32_t frame,
     g_S.records.resize(config.window + 1);
     for (FrameRecord& r : g_S.records)
         r.stack = new uint8_t[config.stackKiB * 1024u];
-
     g_S.hashes.assign(g_S.pages, 0);
-    g_S.checksum = 0;
-    uint64_t watched = 0, tracked = 0;
+
+    g_Costs = StateCosts();
+    g_Costs.regions = uint32_t(g_S.regions.size());
     for (const Region& r : g_S.regions) {
-        tracked += r.size;
+        g_Costs.trackedBytes += r.size;
         if (r.watched)
-            watched += r.size;
+            g_Costs.watchedBytes += r.size;
+    }
+    return true;
+}
+
+bool StateArm(const void* frameStack, uint32_t frame, uint64_t& checksum)
+{
+    if (!g_S.shadow) {
+        g_LastError = "not prepared";
+        return false;
+    }
+    if (kernel::MemoryLayoutGeneration() != g_S.generation) {
+        g_LastError = "the game allocated or freed memory since the session was prepared";
+        return false;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    g_S.checksum = 0;
+    g_S.recordCount = g_S.firstRecord = g_S.slotHead = g_S.slotsUsed = 0;
+    for (const Region& r : g_S.regions) {
         const uint32_t count = (r.size + kPage - 1) / kPage;
         for (uint32_t i = 0; i < count; ++i) {
             const uint32_t page = r.firstPage + i;
             const uint32_t bytes = PageBytes(r, page);
             std::memcpy(ShadowOf(page), PageAddress(r, page), bytes);
+            g_S.hashes[page] = 0;
             SetHash(page, HashBytes(PageAddress(r, page), bytes));
         }
     }
     ResetWatches();
-
     g_S.armed = true;
     FrameRecord& record = PushRecord(frame);
     if (!SaveStack(record, frameStack)) {
-        FreeSession();
+        g_S.armed = false;
         return false;
     }
     record.checksum = checksum = g_S.checksum;
+    g_Costs.loadMs = MsSince(start); // the arm's cost, logged by StateLogArmed
+    return true;
+}
 
-    g_Costs = StateCosts();
-    g_Costs.regions = uint32_t(g_S.regions.size());
-    g_Costs.trackedBytes = tracked;
-    g_Costs.watchedBytes = watched;
+void StateLogArmed()
+{
     LOG_INFO("Netplay: snapshots of %u regions, %.1f MiB (%.1f MiB write-watched, %.1f MiB compared), %u frames "
              "kept, %u MiB of journal, %u bytes of stack; armed in %.1f ms",
-        g_Costs.regions, tracked / 1048576.0, watched / 1048576.0, (tracked - watched) / 1048576.0,
-        config.window, config.journalMiB, record.stackBytes, MsSince(start));
+        g_Costs.regions, g_Costs.trackedBytes / 1048576.0, g_Costs.watchedBytes / 1048576.0,
+        (g_Costs.trackedBytes - g_Costs.watchedBytes) / 1048576.0, g_S.config.window, g_S.config.journalMiB,
+        g_S.recordCount ? LatestRecord().stackBytes : 0, g_Costs.loadMs);
     for (const Region& r : g_S.regions)
-        if (r.size >= 0x100000)
+        if (r.size >= 0x100000 || !r.watched)
             LOG_DEBUG("Netplay:   %-24s %p %8u KiB%s", r.name, r.base, r.size / 1024, r.watched ? " (watched)" : "");
-    return true;
 }
 
 void StateDisarm()
