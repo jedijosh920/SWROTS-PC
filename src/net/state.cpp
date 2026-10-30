@@ -67,6 +67,8 @@ struct Session {
     std::vector<Region> regions;
     uint32_t pages = 0;
     uint8_t* shadow = nullptr;        // pages x kPage
+    uint8_t* expected = nullptr;      // pages x kPage: a copy of the shadow (StateKeepExpected), for diagnostics
+    bool haveExpected = false;
     std::vector<uint64_t> hashes;     // per page
     std::vector<uint8_t> excluded;    // per page: left out of the checksum
     uint64_t checksum = 0;            // the sum of the pages' mixed hashes
@@ -338,6 +340,8 @@ void FreeSession()
         VirtualFree(g_S.shadow, 0, MEM_RELEASE);
     if (g_S.slotData)
         VirtualFree(g_S.slotData, 0, MEM_RELEASE);
+    if (g_S.expected)
+        VirtualFree(g_S.expected, 0, MEM_RELEASE);
     for (FrameRecord& r : g_S.records)
         delete[] r.stack;
     g_S = Session();
@@ -578,6 +582,21 @@ const char* StateLastError() { return g_LastError; }
 
 void StateCopyPageHashes(std::vector<uint64_t>& out) { out = g_S.hashes; }
 
+bool StateKeepExpected()
+{
+    if (!g_S.armed)
+        return false;
+    if (!g_S.expected) {
+        g_S.expected = static_cast<uint8_t*>(
+            VirtualAlloc(nullptr, size_t(g_S.pages) * kPage, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+        if (!g_S.expected)
+            return false;
+    }
+    std::memcpy(g_S.expected, g_S.shadow, size_t(g_S.pages) * kPage);
+    g_S.haveExpected = true;
+    return true;
+}
+
 std::string StateDescribeDifferences(const std::vector<uint64_t>& before, size_t max)
 {
     std::string text;
@@ -587,10 +606,32 @@ std::string StateDescribeDifferences(const std::vector<uint64_t>& before, size_t
             continue;
         if (found++ < max) {
             const Region& r = RegionOfPage(page);
-            char line[128];
+            char line[160];
             std::snprintf(line, sizeof(line), "\n  %-24s %p (+0x%X)", r.name, PageAddress(r, page),
                 uint32_t(PageAddress(r, page) - r.base));
             text += line;
+            // The first pages: which words differ, what they held the first time and what they hold now.
+            if (g_S.haveExpected && found <= 8) {
+                const uint8_t* was = g_S.expected + size_t(page) * kPage;
+                const uint8_t* now = PageAddress(r, page);
+                const uint32_t bytes = PageBytes(r, page);
+                uint32_t words = 0;
+                for (uint32_t at = 0; at + 4 <= bytes; at += 4) {
+                    uint32_t a, b;
+                    std::memcpy(&a, was + at, 4);
+                    std::memcpy(&b, now + at, 4);
+                    if (a == b)
+                        continue;
+                    if (words++ < 6) {
+                        std::snprintf(line, sizeof(line), "\n      %08X: %08X first, %08X again", uint32_t(uintptr_t(now + at)), a, b);
+                        text += line;
+                    }
+                }
+                if (words > 6) {
+                    std::snprintf(line, sizeof(line), "\n      ... %u words differ", words);
+                    text += line;
+                }
+            }
         }
     }
     if (found > max) {

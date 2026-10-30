@@ -154,6 +154,13 @@ void LogStats(const char* when)
 // Starts a snapshot session at the current frame boundary, the frame about to be played being `frame`.
 bool Arm(const void* frameStack, uint32_t frame)
 {
+    static bool clockRegistered = false;
+    if (!clockRegistered) { // the fixed clock's state is the game's: saved and restored with it
+        uint32_t size = 0;
+        void* clock = kernel::FixedClockState(size);
+        RegisterHostState("fixed clock", clock, size);
+        clockRegistered = true;
+    }
     if (!StatePrepare(Config(), frameStack))
         return false;
     uint64_t checksum = 0;
@@ -216,6 +223,8 @@ void Rearm(const void* frameStack, uint32_t frame, const char* why)
 void BeginCheck(const void* frameStack)
 {
     StateCopyPageHashes(g_HashesAtTarget);
+    if (g_Stats.mismatches < 20) // the words that differ, for the mismatches logged
+        StateKeepExpected();
     const uint32_t target = g_Frame;
     const uint32_t back = target - g_Distance;
     StopTheWorld();
@@ -245,7 +254,7 @@ void EndCheck(uint64_t checksum)
     if (g_Stats.mismatches > 20)
         return;
     const bool endDiffers = checksum != g_Checksums[g_ResimTarget % kHistory];
-    std::string pages = endDiffers ? StateDescribeDifferences(g_HashesAtTarget, 24) : std::string();
+    std::string pages = endDiffers ? StateDescribeDifferences(g_HashesAtTarget, 16) : std::string();
     LOG_WARN("SyncTest: frames %u-%u played again differ, first at frame %u (%s at the end)%s%s",
         g_ResimTarget - g_Distance + 1, g_ResimTarget, g_FirstBadFrame, endDiffers ? "and still" : "but not",
         endDiffers ? "; pages that differ:" : "", pages.c_str());
@@ -299,14 +308,16 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
         for (FrameInputs& in : g_Inputs)
             in.frame = ~0u;
         SampleInputs(0);
+        kernel::SetFixedClock(true, g_MainThread); // before the first save: the clock's state is saved with it
+        g_Frame = 0;
+        SetClock();
         if (!Arm(frameStack, 0)) {
+            kernel::SetFixedClock(false);
             if (++failures == 600) // ten to twenty seconds of frames
                 Stop("the snapshots could not be armed");
             return swapCount;
         }
         failures = 0;
-        kernel::SetFixedClock(true, g_MainThread);
-        SetClock();
         input::SetPadSource(&PadFromSession);
         g_Mode = Mode::Running;
         LOG_INFO("SyncTest: on, back %u frames every %u frames, at %u fps", g_Distance, g_Every, g_Fps);

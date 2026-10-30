@@ -20,9 +20,9 @@ bool FixedClockOn();
 // Called at every frame boundary, including after a rollback (with the frame the game is back at).
 void SetFixedClockFrame(uint32_t frame, uint32_t framesPerSecond);
 
-// The fixed time, in 100 ns units. On the main thread each read moves it on by a 1/1024 of a frame (at most to
-// the frame's end), so a loop that waits for the clock to pass a point still ends, and does so after the same
-// number of reads every time it is played.
+// The fixed time, in 100 ns units. On the main thread each read moves it on by a 1/1024 of a frame (past the
+// frame's end too: a loop that waits for the clock to pass a point ends, after the same number of reads every time
+// it is played); the next frame starts at its nominal time or later, never earlier. Other threads read it as it is.
 uint64_t FixedClockNow();
 
 // The same in milliseconds (KeTickCount), and as a system time (KeQuerySystemTime: a fixed date plus the fixed
@@ -33,5 +33,8 @@ uint64_t FixedClockSystemTime();
 // Reads of the clock on the main thread since the frame started, the most a frame has had since the clock was
 // turned on (statistics for the netplay log).
 uint32_t FixedClockReadsMax();
+
+// The clock's state, which netplay's snapshots save and restore with the game's (net/state.h RegisterHostState).
+void* FixedClockState(uint32_t& size);
 
 } // namespace swrots::kernel

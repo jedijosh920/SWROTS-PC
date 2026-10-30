@@ -66,6 +66,9 @@ const char* StateLastError();
 // Every page's hash, to compare two moments (SyncTest), and the pages that differ between such a copy and now,
 // described (which memory, which address), at most `max` of them.
 void StateCopyPageHashes(std::vector<uint64_t>& out);
+// Keeps a copy of every page as it was at the last save, so that StateDescribeDifferences also tells which words
+// differ and what they held (a diagnostic: it copies all the memory covered).
+bool StateKeepExpected();
 std::string StateDescribeDifferences(const std::vector<uint64_t>& before, size_t max);
 
 // Port code that keeps simulation state in its own variables registers them (before a session starts): they are
