@@ -695,7 +695,10 @@ void XBAPI RtlInitializeCriticalSection(xbox::RTL_CRITICAL_SECTION* cs)
 
 void XBAPI RtlEnterCriticalSection(xbox::RTL_CRITICAL_SECTION* cs)
 {
-    HANDLE self = reinterpret_cast<HANDLE>(uintptr_t(GetCurrentThreadId()));
+    // The owner as the Xbox kernel names it, the thread object (KTHREAD): in the game's memory, the same on every PC
+    // (netplay), where the host's thread id is not.
+    XboxThread* current = CurrentThread();
+    HANDLE self = current ? static_cast<HANDLE>(current) : reinterpret_cast<HANDLE>(uintptr_t(GetCurrentThreadId()));
     if (InterlockedIncrement(&cs->LockCount) == 0) {
         cs->OwningThread = self;
         cs->RecursionCount = 1;
