@@ -24,6 +24,8 @@ void SetFixedClockFrame(uint32_t frame, uint32_t framesPerSecond);
 // frame's end too: a loop that waits for the clock to pass a point ends, after the same number of reads every time
 // it is played); the next frame starts at its nominal time or later, never earlier. Other threads read it as it is.
 uint64_t FixedClockNow();
+// The fixed time without moving it on (for the port's own models of time, e.g. the audio layer's).
+uint64_t FixedClockPeek();
 
 // The same in milliseconds (KeTickCount), and as a system time (KeQuerySystemTime: a fixed date plus the fixed
 // time, so nothing the game derives from the date differs either).

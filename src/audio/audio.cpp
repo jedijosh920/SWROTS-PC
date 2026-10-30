@@ -19,11 +19,13 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <vector>
 
 #include "audio/audio.h"
 #include "core/log.h"
 #include "core/window.h"
+#include "kernel/clock.h"
 #include "kernel/kernel.h"
 #include "xapi/xapi.h"
 
@@ -393,6 +395,11 @@ struct Voice : IXAudio2VoiceCallback {
     // distance; replaces the inverse-distance falloff when set.
     std::vector<float> rolloffCurve;
     bool paused = false;
+    // The deterministic model (netplay): this voice's slot in it, or -1; whether the object lives in the model's
+    // arena (made while the model ran, at an address that is the same every time the frame is played).
+    int slot = -1;
+    bool inArena = false;
+    bool isStream = false;
 
     Voice()
     {
@@ -703,6 +710,8 @@ struct SoundBuffer : Voice {
 struct StreamPacket {
     MediaPacket packet;
     std::vector<int16_t> pcm;
+    // Only heard: the deterministic model completes the game's packet (its copy of the data is in `pcm`).
+    bool modelOnly = false;
 };
 
 struct Stream;
@@ -752,6 +761,8 @@ struct Stream : Voice {
 
     void Complete(std::unique_ptr<StreamPacket> p, HRESULT status)
     {
+        if (p->modelOnly)
+            return; // the model told the game already
         MediaPacket& m = p->packet;
         if (m.pdwCompletedSize)
             *m.pdwCompletedSize = status == XMP_STATUS_SUCCESS ? m.dwMaxSize : 0;
@@ -805,17 +816,418 @@ static Stream* StreamFromThis(void* pThis)
     return reinterpret_cast<StreamHeader*>(pThis)->self;
 }
 
-static ULONG __stdcall StreamAddRef(Stream* h) { return InterlockedIncrement(&StreamFromThis(h)->refCount); }
+static HRESULT __stdcall StreamProcess(Stream* h, MediaPacket* input, MediaPacket* output);
+
+// --- The deterministic model (netplay) ------------------------------------------------------
+// While netplay's rollback runs (SetDeterministic), everything the game learns from the sound layer comes from a
+// model of the playback on the fixed clock (kernel/clock.h), not from XAudio2: whether a buffer plays, where it is,
+// the audio clock, when a stream packet is done (its status words, its callback). The model's state is plain data,
+// saved and restored with the game's (DeterministicState), so a frame played again gets the same answers. XAudio2
+// still plays what is heard, following the game's calls, except in frames played again (SetReplaying), whose sounds
+// were heard the first time.
+//
+// The game keeps pointers to the sound objects: objects made while the model runs live in an arena, at the address
+// of their slot in the model, so that a frame played again hands the game the same pointer. An object released
+// while the model runs is kept (a rollback may bring it back); one whose slot is taken again was dropped by a
+// rollback and is destroyed first.
+
+constexpr uint32_t kModelVoices = 256;
+constexpr uint32_t kModelPackets = 32;
+constexpr uint32_t kModelCallbacks = 128;
+constexpr uint64_t kModelUnits = 10000000; // the fixed clock's units per second
+
+struct ModelPacket {
+    MediaPacket packet;
+    uint32_t samples;
+};
+
+struct ModelVoice {
+    Voice* object; // the sound object the slot stands for (restored with the rest: which one the game has)
+    uint8_t used;
+    uint8_t isStream;
+    uint8_t playing;  // buffers: playing; streams: started
+    uint8_t looping;
+    uint8_t paused;
+    uint8_t adpcm;
+    uint16_t channels;
+    int32_t refCount;
+    uint32_t blockAlign;
+    uint32_t formatRate;  // the format's samples per second
+    uint32_t frequency;   // SetFrequency's, 0 for the format's
+    uint32_t total;       // buffers: samples in the buffer
+    uint32_t startOffset; // buffers: the sample at startTime
+    uint64_t startTime;   // buffers: when playback (re)started; streams: when the first queued packet started
+    uint64_t pausedAt;
+    // streams
+    uint32_t maxPackets;
+    uint32_t head, count;
+    XmoCallback callback;
+    void* context;
+    ModelPacket packets[kModelPackets];
+};
+
+struct ModelCallback {
+    XmoCallback callback;
+    void* streamContext;
+    void* packetContext;
+    DWORD status;
+};
+
+struct ModelState {
+    DWORD poolBytes, physicalBytes; // DirectSound's allocator counters (InitXboxGlobals)
+    uint32_t callbackCount;
+    uint32_t pad;
+    ModelCallback callbacks[kModelCallbacks];
+    ModelVoice voices[kModelVoices];
+};
+
+static ModelState g_Model = {};
+static bool g_Det = false;       // the model answers the game
+static bool g_Replaying = false; // a frame played again: nothing new is heard
+
+// The arena: one object's room per slot.
+constexpr size_t kArenaRoom = (std::max(sizeof(SoundBuffer), sizeof(Stream)) + 15) & ~size_t(15);
+alignas(16) static uint8_t g_Arena[kModelVoices][kArenaRoom];
+static Voice* g_ArenaObject[kModelVoices] = {}; // the object built in each room, if any
+
+static uint64_t ModelNow() { return kernel::FixedClockPeek(); }
+
+static uint32_t ModelRate(const ModelVoice& m)
+{
+    const uint32_t rate = m.frequency ? m.frequency : m.formatRate;
+    return rate ? rate : 1;
+}
+
+static uint32_t ModelSamples(const ModelVoice& m, uint32_t bytes)
+{
+    if (m.adpcm)
+        return bytes / (kAdpcmBlock * std::max<uint32_t>(1, m.channels)) * kAdpcmSamplesPerBlock;
+    return m.blockAlign ? bytes / m.blockAlign : 0;
+}
+
+static uint32_t ModelSampleToByte(const ModelVoice& m, uint32_t sample)
+{
+    if (m.adpcm)
+        return sample / kAdpcmSamplesPerBlock * kAdpcmBlock * std::max<uint32_t>(1, m.channels);
+    return sample * m.blockAlign;
+}
+
+static uint64_t SamplesToTime(uint64_t samples, uint32_t rate) { return samples * kModelUnits / rate; }
+static uint64_t TimeToSamples(uint64_t time, uint32_t rate) { return time * rate / kModelUnits; }
+
+static void ModelSetFormat(ModelVoice& m, const XWaveFormat& f)
+{
+    m.adpcm = f.wFormatTag == kFormatXboxAdpcm;
+    m.channels = WORD(std::max<WORD>(1, f.nChannels));
+    m.blockAlign = f.nBlockAlign;
+    m.formatRate = f.nSamplesPerSec;
+}
+
+// A free slot (the first: the same every time the frame is played), or -1.
+static int ModelTakeSlot()
+{
+    for (uint32_t i = 0; i < kModelVoices; ++i)
+        if (!g_Model.voices[i].used)
+            return int(i);
+    return -1;
+}
+
+static void DestroyVoice(Voice* v)
+{
+    g_Voices.erase(std::remove(g_Voices.begin(), g_Voices.end(), v), g_Voices.end());
+    if (v->inArena) {
+        for (uint32_t i = 0; i < kModelVoices; ++i)
+            if (g_ArenaObject[i] == v)
+                g_ArenaObject[i] = nullptr;
+        v->~Voice();
+    } else {
+        delete v;
+    }
+}
+
+// Room for a new object while the model runs: its slot's room in the arena (an object left there by a rollback is
+// destroyed first). Null when the model is full.
+static void* ModelRoom(int& slot)
+{
+    slot = ModelTakeSlot();
+    if (slot < 0) {
+        static bool logged = false;
+        if (!logged)
+            LOG_WARN("Audio: the deterministic model is full (%u sounds); new sounds are not deterministic", kModelVoices);
+        logged = true;
+        return nullptr;
+    }
+    // The room's object: its slot is free, so the game no longer has it (released, or made in a frame a rollback
+    // dropped). Objects on the heap (made before the model ran) are only freed when it stops: a rollback may give
+    // the game one back.
+    if (Voice* old = g_ArenaObject[slot])
+        DestroyVoice(old);
+    return g_Arena[slot];
+}
+
+static ModelVoice* ModelOf(Voice* v)
+{
+    if (!g_Det || v->slot < 0)
+        return nullptr;
+    ModelVoice& m = g_Model.voices[v->slot];
+    return m.used && m.object == v ? &m : nullptr;
+}
+
+// Binds a voice to a fresh slot of the model, from its present state.
+static void ModelAdopt(Voice* v, int slot, LONG refCount)
+{
+    ModelVoice& m = g_Model.voices[slot];
+    m = ModelVoice{};
+    m.used = 1;
+    m.isStream = v->isStream;
+    m.refCount = refCount;
+    ModelSetFormat(m, v->format);
+    m.frequency = v->frequency;
+    m.paused = v->paused;
+    m.pausedAt = ModelNow();
+    m.object = v;
+    v->slot = slot;
+}
+
+// --- buffers
+
+static uint64_t BufferElapsed(const ModelVoice& m, uint64_t now)
+{
+    const uint64_t at = m.paused ? m.pausedAt : now;
+    return at > m.startTime ? at - m.startTime : 0;
+}
+
+static uint32_t BufferPosition(ModelVoice& m)
+{
+    if (!m.playing || !m.total)
+        return m.startOffset;
+    const uint64_t played = m.startOffset + TimeToSamples(BufferElapsed(m, ModelNow()), ModelRate(m));
+    if (!m.looping && played >= m.total) {
+        // A one-shot buffer that played to its end rewinds, like on the Xbox.
+        m.playing = 0;
+        m.paused = 0;
+        m.startOffset = 0;
+        return 0;
+    }
+    return uint32_t(played % m.total);
+}
+
+static void BufferRebase(ModelVoice& m)
+{
+    m.startOffset = BufferPosition(m);
+    m.startTime = ModelNow();
+    if (m.paused)
+        m.pausedAt = m.startTime;
+}
+
+// --- streams
+
+static void StreamQueueCallback(ModelVoice& m, const MediaPacket& p, DWORD status)
+{
+    if (m.callback) {
+        if (g_Model.callbackCount < kModelCallbacks)
+            g_Model.callbacks[g_Model.callbackCount++] = { m.callback, m.context, p.pContext, status };
+    } else if (p.hCompletionEvent) {
+        SetEvent(p.hCompletionEvent);
+    }
+}
+
+static void StreamCompleteHead(ModelVoice& m, HRESULT status)
+{
+    ModelPacket& head = m.packets[m.head];
+    MediaPacket& p = head.packet;
+    if (p.pdwCompletedSize)
+        *p.pdwCompletedSize = status == XMP_STATUS_SUCCESS ? p.dwMaxSize : 0;
+    if (p.pdwStatus)
+        *p.pdwStatus = DWORD(status);
+    StreamQueueCallback(m, p, DWORD(status));
+    m.head = (m.head + 1) % kModelPackets;
+    --m.count;
+}
+
+// Completes the packets the model has played by now.
+static void StreamAdvance(ModelVoice& m)
+{
+    if (m.paused || !m.count)
+        return;
+    const uint64_t now = ModelNow();
+    while (m.count) {
+        const uint64_t end = m.startTime + SamplesToTime(m.packets[m.head].samples, ModelRate(m));
+        if (end > now)
+            break;
+        m.startTime = end;
+        StreamCompleteHead(m, XMP_STATUS_SUCCESS);
+    }
+}
+
+static void StreamFlushModel(ModelVoice& m)
+{
+    while (m.count)
+        StreamCompleteHead(m, XMP_STATUS_FLUSHED);
+    m.playing = 0;
+}
+
+static void ModelAdvanceStreams()
+{
+    for (ModelVoice& m : g_Model.voices)
+        if (m.used && m.isStream)
+            StreamAdvance(m);
+}
+
+// --- turning the model on and off
+
+static void ModelOn()
+{
+    const uint64_t now = ModelNow();
+    g_Model.callbackCount = 0;
+    for (ModelVoice& m : g_Model.voices)
+        m = ModelVoice{};
+    uint32_t adopted = 0;
+    // Objects living in the arena (from an earlier session) keep their room's slot: a slot's room is only ever its
+    // own object's. The others take the free slots after.
+    std::vector<Voice*> order;
+    for (Voice* v : g_Voices)
+        if (v->inArena)
+            order.push_back(v);
+    for (Voice* v : g_Voices)
+        if (!v->inArena)
+            order.push_back(v);
+    for (Voice* v : order) {
+        int slot = -1;
+        if (v->inArena) {
+            for (uint32_t i = 0; i < kModelVoices; ++i)
+                if (g_ArenaObject[i] == v)
+                    slot = int(i);
+        } else {
+            slot = ModelTakeSlot();
+        }
+        if (slot < 0) {
+            v->slot = -1;
+            continue;
+        }
+        ++adopted;
+        if (v->isStream) {
+            auto* st = static_cast<Stream*>(v);
+            ModelAdopt(v, slot, st->refCount);
+            ModelVoice& m = g_Model.voices[slot];
+            m.maxPackets = st->maxPackets;
+            m.callback = st->callback;
+            m.context = st->context;
+            m.playing = st->started;
+            m.startTime = now;
+            std::lock_guard<std::mutex> lock(st->packetLock);
+            for (auto& p : st->queued) {
+                if (m.count == kModelPackets)
+                    break;
+                ModelPacket& mp = m.packets[(m.head + m.count++) % kModelPackets];
+                mp.packet = p->packet;
+                mp.samples = p->pcm.empty() ? ModelSamples(m, p->packet.dwMaxSize)
+                                            : uint32_t(p->pcm.size() / std::max<DWORD>(1, v->Channels()));
+                p->modelOnly = true; // still heard; the model tells the game when it is done
+            }
+        } else {
+            auto* b = static_cast<SoundBuffer*>(v);
+            ModelAdopt(v, slot, b->refCount);
+            ModelVoice& m = g_Model.voices[slot];
+            m.total = b->TotalSamples();
+            m.looping = b->looping;
+            m.playing = b->IsPlaying();
+            m.startOffset = m.playing ? b->CurrentSample() : b->startOffset;
+            m.startTime = now;
+        }
+    }
+    // Completions the PC's playback had noted and not yet delivered: the model delivers them.
+    {
+        std::lock_guard<std::mutex> lock(g_CallbackLock);
+        for (const PendingCallback& c : g_Callbacks)
+            if (g_Model.callbackCount < kModelCallbacks)
+                g_Model.callbacks[g_Model.callbackCount++] = { c.callback, c.streamContext, c.packetContext, c.status };
+        g_Callbacks.clear();
+    }
+    g_Det = true;
+    LOG_INFO("Audio: deterministic model on (%u sound buffers and streams)", adopted);
+}
+
+static void ModelOff()
+{
+    g_Det = false;
+    std::vector<Voice*> drop;
+    for (Voice* v : g_Voices) {
+        if (v->slot < 0)
+            continue;
+        ModelVoice& m = g_Model.voices[v->slot];
+        if (!m.used || m.object != v) {
+            drop.push_back(v); // released, or dropped by a rollback
+            continue;
+        }
+        if (v->isStream) {
+            auto* st = static_cast<Stream*>(v);
+            st->refCount = m.refCount;
+            // The packets the model still holds: those the PC still plays are completed by it again; the others
+            // (sent in frames played again, not heard) go to the PC now.
+            std::vector<MediaPacket> missing;
+            {
+                std::lock_guard<std::mutex> lock(st->packetLock);
+                for (uint32_t i = 0; i < m.count; ++i) {
+                    const MediaPacket& p = m.packets[(m.head + i) % kModelPackets].packet;
+                    bool found = false;
+                    for (auto& q : st->queued) {
+                        if (q->modelOnly && q->packet.pdwStatus == p.pdwStatus && q->packet.pContext == p.pContext) {
+                            q->modelOnly = false;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found)
+                        missing.push_back(p);
+                }
+            }
+            for (MediaPacket& p : missing)
+                StreamProcess(reinterpret_cast<Stream*>(&st->header), &p, nullptr);
+        } else {
+            static_cast<SoundBuffer*>(v)->refCount = m.refCount;
+        }
+        v->slot = -1;
+    }
+    for (Voice* v : drop)
+        DestroyVoice(v);
+    {
+        std::lock_guard<std::mutex> lock(g_CallbackLock);
+        for (uint32_t i = 0; i < g_Model.callbackCount; ++i) {
+            const ModelCallback& c = g_Model.callbacks[i];
+            g_Callbacks.push_back({ c.callback, c.streamContext, c.packetContext, c.status });
+        }
+    }
+    g_Model.callbackCount = 0;
+    LOG_INFO("Audio: deterministic model off (%zu released sounds freed)", drop.size());
+}
+
+static ULONG __stdcall StreamAddRef(Stream* h)
+{
+    Stream* s = StreamFromThis(h);
+    std::lock_guard<std::recursive_mutex> lock(g_Lock);
+    if (ModelVoice* m = ModelOf(s))
+        return ULONG(++m->refCount);
+    return InterlockedIncrement(&s->refCount);
+}
 
 static ULONG __stdcall StreamRelease(Stream* h)
 {
     Stream* s = StreamFromThis(h);
+    std::lock_guard<std::recursive_mutex> lock(g_Lock);
+    if (ModelVoice* m = ModelOf(s)) {
+        const LONG n = --m->refCount;
+        if (n == 0) { // kept: a rollback may bring it back
+            m->count = 0;
+            m->used = 0;
+            s->FlushAll();
+        }
+        return ULONG(n);
+    }
     LONG n = InterlockedDecrement(&s->refCount);
     if (n == 0) {
-        std::lock_guard<std::recursive_mutex> lock(g_Lock);
         s->FlushAll();
-        g_Voices.erase(std::remove(g_Voices.begin(), g_Voices.end(), s), g_Voices.end());
-        delete s;
+        DestroyVoice(s);
     }
     return ULONG(n);
 }
@@ -834,6 +1246,20 @@ static HRESULT __stdcall StreamGetStatus(Stream* h, DWORD* status)
 {
     Stream* s = StreamFromThis(h);
     std::lock_guard<std::recursive_mutex> lock(g_Lock);
+    if (ModelVoice* m = ModelOf(s)) {
+        StreamAdvance(*m);
+        DWORD st = 0;
+        if (m->count < std::max<uint32_t>(1, std::min(m->maxPackets, kModelPackets)))
+            st |= DSSSTATUS_READY;
+        if (m->paused)
+            st |= DSSSTATUS_PAUSED;
+        else if (m->count)
+            st |= DSSSTATUS_PLAYING;
+        else if (m->playing)
+            st |= DSSSTATUS_STARVED;
+        *status = st;
+        return S_OK;
+    }
     DWORD st = 0;
     size_t queued = s->QueuedCount();
     if (queued < s->maxPackets)
@@ -855,12 +1281,41 @@ static HRESULT __stdcall StreamProcess(Stream* h, MediaPacket* input, MediaPacke
     if (!input)
         return E_INVALIDARG;
     std::lock_guard<std::recursive_mutex> lock(g_Lock);
+    bool modelOnly = false;
+    if (ModelVoice* m = ModelOf(s)) {
+        StreamAdvance(*m);
+        if (input->pdwStatus)
+            *input->pdwStatus = DWORD(XMP_STATUS_PENDING);
+        if (input->pdwCompletedSize)
+            *input->pdwCompletedSize = 0;
+        if (m->count == kModelPackets) { // more than the model holds: done at once
+            if (input->pdwCompletedSize)
+                *input->pdwCompletedSize = input->dwMaxSize;
+            if (input->pdwStatus)
+                *input->pdwStatus = DWORD(XMP_STATUS_SUCCESS);
+            StreamQueueCallback(*m, *input, DWORD(XMP_STATUS_SUCCESS));
+            return S_OK;
+        }
+        if (!m->count && !m->paused)
+            m->startTime = ModelNow();
+        ModelPacket& mp = m->packets[(m->head + m->count++) % kModelPackets];
+        mp.packet = *input;
+        mp.samples = ModelSamples(*m, input->dwMaxSize);
+        if (!m->paused)
+            m->playing = 1;
+        if (g_Replaying)
+            return S_OK; // heard the first time
+        modelOnly = true;
+    }
     auto p = std::make_unique<StreamPacket>();
     p->packet = *input;
-    if (input->pdwStatus)
-        *input->pdwStatus = DWORD(XMP_STATUS_PENDING);
-    if (input->pdwCompletedSize)
-        *input->pdwCompletedSize = 0;
+    p->modelOnly = modelOnly;
+    if (!modelOnly) {
+        if (input->pdwStatus)
+            *input->pdwStatus = DWORD(XMP_STATUS_PENDING);
+        if (input->pdwCompletedSize)
+            *input->pdwCompletedSize = 0;
+    }
     if (!s->CreateSource()) {
         s->Complete(std::move(p), XMP_STATUS_SUCCESS);
         return S_OK;
@@ -871,6 +1326,12 @@ static HRESULT __stdcall StreamProcess(Stream* h, MediaPacket* input, MediaPacke
         DecodeAdpcm(static_cast<uint8_t*>(input->pvBuffer), input->dwMaxSize, s->Channels(), p->pcm);
         b.pAudioData = reinterpret_cast<const BYTE*>(p->pcm.data());
         b.AudioBytes = UINT32(p->pcm.size() * sizeof(int16_t));
+    } else if (modelOnly) {
+        // The model may hand the packet back to the game before the PC has played it: a copy is heard.
+        p->pcm.resize((input->dwMaxSize + 1) / 2);
+        std::memcpy(p->pcm.data(), input->pvBuffer, input->dwMaxSize);
+        b.pAudioData = reinterpret_cast<const BYTE*>(p->pcm.data());
+        b.AudioBytes = input->dwMaxSize;
     } else {
         b.pAudioData = static_cast<const BYTE*>(input->pvBuffer);
         b.AudioBytes = input->dwMaxSize;
@@ -905,7 +1366,10 @@ static HRESULT __stdcall StreamDiscontinuity(Stream* h)
 static HRESULT __stdcall StreamFlush(Stream* h)
 {
     std::lock_guard<std::recursive_mutex> lock(g_Lock);
-    StreamFromThis(h)->FlushAll();
+    Stream* s = StreamFromThis(h);
+    if (ModelVoice* m = ModelOf(s))
+        StreamFlushModel(*m);
+    s->FlushAll();
     return S_OK;
 }
 
@@ -934,7 +1398,14 @@ static ULONG __stdcall XbDirectSoundRelease(DirectSound* ds) { return Interlocke
 
 static HRESULT CreateBuffer(const BufferDesc* desc, SoundBuffer** out)
 {
-    auto* b = new SoundBuffer();
+    std::lock_guard<std::recursive_mutex> lock(g_Lock);
+    int slot = -1;
+    void* room = g_Det ? ModelRoom(slot) : nullptr;
+    auto* b = room ? new (room) SoundBuffer() : new SoundBuffer();
+    if (room) {
+        b->inArena = true;
+        g_ArenaObject[slot] = b;
+    }
     b->flags = desc->dwFlags;
     if (desc->lpwfxFormat)
         b->format = *desc->lpwfxFormat;
@@ -945,8 +1416,11 @@ static HRESULT CreateBuffer(const BufferDesc* desc, SoundBuffer** out)
     }
     if (desc->lpMixBins)
         b->SetMixBins(desc->lpMixBins);
-    std::lock_guard<std::recursive_mutex> lock(g_Lock);
     g_Voices.push_back(b);
+    if (room) {
+        ModelAdopt(b, slot, 1);
+        g_Model.voices[slot].total = b->TotalSamples();
+    }
     *out = b;
     return S_OK;
 }
@@ -965,7 +1439,15 @@ static HRESULT __stdcall XbDirectSoundCreateBuffer(const BufferDesc* desc, Sound
 
 static HRESULT __stdcall XbDirectSoundCreateStream(const StreamDesc* desc, void** out)
 {
-    auto* s = new Stream();
+    std::lock_guard<std::recursive_mutex> lock(g_Lock);
+    int slot = -1;
+    void* room = g_Det ? ModelRoom(slot) : nullptr;
+    auto* s = room ? new (room) Stream() : new Stream();
+    s->isStream = true;
+    if (room) {
+        s->inArena = true;
+        g_ArenaObject[slot] = s;
+    }
     s->header.vtbl = &kStreamVtbl;
     s->header.self = s;
     s->flags = desc->dwFlags;
@@ -976,8 +1458,14 @@ static HRESULT __stdcall XbDirectSoundCreateStream(const StreamDesc* desc, void*
         s->format = *desc->lpwfxFormat;
     if (desc->lpMixBins)
         s->SetMixBins(desc->lpMixBins);
-    std::lock_guard<std::recursive_mutex> lock(g_Lock);
     g_Voices.push_back(s);
+    if (room) {
+        ModelAdopt(s, slot, 1);
+        ModelVoice& m = g_Model.voices[slot];
+        m.maxPackets = s->maxPackets;
+        m.callback = s->callback;
+        m.context = s->context;
+    }
     *out = &s->header;
     return S_OK;
 }
@@ -1043,6 +1531,8 @@ static HRESULT __stdcall XbXAudioDownloadEffectsImage(const char* name, void* lo
 
 static DWORD __stdcall XbDirectSoundGetSampleTime()
 {
+    if (g_Det)
+        return DWORD(TimeToSamples(ModelNow(), 48000));
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
     return DWORD((now.QuadPart - g_StartQpc.QuadPart) * 48000 / std::max<LONGLONG>(1, g_QpcFreq.QuadPart));
@@ -1053,6 +1543,20 @@ static void __stdcall XbDirectSoundUseFullHRTF() {}
 // Delivers stream completion callbacks on the calling (game) thread.
 static void __stdcall XbDirectSoundDoWork()
 {
+    if (g_Det) { // the model's completions, in the order it made them
+        ModelCallback pending[kModelCallbacks];
+        uint32_t count = 0;
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_Lock);
+            ModelAdvanceStreams();
+            count = g_Model.callbackCount;
+            std::memcpy(pending, g_Model.callbacks, count * sizeof(ModelCallback));
+            g_Model.callbackCount = 0;
+        }
+        for (uint32_t i = 0; i < count; ++i)
+            pending[i].callback(pending[i].streamContext, pending[i].packetContext, pending[i].status);
+        return;
+    }
     std::vector<PendingCallback> pending;
     {
         std::lock_guard<std::mutex> lock(g_CallbackLock);
@@ -1066,12 +1570,20 @@ static void __stdcall XbDirectSoundDoWork()
 
 static ULONG __stdcall XbBufRelease(SoundBuffer* b)
 {
-    LONG n = InterlockedDecrement(&b->refCount);
-    if (n == 0) {
-        std::lock_guard<std::recursive_mutex> lock(g_Lock);
-        g_Voices.erase(std::remove(g_Voices.begin(), g_Voices.end(), b), g_Voices.end());
-        delete b;
+    std::lock_guard<std::recursive_mutex> lock(g_Lock);
+    if (ModelVoice* m = ModelOf(b)) {
+        const LONG n = --m->refCount;
+        if (n == 0) { // kept: a rollback may bring it back
+            m->used = 0;
+            if (b->source)
+                b->source->Stop();
+            b->playing = false;
+        }
+        return ULONG(n);
     }
+    LONG n = InterlockedDecrement(&b->refCount);
+    if (n == 0)
+        DestroyVoice(b);
     return ULONG(n);
 }
 
@@ -1085,6 +1597,12 @@ static HRESULT __stdcall XbBufSetBufferData(SoundBuffer* b, void* data, DWORD by
     b->data = static_cast<uint8_t*>(data);
     b->bytes = bytes;
     b->startOffset = 0;
+    if (ModelVoice* m = ModelOf(b)) {
+        m->total = b->TotalSamples();
+        m->playing = 0;
+        m->paused = 0;
+        m->startOffset = 0;
+    }
     return S_OK;
 }
 
@@ -1097,6 +1615,10 @@ static HRESULT __stdcall XbBufSetFormat(SoundBuffer* b, const XWaveFormat* forma
         b->source = nullptr;
     }
     b->format = *format;
+    if (ModelVoice* m = ModelOf(b)) {
+        ModelSetFormat(*m, *format);
+        m->total = b->TotalSamples();
+    }
     return S_OK;
 }
 
@@ -1104,6 +1626,37 @@ static HRESULT __stdcall XbBufPlay(SoundBuffer* b, DWORD, DWORD, DWORD flags)
 {
     std::lock_guard<std::recursive_mutex> lock(g_Lock);
     bool loop = (flags & DSBPLAY_LOOPING) != 0;
+    if (ModelVoice* m = ModelOf(b)) {
+        BufferPosition(*m); // notes an end
+        const uint64_t now = ModelNow();
+        if (m->paused && m->playing && !(flags & DSBPLAY_FROMSTART)) {
+            m->startTime += now - m->pausedAt;
+            m->paused = 0;
+            if (b->source && b->playing)
+                b->source->Start();
+            b->paused = false;
+            return S_OK;
+        }
+        if (m->playing && loop == bool(m->looping) && !(flags & DSBPLAY_FROMSTART))
+            return S_OK;
+        const DWORD from = (flags & DSBPLAY_FROMSTART) ? 0 : (m->playing ? BufferPosition(*m) : m->startOffset);
+        m->looping = loop;
+        m->paused = 0;
+        m->playing = m->total ? 1 : 0;
+        m->startOffset = m->total ? from % m->total : 0;
+        m->startTime = now;
+        if (g_Replaying)
+            return S_OK; // heard the first time
+        b->looping = loop;
+        b->paused = false;
+        b->Submit(from);
+        if (b->source || b->silent) {
+            if (b->source)
+                b->source->Start();
+            b->playing = true;
+        }
+        return S_OK;
+    }
     bool playing = b->IsPlaying();
     if (b->paused && playing && !(flags & DSBPLAY_FROMSTART)) {
         if (b->source)
@@ -1140,6 +1693,12 @@ static HRESULT __stdcall XbBufPlay(SoundBuffer* b, DWORD, DWORD, DWORD flags)
 static HRESULT __stdcall XbBufStop(SoundBuffer* b)
 {
     std::lock_guard<std::recursive_mutex> lock(g_Lock);
+    if (ModelVoice* m = ModelOf(b)) {
+        if (m->playing)
+            m->startOffset = BufferPosition(*m);
+        m->playing = 0;
+        m->paused = 0;
+    }
     if ((b->source || b->silent) && b->playing) {
         b->startOffset = b->CurrentSample();
         if (b->source) {
@@ -1155,6 +1714,17 @@ static HRESULT __stdcall XbBufStop(SoundBuffer* b)
 static HRESULT __stdcall XbBufPause(SoundBuffer* b, DWORD pause)
 {
     std::lock_guard<std::recursive_mutex> lock(g_Lock);
+    if (ModelVoice* m = ModelOf(b)) {
+        BufferPosition(*m);
+        const uint64_t now = ModelNow();
+        if ((pause & 1) && !m->paused) {
+            m->pausedAt = now;
+            m->paused = 1;
+        } else if (!(pause & 1) && m->paused) {
+            m->startTime += now - m->pausedAt;
+            m->paused = 0;
+        }
+    }
     if (!b->source && !b->silent)
         return S_OK;
     if ((pause & 1) && !b->paused) {
@@ -1176,6 +1746,19 @@ static HRESULT __stdcall XbBufPause(SoundBuffer* b, DWORD pause)
 static HRESULT __stdcall XbBufGetStatus(SoundBuffer* b, DWORD* status)
 {
     std::lock_guard<std::recursive_mutex> lock(g_Lock);
+    if (ModelVoice* m = ModelOf(b)) {
+        BufferPosition(*m);
+        DWORD st = 0;
+        if (m->playing) {
+            st |= DSBSTATUS_PLAYING;
+            if (m->looping)
+                st |= DSBSTATUS_LOOPING;
+        }
+        if (m->paused)
+            st |= DSBSTATUS_PAUSED;
+        *status = st;
+        return S_OK;
+    }
     DWORD st = 0;
     if (b->IsPlaying()) {
         st |= DSBSTATUS_PLAYING;
@@ -1191,7 +1774,8 @@ static HRESULT __stdcall XbBufGetStatus(SoundBuffer* b, DWORD* status)
 static HRESULT __stdcall XbBufGetCurrentPosition(SoundBuffer* b, DWORD* play, DWORD* write)
 {
     std::lock_guard<std::recursive_mutex> lock(g_Lock);
-    DWORD pos = b->SampleToByte(b->CurrentSample());
+    ModelVoice* m = ModelOf(b);
+    DWORD pos = m ? ModelSampleToByte(*m, BufferPosition(*m)) : b->SampleToByte(b->CurrentSample());
     if (play) *play = pos;
     if (write) *write = pos;
     return S_OK;
@@ -1201,6 +1785,15 @@ static HRESULT __stdcall XbBufSetCurrentPosition(SoundBuffer* b, DWORD offset)
 {
     std::lock_guard<std::recursive_mutex> lock(g_Lock);
     DWORD sample = b->ByteToSample(offset);
+    if (ModelVoice* m = ModelOf(b)) {
+        BufferPosition(*m);
+        m->startOffset = m->total ? sample % m->total : 0;
+        m->startTime = ModelNow();
+        if (m->paused)
+            m->pausedAt = m->startTime;
+        if (g_Replaying)
+            return S_OK;
+    }
     if (b->IsPlaying()) {
         b->Submit(sample);
         if (b->source && !b->paused)
@@ -1240,7 +1833,17 @@ static void Apply(T* v)
 
 static HRESULT __stdcall XbBufSetVolume(SoundBuffer* b, LONG volume) { b->volume = volume; Apply(b); return S_OK; }
 static HRESULT __stdcall XbBufSetHeadroom(SoundBuffer* b, DWORD headroom) { b->headroom = LONG(headroom); Apply(b); return S_OK; }
-static HRESULT __stdcall XbBufSetFrequency(SoundBuffer* b, DWORD freq) { b->frequency = freq; Apply(b); return S_OK; }
+static HRESULT __stdcall XbBufSetFrequency(SoundBuffer* b, DWORD freq)
+{
+    std::lock_guard<std::recursive_mutex> lock(g_Lock);
+    if (ModelVoice* m = ModelOf(b)) {
+        BufferRebase(*m);
+        m->frequency = freq;
+    }
+    b->frequency = freq;
+    Apply(b);
+    return S_OK;
+}
 static HRESULT __stdcall XbBufSetMixBins(SoundBuffer* b, const MixBins* bins)
 {
     std::lock_guard<std::recursive_mutex> lock(g_Lock);
@@ -1297,7 +1900,21 @@ static HRESULT __stdcall XbBufSetAllParameters(SoundBuffer* b, const Ds3dBuffer*
 // --- IDirectSoundStream (non-XMO methods) ------------------------------------------------
 
 static HRESULT __stdcall XbStrSetVolume(void* h, LONG volume) { Stream* s = StreamFromThis(h); s->volume = volume; Apply(s); return S_OK; }
-static HRESULT __stdcall XbStrSetFrequency(void* h, DWORD freq) { Stream* s = StreamFromThis(h); s->frequency = freq; Apply(s); return S_OK; }
+static HRESULT __stdcall XbStrSetFrequency(void* h, DWORD freq)
+{
+    std::lock_guard<std::recursive_mutex> lock(g_Lock);
+    Stream* s = StreamFromThis(h);
+    if (ModelVoice* m = ModelOf(s)) {
+        StreamAdvance(*m);
+        const uint64_t now = m->paused ? m->pausedAt : ModelNow();
+        const uint64_t played = now > m->startTime ? TimeToSamples(now - m->startTime, ModelRate(*m)) : 0;
+        m->frequency = freq;
+        m->startTime = now - SamplesToTime(played, ModelRate(*m));
+    }
+    s->frequency = freq;
+    Apply(s);
+    return S_OK;
+}
 static HRESULT __stdcall XbStrSetMixBins(void* h, const MixBins* bins)
 {
     std::lock_guard<std::recursive_mutex> lock(g_Lock);
@@ -1331,6 +1948,10 @@ static HRESULT __stdcall XbStrSetFormat(void* h, const XWaveFormat* format)
 {
     std::lock_guard<std::recursive_mutex> lock(g_Lock);
     Stream* s = StreamFromThis(h);
+    if (ModelVoice* m = ModelOf(s)) {
+        StreamFlushModel(*m);
+        ModelSetFormat(*m, *format);
+    }
     s->FlushAll();
     if (s->source) {
         s->source->DestroyVoice();
@@ -1344,6 +1965,19 @@ static HRESULT __stdcall XbStrPause(void* h, DWORD pause)
 {
     std::lock_guard<std::recursive_mutex> lock(g_Lock);
     Stream* s = StreamFromThis(h);
+    if (ModelVoice* m = ModelOf(s)) {
+        StreamAdvance(*m);
+        const uint64_t now = ModelNow();
+        if ((pause & 1) && !m->paused) {
+            m->pausedAt = now;
+            m->paused = 1;
+        } else if (!(pause & 1) && m->paused) {
+            m->startTime += now - m->pausedAt;
+            m->paused = 0;
+            if (m->count)
+                m->playing = 1;
+        }
+    }
     s->paused = (pause & 1) != 0; // PAUSE (1) and PAUSENOACTIVATE (3)
     if (s->source) {
         if (s->paused)
@@ -1361,20 +1995,21 @@ static HRESULT __stdcall XbStrFlushEx(void* h, LONGLONG timestamp, DWORD flags)
     (void)timestamp;
     (void)flags;
     std::lock_guard<std::recursive_mutex> lock(g_Lock);
-    StreamFromThis(h)->FlushAll();
+    Stream* s = StreamFromThis(h);
+    if (ModelVoice* m = ModelOf(s))
+        StreamFlushModel(*m);
+    s->FlushAll();
     return S_OK;
 }
 
 // --- XDK globals ----------------------------------------------------------------------------
 
 // DirectSound's allocator (which runs natively) adds to usage counters through
-// pointers its own initialisation would set up.
-static DWORD g_PoolBytes = 0, g_PhysicalBytes = 0;
-
+// pointers its own initialisation would set up. They live in the model's state: the game writes them.
 void InitXboxGlobals()
 {
-    *reinterpret_cast<DWORD**>(uintptr_t(0x0053C140)) = &g_PoolBytes;
-    *reinterpret_cast<DWORD**>(uintptr_t(0x0053C13C)) = &g_PhysicalBytes;
+    *reinterpret_cast<DWORD**>(uintptr_t(0x0053C140)) = &g_Model.poolBytes;
+    *reinterpret_cast<DWORD**>(uintptr_t(0x0053C13C)) = &g_Model.physicalBytes;
 }
 
 // --- Registration -----------------------------------------------------------------------
@@ -1507,6 +2142,35 @@ void StopPortSounds()
     DropPortSounds(true);
 }
 
+void SetDeterministic(bool on)
+{
+    std::lock_guard<std::recursive_mutex> lock(g_Lock);
+    if (on == g_Det)
+        return;
+    if (on)
+        ModelOn();
+    else
+        ModelOff();
+    g_Replaying = false;
+}
+
+bool Deterministic() { return g_Det; }
+
+void SetReplaying(bool replaying) { g_Replaying = replaying; }
+
+void OnFrame()
+{
+    std::lock_guard<std::recursive_mutex> lock(g_Lock);
+    if (g_Det)
+        ModelAdvanceStreams();
+}
+
+void* DeterministicState(uint32_t& size)
+{
+    size = sizeof(g_Model);
+    return &g_Model;
+}
+
 void Silence()
 {
     std::lock_guard<std::recursive_mutex> lock(g_Lock);
@@ -1521,16 +2185,22 @@ void ResetForReboot()
         g_XAudio->StopEngine();
     DropPortSounds(true);
     const size_t voices = g_Voices.size();
-    for (Voice* v : g_Voices)
-        delete v; // destroys its XAudio2 voice
+    g_Det = false;
+    g_Replaying = false;
+    const std::vector<Voice*> all = g_Voices;
+    for (Voice* v : all)
+        DestroyVoice(v); // destroys its XAudio2 voice
     g_Voices.clear();
+    for (uint32_t i = 0; i < kModelVoices; ++i)
+        g_ArenaObject[i] = nullptr;
+    g_Model = ModelState{}; // the allocator's counters too (they start again with the game)
     {
         std::lock_guard<std::mutex> callbacks(g_CallbackLock);
         g_Callbacks.clear();
     }
     g_DirectSound.refCount = 1;
     g_EffectImage = {};
-    g_PoolBytes = g_PhysicalBytes = 0;
+    g_Model.poolBytes = g_Model.physicalBytes = 0;
     if (g_XAudio)
         g_XAudio->StartEngine();
     LOG_INFO("Reboot: %zu sound buffers and streams released", voices);

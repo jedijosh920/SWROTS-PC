@@ -10,6 +10,7 @@
 #include <cstring>
 #include <vector>
 
+#include "audio/audio.h"
 #include "core/log.h"
 #include "core/settings.h"
 #include "game/characters.h"
@@ -43,6 +44,7 @@ struct Stats {
 };
 
 Mode g_Mode = Mode::Off;
+bool g_Rebooting = false;
 uint32_t g_Distance = 0, g_Every = 1;
 DWORD g_MainThread = 0;
 uint32_t g_Fps = 30;
@@ -193,6 +195,16 @@ StateConfig Config()
 
 void SetClock() { kernel::SetFixedClockFrame(g_Frame, g_Fps); }
 
+// The start of the frame about to be played (or played again): its clock, then what the sound model completes by
+// then, the same in every play of the frame.
+void EnterFrame()
+{
+    SetClock();
+    audio::SetReplaying(g_Resim);
+    audio::OnFrame();
+    WatchSetFrame(g_Frame, g_Resim);
+}
+
 void LogStats(const char* when)
 {
     const Stats& s = g_Stats;
@@ -213,6 +225,8 @@ bool Arm(const void* frameStack, uint32_t frame)
         uint32_t size = 0;
         void* clock = kernel::FixedClockState(size);
         RegisterHostState("fixed clock", clock, size);
+        void* sound = audio::DeterministicState(size);
+        RegisterHostState("sound model", sound, size);
         clockRegistered = true;
     }
     if (!StatePrepare(Config(), frameStack))
@@ -242,6 +256,7 @@ void Suspend(const char* why)
     StopWatch("the session paused");
     LOG_INFO("Netplay: rollback session paused (%s)", why);
     input::SetPadSource(nullptr);
+    audio::SetDeterministic(false);
     kernel::SetFixedClock(false);
     StateDisarm();
     g_Mode = Mode::Arming;
@@ -257,6 +272,8 @@ void Stop(const char* why)
     StopWatch("the session ended");
     LOG_INFO("Netplay: rollback session ends (%s)", why);
     input::SetPadSource(nullptr);
+    if (!g_Rebooting)
+        audio::SetDeterministic(false);
     kernel::SetFixedClock(false);
     StateDisarm();
     g_Mode = Mode::Off;
@@ -371,8 +388,11 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
         SampleInputs(0);
         kernel::SetFixedClock(true, g_MainThread); // before the first save: the clock's state is saved with it
         g_Frame = 0;
+        g_Resim = false;
         SetClock();
+        audio::SetDeterministic(true); // the sound model's state is saved with it too
         if (!Arm(frameStack, 0)) {
+            audio::SetDeterministic(false);
             kernel::SetFixedClock(false);
             if (++failures == 600) // ten to twenty seconds of frames
                 Stop("the snapshots could not be armed");
@@ -380,6 +400,9 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
         }
         failures = 0;
         input::SetPadSource(&PadFromSession);
+        audio::SetReplaying(false);
+        audio::OnFrame();
+        WatchSetFrame(0, false);
         g_Mode = Mode::Running;
         LOG_INFO("SyncTest: on, back %u frames every %u frames, at %u fps, the game's main thread %lu", g_Distance,
             g_Every, g_Fps, g_MainThread);
@@ -410,7 +433,7 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
         if (!wasResim)
             SampleInputs(next);
         Rearm(frameStack, next, "the game allocated or freed memory");
-        SetClock();
+        EnterFrame();
         return g_SwapBase + g_Frame;
     }
 
@@ -424,7 +447,7 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
         if (!wasResim)
             SampleInputs(next);
         Rearm(frameStack, next, "after a failed save");
-        SetClock();
+        EnterFrame();
         return g_SwapBase + g_Frame;
     }
     g_Frame = next;
@@ -455,8 +478,7 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
         if (Watching() && g_Stats.frames >= g_WatchUntil && !g_Resim)
             StopWatch("round over");
     }
-    SetClock();
-    WatchSetFrame(g_Frame, g_Resim);
+    EnterFrame();
     return g_SwapBase + g_Frame;
 }
 
@@ -490,6 +512,13 @@ std::string RollbackStatus()
     return line;
 }
 
-void ResetRollbackForReboot() { Stop("the game restarts"); }
+void ResetRollbackForReboot()
+{
+    // The sound layer forgets its model with everything else (audio::ResetForReboot): the game's memory, which the
+    // model's packets point into, is about to go.
+    g_Rebooting = true;
+    Stop("the game restarts");
+    g_Rebooting = false;
+}
 
 } // namespace swrots::net
