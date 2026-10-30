@@ -262,3 +262,24 @@ moment the match's level starts loading (the in-process reboot into it), not onl
 
 This is the foundation of both netcodes (rollback also needs the PCs to agree); it is only switched on for a netplay
 match, so single-player games keep running exactly as they do.
+
+### Deterministic addresses: done (nettest, 2026-10-30)
+
+With `nettest` restarting the level with deterministic addresses (the fixed range at `0x20000000` for the game's
+virtual memory and pool blocks, `core.dll` at `0x60000000` kept free by the loader until it loads, code stubs at
+`0x9F0000`, the game threads' stacks, objects and TLS in the fixed range's thread zone):
+
+| | Run 1 | Fixed range | + core.dll base | + stubs and threads |
+|---|---|---|---|---|
+| Regions at different addresses | 509 / 512 | 2 / 544 | 2 / 544 | **0 / 544** |
+| Pages differing at the match's start | 3,024 | 329 | 330 | ~40 regions, 8,430 words |
+
+What still differs is **content that depends on the PC's timing while the level loads**: frame counters (`0x646268`:
+0x91C against 0x9DC frames), accumulated times and positions (floats differing in their last bits), values that
+look random (seeded or advanced by time), and one pointer outside the fixed range (`0x24000058`: 0x12AF0000 against
+0x140B0000, to find). That is the next step: the fixed clock and a deterministic scheduler of the game's threads from
+the reboot on (see above), so that loading takes the same number of frames and the same course on every PC.
+
+Note for real matches: code stubs are taken in the order the port makes them, from the first start of the game. Two
+PCs that did different things before a match (one played a mission) may have made stubs in a different order; the
+stubs should be made at fixed places per patch site, or all made at startup.
