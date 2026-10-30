@@ -554,7 +554,12 @@ NTSTATUS XBAPI NtResumeThread(HANDLE ThreadHandle, ULONG* PreviousSuspendCount)
 {
     ThreadHandle = ToHostHandle(ThreadHandle);
     SchedResumed(ThreadHandle);
-    return ::NtResumeThread(ThreadHandle, PreviousSuspendCount);
+    const NTSTATUS status = ::NtResumeThread(ThreadHandle, PreviousSuspendCount);
+    // The deterministic scheduler: the threads ready to run take their turn first, as a preemptive kernel would run
+    // the resumed one soon (the movie player resumes its threads in a loop until one of them answers).
+    if (SchedHolding())
+        SchedYield();
+    return status;
 }
 
 LONG XBAPI KeQueryBasePriorityThread(void* Thread)
