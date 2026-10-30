@@ -355,11 +355,13 @@ void RelaunchProcess(const void* launchData)
 
 // Reboots with `launchData` (null: the current page) from a thread of its own: the reboot stops every game
 // thread, the caller's too.
+static const uint8_t kNoLaunchData = 0; // RebootWith: a start as from the dashboard (no launch data at all)
+
 static void RebootWith(const void* launchData)
 {
     LogFlush();
     HANDLE worker = CreateThread(nullptr, 0, [](void* data) -> DWORD {
-        const void* launchData = data ? data : LaunchDataPage;
+        const void* launchData = data == &kNoLaunchData ? nullptr : data ? data : LaunchDataPage;
         if (g_InProcessReboot)
             RebootInProcess(launchData); // ends this thread; the reboot worker takes over
         RelaunchProcess(launchData);
@@ -395,6 +397,13 @@ void LaunchGame(const std::string& arguments)
 }
 
 const std::string& LaunchArguments() { return g_BootArguments; }
+
+void RestartFromDashboard()
+{
+    g_MissionLaunchData.clear();
+    LOG_INFO("Starting the game again as from the dashboard");
+    RebootWith(&kNoLaunchData);
+}
 
 void StartRebootTest(unsigned seconds)
 {

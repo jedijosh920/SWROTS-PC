@@ -46,6 +46,8 @@ void RestartMission();
 // Starts the game again with `arguments` as its launch data, a line of launch arguments as in Default_Xbox.cfg
 // (e.g. "map:u112_mus_lava"), as the game's own level changes do. Any thread; returns at once.
 void LaunchGame(const std::string& arguments);
+// Starts the game again with no launch data, as the dashboard starts it (its intro, then the title).
+void RestartFromDashboard();
 // The launch arguments this start of the game was given (empty when none: a start from the dashboard or
 // Default_Xbox.cfg).
 const std::string& LaunchArguments();

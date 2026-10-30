@@ -426,7 +426,7 @@ void EndLocked(const std::string& why, bool tellOther)
     g_S.inputs.notify_all();
     if (matchOn) { // the game back to its title, as a PC alone
         LOG_INFO("Online: the match is over; back to the title");
-        kernel::LaunchGame("map: playlicensemovie:0");
+        kernel::RestartFromDashboard();
     }
 }
 
@@ -540,19 +540,22 @@ uint32_t GetU32(const uint8_t*& p) { const uint32_t x = p[0] | p[1] << 8 | p[2] 
 // On a game thread (the profile is saved by the game's own code).
 void BuildPackageLocked()
 {
-    std::string args = "map: v_shellBetweenLevels:0 v_versusMode:0 v_bonusMissionMode:0 v_challengeMissionMode:0 "
-                       "v_checkpointIndex:-1 playlicensemovie:0";
+    // With the host's profile: the main menu, as the game's own return from a level. Without (the host at the
+    // title): a start as from the dashboard (empty arguments), its intro and title.
+    std::string args;
     std::vector<std::pair<std::wstring, std::vector<uint8_t>>> files;
     int controller = 0, memoryUnit = 0;
     if (game::SaveProfileForStart(controller, memoryUnit)) {
         std::vector<uint8_t> persist;
         if (ReadWholeFile(kernel::UtilityDrivePath() + L"\\persist.tmp", persist)) {
             files.push_back({ L"utility\\persist.tmp", std::move(persist) });
-            args += " v_sessionCreated:1 title:0 controller:0 memoryunit:" + std::to_string(memoryUnit);
+            args = "map: v_shellBetweenLevels:0 v_versusMode:0 v_bonusMissionMode:0 v_challengeMissionMode:0 "
+                   "v_checkpointIndex:-1 playlicensemovie:0 v_sessionCreated:1 title:0 controller:0 memoryunit:" +
+                std::to_string(memoryUnit);
         }
-    } else {
-        LOG_WARN("Online: no profile to bring along (the match starts at the title)");
     }
+    if (args.empty())
+        LOG_WARN("Online: no profile to bring along (the match starts as the game does, at its title)");
     const std::wstring saves = kernel::SaveDrivePath();
     std::vector<std::wstring> list;
     ListFiles(saves, L"", list);
@@ -655,7 +658,10 @@ void BeginBootLocked()
     g_S.bootPending = true;
     g_S.phase = OnlinePhase::Starting;
     SetMessage("starting the match");
-    kernel::LaunchGame(args);
+    if (args.empty())
+        kernel::RestartFromDashboard();
+    else
+        kernel::LaunchGame(args);
 }
 
 // --- The network thread -------------------------------------------------------------------------------------------------
