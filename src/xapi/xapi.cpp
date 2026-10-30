@@ -10,9 +10,11 @@
 #include "core/log.h"
 #include "core/patch.h"
 #include "game/game.h"
+#include "core/gates.h"
 #include "kernel/clock.h"
 #include "kernel/kernel.h"
 #include "kernel/reboot.h"
+#include "kernel/sched.h"
 
 namespace swrots::xapi {
 
@@ -212,7 +214,13 @@ void InstallHooks()
         const game::SdkSymbol& s = syms[i];
         auto it = Replacements().find(s.name);
         if (it != Replacements().end()) {
-            PatchJump(s.address, g_TraceSdk ? MakeTraceStub(i, it->second) : it->second);
+            const void* target = it->second;
+            // Netplay: behind a gate that cleans the stack after it (core/gates.h); not the frame's end (Swap),
+            // whose stack netplay's snapshots start at.
+            if (kernel::SchedActive() && std::strcmp(s.name, "D3DDevice_Swap") != 0)
+                if (const void* gate = HostCallGate(kGateSdkFirst + i, target))
+                    target = gate;
+            PatchJump(s.address, g_TraceSdk ? MakeTraceStub(i, target) : target);
             ++replaced;
         } else if (Passthroughs().count(s.name)) {
             ++native;
