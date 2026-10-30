@@ -368,9 +368,11 @@ struct Session {
     bool desync = false;
     uint32_t desyncFrame = 0;
     // The game's data at the last check (for a desync's report: written next to the executable).
-    std::vector<uint8_t> checkedData;
-    uint32_t checkedFrame = 0;
-    uint64_t checkedTrace = 0;
+    struct Checked {
+        std::vector<uint8_t> data;
+        uint32_t frame = 0;
+        uint64_t trace = 0;
+    } checked[8];
 
     Settings saved;          // the guest's own settings, given back after the match
     bool settingsSaved = false;
@@ -501,16 +503,17 @@ void CompareChecksLocked()
             LOG_ERROR("Online: the two games parted (desync) at frame %u: %016llX here, %016llX there", r.frame,
                 c.hash, r.hash);
             SetMessage("the two games parted (desync) at frame " + std::to_string(r.frame));
-            if (g_S.checkedFrame == r.frame && !g_S.checkedData.empty()) { // the data as checked, for a comparison
+            const Session::Checked& k = g_S.checked[(r.frame / HashEvery()) % std::size(g_S.checked)];
+            if (k.frame == r.frame && !k.data.empty()) { // the data as checked, for a comparison
                 wchar_t instance[64] = {};
                 GetEnvironmentVariableW(L"SWROTS_INSTANCE", instance, 64);
                 const std::wstring path = ExeDirectory() + L"\\netplay\\desync-" + (instance[0] ? instance : (g_S.host ? L"host" : L"guest")) + L".bin";
                 std::vector<uint8_t> out(8);
-                std::memcpy(out.data(), &g_S.checkedTrace, 8);
-                out.insert(out.end(), g_S.checkedData.begin(), g_S.checkedData.end());
+                std::memcpy(out.data(), &k.trace, 8);
+                out.insert(out.end(), k.data.begin(), k.data.end());
                 WriteWholeFile(path, out.data(), out.size());
                 LOG_INFO("Online: the game's data at frame %u written to %ls (scheduler trace %016llX)", r.frame,
-                    path.c_str(), g_S.checkedTrace);
+                    path.c_str(), k.trace);
             }
         }
         return;
@@ -1224,9 +1227,10 @@ void OnlineFrame()
         const size_t dataSize = 0x00962BF8 - 0x00612BE0;
         uint64_t h = kernel::SchedTraceHash();
         if (!g_S.desync) { // kept until the other's check for this frame came (a desync's report)
-            g_S.checkedData.assign(data, data + dataSize);
-            g_S.checkedFrame = next;
-            g_S.checkedTrace = h;
+            Session::Checked& k = g_S.checked[(next / HashEvery()) % std::size(g_S.checked)];
+            k.data.assign(data, data + dataSize);
+            k.frame = next;
+            k.trace = h;
         }
         h = HashBlock(data, dataSize, h);
         g_S.checks[(next / HashEvery()) % std::size(g_S.checks)] = { next, h };
