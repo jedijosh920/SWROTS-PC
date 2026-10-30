@@ -597,6 +597,35 @@ bool StateKeepExpected()
     return true;
 }
 
+void StateDifferingWords(const std::vector<uint64_t>& before, std::vector<uint32_t>& out, size_t max)
+{
+    out.clear();
+    if (!g_S.haveExpected)
+        return;
+    std::vector<uint32_t> more;
+    for (uint32_t page = 0; page < g_S.pages && page < before.size() && out.size() < max; ++page) {
+        if (g_S.excluded[page] || before[page] == g_S.hashes[page])
+            continue;
+        const Region& r = RegionOfPage(page);
+        const uint8_t* was = g_S.expected + size_t(page) * kPage;
+        const uint8_t* now = PageAddress(r, page);
+        const uint32_t bytes = PageBytes(r, page);
+        bool first = true;
+        for (uint32_t at = 0; at + 4 <= bytes; at += 4) {
+            if (std::memcmp(was + at, now + at, 4) == 0)
+                continue;
+            const uint32_t address = uint32_t(uintptr_t(now + at));
+            if (first)
+                out.push_back(address);
+            else if (more.size() < max)
+                more.push_back(address);
+            first = false;
+        }
+    }
+    for (size_t i = 0; i < more.size() && out.size() < max; ++i)
+        out.push_back(more[i]);
+}
+
 std::string StateDescribeDifferences(const std::vector<uint64_t>& before, size_t max)
 {
     std::string text;

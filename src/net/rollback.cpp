@@ -17,6 +17,7 @@
 #include "kernel/clock.h"
 #include "kernel/kernel.h"
 #include "net/state.h"
+#include "net/watch.h"
 
 namespace swrots::net {
 
@@ -70,31 +71,84 @@ HANDLE g_Suspended[64];
 uint32_t g_SuspendedCount = 0;
 UCHAR g_OldIrql = 0;
 
+bool g_Opened[64]; // the handle was opened here (a thread the port adopted, e.g. the DPC thread): closed after
+
 void StopTheWorld()
 {
     g_OldIrql = kernel::RaiseIrql(kernel::kDispatchLevel);
     g_SuspendedCount = 0;
     kernel::ForEachThread(
         [](kernel::XboxThread* t, void*) {
-            if (t->threadId == GetCurrentThreadId() || !t->hostHandle || g_SuspendedCount == std::size(g_Suspended))
+            if (t->threadId == GetCurrentThreadId() || g_SuspendedCount == std::size(g_Suspended))
                 return;
-            if (SuspendThread(t->hostHandle) != DWORD(-1)) {
+            HANDLE h = t->hostHandle;
+            const bool opened = !h;
+            if (opened)
+                h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, t->threadId);
+            if (!h)
+                return;
+            if (SuspendThread(h) != DWORD(-1)) {
                 // SuspendThread only asks; reading the context waits until the thread has stopped.
                 CONTEXT context = {};
                 context.ContextFlags = CONTEXT_CONTROL;
-                GetThreadContext(t->hostHandle, &context);
-                g_Suspended[g_SuspendedCount++] = t->hostHandle;
+                GetThreadContext(h, &context);
+                g_Opened[g_SuspendedCount] = opened;
+                g_Suspended[g_SuspendedCount++] = h;
+            } else if (opened) {
+                CloseHandle(h);
             }
         },
         nullptr);
+    WatchSuppress(true);
 }
 
 void StartTheWorld()
 {
-    for (uint32_t i = 0; i < g_SuspendedCount; ++i)
+    WatchSuppress(false);
+    for (uint32_t i = 0; i < g_SuspendedCount; ++i) {
         ResumeThread(g_Suspended[i]);
+        if (g_Opened[i])
+            CloseHandle(g_Suspended[i]);
+    }
     g_SuspendedCount = 0;
     kernel::LowerIrql(g_OldIrql);
+}
+
+// Watching the words a mismatch shows (net/watch.h): a few rounds of four words each, each for a few seconds.
+constexpr uint32_t kWatchRounds = 8;
+constexpr uint32_t kWatchFrames = 240;
+uint32_t g_WatchRound = 0;
+uint32_t g_WatchUntil = 0;
+std::vector<uint32_t> g_Watched;
+
+void StartWatch(const std::vector<uint64_t>& hashesAtTarget)
+{
+    if (Watching() || g_WatchRound >= kWatchRounds)
+        return;
+    std::vector<uint32_t> words;
+    StateDifferingWords(hashesAtTarget, words, 64);
+    uint32_t pick[kWatchSlots];
+    int count = 0;
+    for (uint32_t w : words) {
+        // a word not watched yet, and not next to one (the same structure, most likely)
+        const bool seen = std::any_of(g_Watched.begin(), g_Watched.end(),
+            [&](uint32_t v) { return (v > w ? v - w : w - v) < 64; });
+        if (seen || count == kWatchSlots)
+            continue;
+        pick[count++] = w;
+        g_Watched.push_back(w);
+    }
+    if (!count)
+        return;
+    ++g_WatchRound;
+    if (WatchWords(pick, count))
+        g_WatchUntil = g_Stats.frames + kWatchFrames;
+}
+
+void StopWatch(const char* why)
+{
+    if (Watching())
+        WatchStopAndLog(why);
 }
 
 // --- inputs ------------------------------------------------------------------------------------------------------
@@ -185,6 +239,7 @@ void Suspend(const char* why)
 {
     if (g_Mode == Mode::Running)
         LogStats("paused");
+    StopWatch("the session paused");
     LOG_INFO("Netplay: rollback session paused (%s)", why);
     input::SetPadSource(nullptr);
     kernel::SetFixedClock(false);
@@ -199,6 +254,7 @@ void Stop(const char* why)
         return;
     if (g_Mode == Mode::Running)
         LogStats("end");
+    StopWatch("the session ended");
     LOG_INFO("Netplay: rollback session ends (%s)", why);
     input::SetPadSource(nullptr);
     kernel::SetFixedClock(false);
@@ -223,7 +279,7 @@ void Rearm(const void* frameStack, uint32_t frame, const char* why)
 void BeginCheck(const void* frameStack)
 {
     StateCopyPageHashes(g_HashesAtTarget);
-    if (g_Stats.mismatches < 20) // the words that differ, for the mismatches logged
+    if (g_Stats.mismatches < 20 || (!Watching() && g_WatchRound < kWatchRounds)) // the words that differ
         StateKeepExpected();
     const uint32_t target = g_Frame;
     const uint32_t back = target - g_Distance;
@@ -251,8 +307,11 @@ void EndCheck(uint64_t checksum)
     if (!g_ResimMismatch)
         return;
     ++g_Stats.mismatches;
-    if (g_Stats.mismatches > 20)
+    if (g_Stats.mismatches > 20) {
+        if (checksum != g_Checksums[g_ResimTarget % kHistory])
+            StartWatch(g_HashesAtTarget);
         return;
+    }
     const bool endDiffers = checksum != g_Checksums[g_ResimTarget % kHistory];
     std::string pages = endDiffers ? StateDescribeDifferences(g_HashesAtTarget, 16) : std::string();
     LOG_WARN("SyncTest: frames %u-%u played again differ, first at frame %u (%s at the end)%s%s",
@@ -260,6 +319,8 @@ void EndCheck(uint64_t checksum)
         endDiffers ? "; pages that differ:" : "", pages.c_str());
     if (g_Stats.mismatches == 20)
         LOG_WARN("SyncTest: more mismatches; no longer logged");
+    if (endDiffers)
+        StartWatch(g_HashesAtTarget);
 }
 
 void NoteFrameTime(bool resimulated)
@@ -320,7 +381,8 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
         failures = 0;
         input::SetPadSource(&PadFromSession);
         g_Mode = Mode::Running;
-        LOG_INFO("SyncTest: on, back %u frames every %u frames, at %u fps", g_Distance, g_Every, g_Fps);
+        LOG_INFO("SyncTest: on, back %u frames every %u frames, at %u fps, the game's main thread %lu", g_Distance,
+            g_Every, g_Fps, g_MainThread);
         return g_SwapBase + g_Frame;
     }
     if (GetCurrentThreadId() != g_MainThread)
@@ -390,8 +452,11 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
             BeginCheck(frameStack);
         if (g_Stats.frames % (g_Fps * 30) == 0)
             LogStats("running");
+        if (Watching() && g_Stats.frames >= g_WatchUntil && !g_Resim)
+            StopWatch("round over");
     }
     SetClock();
+    WatchSetFrame(g_Frame, g_Resim);
     return g_SwapBase + g_Frame;
 }
 
@@ -402,6 +467,8 @@ void StartSyncTest(uint32_t distance, uint32_t every)
 {
     Stop("a new one starts");
     g_Distance = std::clamp<uint32_t>(distance, 1, 30);
+    g_WatchRound = 0;
+    g_Watched.clear();
     g_Every = std::max<uint32_t>(every, 1);
     g_Mode = Mode::Arming;
 }

@@ -69,6 +69,9 @@ void StateCopyPageHashes(std::vector<uint64_t>& out);
 // Keeps a copy of every page as it was at the last save, so that StateDescribeDifferences also tells which words
 // differ and what they held (a diagnostic: it copies all the memory covered).
 bool StateKeepExpected();
+// The addresses of words that differ between that copy and now (with StateKeepExpected), at most `max`, one per
+// page first (the pages in order), then more from the same pages.
+void StateDifferingWords(const std::vector<uint64_t>& before, std::vector<uint32_t>& out, size_t max);
 std::string StateDescribeDifferences(const std::vector<uint64_t>& before, size_t max);
 
 // Port code that keeps simulation state in its own variables registers them (before a session starts): they are
