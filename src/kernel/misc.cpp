@@ -68,8 +68,9 @@ static void TickThreadMain()
     ULONGLONG start = GetTickCount64();
     for (;;) {
         Sleep(1);
-        // Under the fixed clock (netplay) it shows the frame's time, even between two frame boundaries.
-        KeTickCount = FixedClockOn() ? FixedClockTickCount() : ULONG(GetTickCount64() - start);
+        // Under the fixed clock (netplay) the clock keeps it in step itself (kernel/clock.cpp).
+        if (!FixedClockOn())
+            KeTickCount = ULONG(GetTickCount64() - start);
     }
 }
 

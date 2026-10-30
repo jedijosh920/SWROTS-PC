@@ -11,6 +11,8 @@
 
 namespace swrots::kernel {
 
+extern volatile ULONG KeTickCount; // misc.cpp: the kernel's exported tick count, which the game reads directly
+
 namespace {
 
 // An origin of one hour: no clock reads zero (a value some code treats as "never").
@@ -35,6 +37,8 @@ uint32_t g_ReadsMax = 0;
 
 } // namespace
 
+static void SyncTickCount();
+
 void SetFixedClock(bool on, uint32_t thread, bool anyThread)
 {
     if (on && g_On) { // already on (the scheduler's): its time goes on
@@ -47,12 +51,19 @@ void SetFixedClock(bool on, uint32_t thread, bool anyThread)
     g_ReadsMax = 0;
     g_State = { kOrigin, 0, 0 };
     g_On = on;
+    if (on)
+        SyncTickCount();
 }
+
+// While the fixed clock is on, the game's KeTickCount follows it exactly (the tick thread leaves it alone): the
+// game reads the variable directly, and a value a PC thread updates every millisecond would depend on timing.
+static void SyncTickCount() { KeTickCount = ULONG(g_State.now / 10000); }
 
 void FixedClockAdvanceTo(uint64_t time)
 {
     if (g_State.now < time)
         g_State.now = time;
+    SyncTickCount();
 }
 
 bool FixedClockOn() { return g_On; }
@@ -68,6 +79,7 @@ void SetFixedClockFrame(uint32_t frame, uint32_t framesPerSecond)
     const uint64_t start = kOrigin + uint64_t(frame) * length;
     if (g_State.now < start)
         g_State.now = start;
+    SyncTickCount();
     g_ReadsMax = std::max(g_ReadsMax, g_State.reads);
     g_State.reads = 0;
 }
@@ -80,6 +92,7 @@ uint64_t FixedClockNow()
     // after the same number of reads every time the frame is played.
     ++g_State.reads;
     g_State.now += g_FrameLength / kStepsPerFrame;
+    SyncTickCount();
     return g_State.now;
 }
 
