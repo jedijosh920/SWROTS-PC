@@ -403,9 +403,31 @@ KERNEL_EXPORT(181, MmQueryStatistics);
 // ---------------------------------------------------------------------------
 // Virtual memory
 // ---------------------------------------------------------------------------
+// Diagnostics: SWROTS_LOG_VM=1 logs the game's virtual memory calls (the first 3000).
+static bool LogVm()
+{
+    static const int on = [] {
+        char v[8] = "";
+        return GetEnvironmentVariableA("SWROTS_LOG_VM", v, sizeof(v)) && v[0] == '1' ? 1 : 0;
+    }();
+    static std::atomic<int> count{ 0 };
+    return on && count++ < 3000;
+}
+
 NTSTATUS XBAPI NtAllocateVirtualMemory(void** BaseAddress, ULONG_PTR ZeroBits, ULONG* AllocationSize,
     ULONG AllocationType, ULONG Protect)
 {
+    struct Logger {
+        void** base;
+        ULONG* size;
+        void* askedBase;
+        ULONG askedSize, type;
+        ~Logger()
+        {
+            if (LogVm())
+                LOG_INFO("VM: allocate %p+%lX type %lX -> %p+%lX", askedBase, askedSize, type, *base, *size);
+        }
+    } logger{ BaseAddress, AllocationSize, *BaseAddress, *AllocationSize, AllocationType };
     SIZE_T size = *AllocationSize;
     ULONG type = AllocationType & ~kMemNoZero;
     // A commit with no address reserves too (as on Windows): XAPI's heap makes its large blocks so (RtlAllocateHeap).
@@ -469,6 +491,8 @@ NTSTATUS XBAPI NtAllocateVirtualMemory(void** BaseAddress, ULONG_PTR ZeroBits, U
 
 NTSTATUS XBAPI NtFreeVirtualMemory(void** BaseAddress, ULONG* FreeSize, ULONG FreeType)
 {
+    if (LogVm())
+        LOG_INFO("VM: free %p+%lX type %lX", *BaseAddress, *FreeSize, FreeType);
     if (InFixed(*BaseAddress)) {
         std::lock_guard<std::mutex> lock(g_PlaceLock);
         auto it = PlacedAt(*BaseAddress);
