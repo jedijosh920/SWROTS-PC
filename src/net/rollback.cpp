@@ -629,6 +629,26 @@ void Stop(const char* why)
     g_Resim = false;
 }
 
+// The inputs of a new frame: the PC's pads, or nettest compare's recorded ones.
+void FrameInputsFor(uint32_t frame)
+{
+    if (g_Test != Test::Compare || !TestInputs(frame))
+        SampleInputs(frame);
+}
+
+// nettest, for a frame that starts a new snapshot session: recorded or compared as any other (its checksum is the
+// new session's first), so the recording keeps a frame for each frame played.
+void TestNoteFrame(uint32_t frame)
+{
+    if (g_Test == Test::None || g_Mode != Mode::Running)
+        return;
+    const uint64_t checksum = StateChecksum(frame);
+    if (g_Test == Test::Record)
+        TestRecordFrame(frame, checksum);
+    else
+        TestCompareFrame(frame, checksum);
+}
+
 // Arms a new session where the game is now (the memory changed shape, or the snapshots could not go on).
 void Rearm(const void* frameStack, uint32_t frame, const char* why)
 {
@@ -801,8 +821,10 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
         }
         g_Resim = false;
         if (!wasResim)
-            SampleInputs(next);
+            FrameInputsFor(next);
         Rearm(frameStack, next, "the game allocated or freed memory");
+        if (!wasResim)
+            TestNoteFrame(next);
         EnterFrame();
         return g_SwapBase + g_Frame;
     }
@@ -815,8 +837,10 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
         LOG_ERROR("Netplay: frame %u could not be saved: %s", next, StateLastError());
         g_Resim = false;
         if (!wasResim)
-            SampleInputs(next);
+            FrameInputsFor(next);
         Rearm(frameStack, next, "after a failed save");
+        if (!wasResim)
+            TestNoteFrame(next);
         EnterFrame();
         return g_SwapBase + g_Frame;
     }
@@ -840,8 +864,7 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
         }
     } else {
         g_Checksums[next % kHistory] = checksum;
-        if (g_Test != Test::Compare || !TestInputs(next))
-            SampleInputs(next);
+        FrameInputsFor(next);
         if (g_Test == Test::Record)
             TestRecordFrame(next, checksum);
         else if (g_Test == Test::Compare)
