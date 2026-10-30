@@ -30,10 +30,18 @@ static void Fail(const wchar_t* message)
     ExitProcess(1);
 }
 
+// core.dll's fixed base (CMakeLists.txt): kept free until it loads, so that nothing else (a DLL injected by an
+// overlay, a heap) takes it first; netplay needs the port's code and state at the same addresses on every PC.
+static const ULONG_PTR kCoreBase = 0x60000000;
+static const SIZE_T kCoreRoom = 0x01000000;
+
 extern "C" DWORD CALLBACK LoaderEntry()
 {
+    void* coreRoom = VirtualAlloc((void*)kCoreBase, kCoreRoom, MEM_RESERVE, PAGE_NOACCESS);
     void* contiguous = VirtualAlloc((void*)kContiguousBase, kContiguousSize, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_READWRITE);
 
+    if (coreRoom)
+        VirtualFree(coreRoom, 0, MEM_RELEASE);
     HMODULE core = LoadLibraryW(L"core.dll");
     if (!core)
         Fail(L"core.dll could not be loaded. Reinstall the game.");

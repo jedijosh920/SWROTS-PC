@@ -292,22 +292,26 @@ void TestCompareMemory()
                 return;
             }
             uint32_t regionWords = 0;
+            std::string words;
             for (uint32_t at = 0; at + 4 <= size; at += 4) {
                 uint32_t was, now;
                 std::memcpy(&was, c.buffer.data() + at, 4);
                 std::memcpy(&now, base + at, 4);
                 if (was == now)
                     continue;
-                ++regionWords;
-                if (c.shown++ < 80) {
-                    std::snprintf(line, sizeof(line), "\n  %-24s %08X: %08X recorded, %08X here", name,
-                        uint32_t(uintptr_t(base + at)), was, now);
-                    c.report += line;
+                if (regionWords++ < 4) {
+                    std::snprintf(line, sizeof(line), " %08X:%08X/%08X", uint32_t(uintptr_t(base + at)), was, now);
+                    words += line;
                 }
             }
             if (regionWords) {
                 ++c.differingRegions;
                 c.words += regionWords;
+                if (c.shown++ < 60) { // a line a region: its words that differ (recorded/here), the first four
+                    std::snprintf(line, sizeof(line), "\n  %-24s %p %6u KiB: %u word(s):", name, base, size / 1024,
+                        regionWords);
+                    c.report += line + words;
+                }
             }
         },
         &ctx);

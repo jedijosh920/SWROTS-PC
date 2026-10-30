@@ -256,6 +256,7 @@ static void Run(void* reserveBase, unsigned reserveSize, void* contiguousBase, u
     if (relaunch)
         LOG_INFO("---- The game was restarted to reboot (fallback) ----");
     LOG_INFO("Star Wars: Episode III - Revenge of the Sith (PC) starting, SWROTS-PC %s", SWROTS_VERSION);
+    LOG_INFO("core.dll at %p", static_cast<void*>(GetModuleHandleW(L"core.dll"))); // fixed for netplay: 60000000
     LogSystem();
     LoadSettings(ini);
 
