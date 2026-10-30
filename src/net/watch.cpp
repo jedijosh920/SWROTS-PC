@@ -36,6 +36,7 @@ std::atomic<uint32_t> g_HitsLost{ 0 };
 uint32_t g_Addresses[kWatchSlots] = {};
 int g_Count = 0;
 std::atomic<bool> g_Watching{ false };
+bool g_FromBoot = false;
 volatile uint32_t g_Frame = 0;
 volatile uint32_t g_Resim = 0;
 volatile uint32_t g_Suppress = 0;
@@ -164,6 +165,7 @@ void WatchStopAndLog(const char* title)
     g_Count = 0;
     ApplyToThreads(0);
     g_Watching = false;
+    g_FromBoot = false;
     const uint32_t total = std::min(g_HitCount.load(), kMaxHits);
     LOG_INFO("Netplay watch (%s): %u write(s) seen%s", title, g_HitCount.load(),
         g_HitsLost ? " (the first ones kept)" : "");
@@ -199,6 +201,7 @@ void WatchStopAndLog(const char* title)
 }
 
 bool Watching() { return g_Watching; }
+bool WatchingFromBoot() { return g_Watching && g_FromBoot; }
 
 bool WatchFromBoot(const uint32_t* addresses, int count)
 {
@@ -217,6 +220,7 @@ bool WatchFromBoot(const uint32_t* addresses, int count)
     g_HitCount = 0;
     g_HitsLost = 0;
     g_Watching = true;
+    g_FromBoot = true;
     kernel::SetNewThreadHook(&WatchNewThread);
     LOG_INFO("Netplay watch: watching writes from the game's start (%d word(s))", count);
     return true;

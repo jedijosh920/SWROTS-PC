@@ -153,7 +153,7 @@ void StartWatch(const std::vector<uint64_t>& hashesAtTarget)
 
 void StopWatch(const char* why)
 {
-    if (Watching())
+    if (Watching() && !WatchingFromBoot()) // a watch from the game's start goes on through its restart
         WatchStopAndLog(why);
 }
 
