@@ -138,3 +138,41 @@ What to measure on a duel and on a story mission:
 - **mismatches**: what is not deterministic yet.
 
 The budget at 30 fps (the game's own rate): 33 ms per frame for a frame shown plus up to 7 frames played again.
+
+### First SyncTest results (2026-10-30)
+
+A Release build (MSVC 19.44) on Windows, the developer map with Grievous against a computer Obi-Wan, player 1 driven
+by `SWROTS_TEST_INPUT`, `FpsLimit=60`. Five minutes, no hang, no crash.
+
+| | `synctest 4` (every frame) | `synctest 7 10` |
+|---|---|---|
+| Memory covered | 28.9 MiB in ~510 regions (25.2 MiB write-watched, 3.7 MiB compared: the image's `.data` and its library sections) | same |
+| Save per frame | 4.1 ms avg, 12.6 ms max, ~200 pages | 3.8 ms avg, 11.7 ms max, ~160 pages |
+| Load | 4.0 ms avg, 8.0 ms max | 3.9 ms avg, 7.9 ms max |
+| A frame played again | 6.4 ms avg, 28.9 ms max | 5.3 ms avg, 26.3 ms max |
+| Re-arms (the game allocated memory) | 44 in 3,600 frames | 35 in 5,300 frames |
+| Frame rate shown | ~26 fps (5 frames of work per frame) | ~50 fps |
+| Mismatches | every check | every check |
+
+What it tells us:
+
+- **The approach works mechanically**: the game carries on after thousands of loads, from the Swap thunk's restored
+  stack, and plays frames again without showing them.
+- **Costs**: a rollback of 7 frames is ~4 ms (load) + 7 × ~6 ms (frames) + the save each frame: too much for 60 fps,
+  within reach at the game's own 30 fps. The save is the first thing to make cheaper: most of it is comparing the
+  3.7 MiB that are not write-watched (to watch the image's data too: protect its pages and note the first write to
+  each, or move the comparison to a copy made with the write watch), and hashing changed pages.
+- **Clock**: the engine's frame limiter reads the clock ~1,030 times per frame (it spins until the frame's time has
+  passed). Harmless with the uncapped fixed clock, but the main thread's reads must stay the same from one play of a
+  frame to the next.
+- **Determinism, the real work ahead**: every check differs, on a few dozen pages. The report's words point at:
+  - floats that look like accumulated times (`0x46435586` ≈ 12501.3 against `0x4643553A`): a time source that is not
+    yet the fixed clock, or one read a different number of times;
+  - a pointer and counters that move together (`0078B544`, `0078B560`): a per-frame allocator or a ring buffer whose
+    position depends on something outside the frame (the renderer, the sound thread);
+  - ASCII text in the first play only (`"x380"`, `"al  "`): scratch buffers written by code that only runs when a
+    frame is shown, or by another thread;
+  - values that look random (`0065E91C`): a generator seeded or advanced outside the frame.
+
+  Next: name these addresses with the symbol map, and find which thread writes them (a write watch per page between
+  two boundaries, or hardware breakpoints on the first words found).
