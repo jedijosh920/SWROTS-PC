@@ -202,3 +202,23 @@ the player's own `default.xbe` (`objdump` on its sections mapped at their addres
    in frames played again must not be heard twice (the model knows which sounds it already started).
 
 Next: the deterministic audio model, then SyncTest again on the developer map and in a story mission.
+
+### Sound model and deterministic pool (2026-10-30, runs 7 and 8)
+
+- **The sound model works**: the sound code no longer shows among the differences. The game has ~280 sound buffers
+  and streams in the developer map duel (the model has room for 2048).
+- **Pool blocks** from the deterministic arena: new snapshot sessions caused by allocations dropped from 44 to 2 in
+  five minutes (most allocations during play were pool blocks). The arena adds 48 MiB to the snapshots, write-watched.
+- **What still differs**, in order of importance:
+  1. **The game's worker thread** (`0x79230`, started with the level) takes jobs from a queue in game memory
+     (`[0x68D094]`). A rollback restores the queue, and the thread runs the jobs again: it closes the same handles
+     twice (`NtClose ... C0000008` in the log). Jobs done once by the PC (closing a file, an event) cannot be undone
+     by restoring memory. During a session this thread has to run in step with the frames (its jobs done at frame
+     boundaries on the main thread, or held while frames are played again), and handles (kernel objects) made or
+     closed in a frame need the same treatment as pool blocks: closes held until no rollback can come back, new
+     handles numbered the same in every play.
+  2. **A 128-byte block copied every frame** to `0x78B520` (by `0x214070`, called through a table at `0x59CD44`):
+     pointers into the PC's heap and small counters that differ (0x11 against 0x0B). Probably a consequence of 1 (its
+     source is filled by the worker's results), to check once 1 is done.
+- **Costs**: with the debug-register watch on, every write to a watched word raises an exception (tens of thousands
+  per round), which slowed run 8 down threefold (save 15 ms instead of 4); the watch is a diagnostic only.
