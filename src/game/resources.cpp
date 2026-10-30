@@ -41,6 +41,7 @@
 #include "debug/console.h"
 #include "game/game.h"
 #include "game/pak.h"
+#include "kernel/kernel.h"
 
 namespace swrots::game {
 
@@ -485,12 +486,27 @@ const std::vector<uint8_t>* Generated(const std::string& lowerName)
     return nullptr;
 }
 
+// A memory file's data for the time of a decode, in the game's memory (kernel::GameAlloc): the file object keeps
+// its address, which is then the same on every PC (netplay), not a host heap's.
+struct GameBuffer {
+    uint8_t* data;
+    explicit GameBuffer(const std::vector<uint8_t>& from)
+        : data(static_cast<uint8_t*>(kernel::GameAlloc(uint32_t(from.size()))))
+    {
+        std::memcpy(data, from.data(), from.size());
+    }
+    ~GameBuffer() { kernel::GameFree(data); }
+    GameBuffer(const GameBuffer&) = delete;
+    GameBuffer& operator=(const GameBuffer&) = delete;
+};
+
 // Decodes a generated resource as a non-PAK read (t_Top set by the caller).
 int DecodeGenerated(uint8_t* packer, const std::vector<uint8_t>& data, EnginePath* path, int typeId, void* record,
     int extra, int context)
 {
     EngineObject* file = FileMemoryCtor(EngineAlloc()(kFileMemorySize), nullptr);
-    VirtualAt<FileMemoryOpenFn>(file, kFileMemoryOpenSlot)(file, nullptr, const_cast<uint8_t*>(data.data()), uint32_t(data.size()));
+    GameBuffer buffer(data);
+    VirtualAt<FileMemoryOpenFn>(file, kFileMemoryOpenSlot)(file, nullptr, buffer.data, uint32_t(data.size()));
     packer[kPackerLastWasImage] = 0;
     ReadSource source = { nullptr, path, 0, {}, record };
     return DecodeFromFile(file, uint32_t(data.size()), context, &source, typeId, extra);
@@ -535,7 +551,8 @@ bool ReadElsewhere(uint8_t* packer, const PakIndex* owner, const PakIndex::Entry
         result = int(reinterpret_cast<uintptr_t>(image));
     } else {
         EngineObject* file = FileMemoryCtor(EngineAlloc()(kFileMemorySize), nullptr);
-        VirtualAt<FileMemoryOpenFn>(file, kFileMemoryOpenSlot)(file, nullptr, data.data(), uint32_t(data.size()));
+        GameBuffer buffer(data);
+        VirtualAt<FileMemoryOpenFn>(file, kFileMemoryOpenSlot)(file, nullptr, buffer.data, uint32_t(data.size()));
         packer[kPackerLastWasImage] = 0;
         ReadSource source = { nullptr, path, 0, {}, record };
         result = DecodeFromFile(file, uint32_t(data.size()), context, &source, typeId, extra);
@@ -733,8 +750,11 @@ EngineObject* OpenManualCopy(const char* full, const std::string& wanted, const 
             return nullptr;
         from = owner->Path();
     }
+    // The reader is kept, and reads its file later: the data in the engine's memory, not this vector's.
+    auto* kept = static_cast<uint8_t*>(EngineAlloc()(uint32_t(data.size())));
+    std::memcpy(kept, data.data(), data.size());
     EngineObject* file = FileMemoryCtor(EngineAlloc()(kFileMemorySize), nullptr);
-    VirtualAt<FileMemoryOpenFn>(file, kFileMemoryOpenSlot)(file, nullptr, data.data(), uint32_t(data.size()));
+    VirtualAt<FileMemoryOpenFn>(file, kFileMemoryOpenSlot)(file, nullptr, kept, uint32_t(data.size()));
     LOG_INFO("PAK: %s (manual) loaded from %ls", wanted.c_str(), from.c_str());
     return PackReaderCtor(EngineAlloc()(0x24), nullptr, file, 0); // kept: the caller does not free it
 }
