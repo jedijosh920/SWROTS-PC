@@ -36,6 +36,7 @@ struct SThread {
     DWORD id = 0;
     HANDLE go = nullptr; // set when it is its turn
     State state = State::Ready;
+    uint32_t suspends = 0; // NtSuspendThread's count, kept here (the thread takes no turn while it is not 0)
     // its wait
     DWORD count = 0;
     HANDLE handles[MAXIMUM_WAIT_OBJECTS] = {};
@@ -85,6 +86,8 @@ SThread* FindByThread(XboxThread* t)
 // auto-reset event, a semaphore's count), as the wait itself would.
 bool Runnable(SThread* s, uint64_t now)
 {
+    if (s->suspends)
+        return false;
     if (s->state == State::Ready)
         return true;
     if (s->state != State::Waiting)
@@ -332,6 +335,51 @@ void SchedAddThread(XboxThread* t, bool suspended)
     g_Threads.push_back(s);
     LOG_INFO("Scheduler: thread %zu made%s at clock %llu, after %llu turns", g_Threads.size() - 1,
         suspended ? " suspended" : "", FixedClockPeek(), g_Stats.switches);
+}
+
+// A started thread's suspension, kept by the scheduler rather than Windows: a thread suspended by Windows while it
+// holds the turn (a thread suspending itself, as the movie player's do) would keep it forever.
+static SThread* StartedThread(HANDLE thread)
+{
+    const DWORD id = GetThreadId(thread);
+    for (SThread* s : g_Threads)
+        if (s->thread && s->thread->threadId == id && s->state != State::Suspended)
+            return s;
+    return nullptr;
+}
+
+bool SchedSuspend(HANDLE thread, ULONG* previous)
+{
+    if (!g_Active)
+        return false;
+    std::unique_lock<std::mutex> lock(g_Lock);
+    SThread* s = StartedThread(thread);
+    if (!s)
+        return false;
+    if (previous)
+        *previous = s->suspends;
+    ++s->suspends;
+    SThread* self = t_Self;
+    if (s == self && g_Current == self) { // itself: the turn goes on, back when resumed
+        self->state = State::Ready;
+        SwitchAway(self, lock);
+    }
+    return true;
+}
+
+bool SchedResume(HANDLE thread, ULONG* previous)
+{
+    if (!g_Active)
+        return false;
+    std::lock_guard<std::mutex> lock(g_Lock);
+    SThread* s = StartedThread(thread);
+    if (!s)
+        return false;
+    if (previous)
+        *previous = s->suspends;
+    if (s->suspends)
+        --s->suspends;
+    return true;
 }
 
 void SchedResumed(HANDLE thread)

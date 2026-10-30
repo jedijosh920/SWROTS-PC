@@ -547,14 +547,20 @@ void XBAPI PsTerminateSystemThread(NTSTATUS ExitStatus)
 
 NTSTATUS XBAPI NtSuspendThread(HANDLE ThreadHandle, ULONG* PreviousSuspendCount)
 {
-    return ::NtSuspendThread(ToHostHandle(ThreadHandle), PreviousSuspendCount);
+    ThreadHandle = ToHostHandle(ThreadHandle);
+    if (SchedSuspend(ThreadHandle, PreviousSuspendCount)) // the deterministic scheduler keeps it
+        return X_STATUS_SUCCESS;
+    return ::NtSuspendThread(ThreadHandle, PreviousSuspendCount);
 }
 
 NTSTATUS XBAPI NtResumeThread(HANDLE ThreadHandle, ULONG* PreviousSuspendCount)
 {
     ThreadHandle = ToHostHandle(ThreadHandle);
-    SchedResumed(ThreadHandle);
-    const NTSTATUS status = ::NtResumeThread(ThreadHandle, PreviousSuspendCount);
+    NTSTATUS status = X_STATUS_SUCCESS;
+    if (!SchedResume(ThreadHandle, PreviousSuspendCount)) { // a started thread's: the scheduler's count
+        SchedResumed(ThreadHandle); // one made suspended: Windows resumes it, it takes turns from now
+        status = ::NtResumeThread(ThreadHandle, PreviousSuspendCount);
+    }
     // The deterministic scheduler: the threads ready to run take their turn first, as a preemptive kernel would run
     // the resumed one soon (the movie player resumes its threads in a loop until one of them answers).
     if (SchedHolding())

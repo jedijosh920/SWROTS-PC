@@ -32,6 +32,10 @@ void SchedReset();
 void SchedAddThread(XboxThread* t, bool suspended);
 // A thread made suspended takes turns once resumed (NtResumeThread).
 void SchedResumed(HANDLE thread);
+// NtSuspendThread / NtResumeThread on a thread that has started: kept by the scheduler (true), no Windows suspension;
+// a thread suspending itself hands the turn over until it is resumed. False: not the scheduler's (Windows does it).
+bool SchedSuspend(HANDLE thread, ULONG* previous);
+bool SchedResume(HANDLE thread, ULONG* previous);
 // On the new thread, before any game code: waits for its first turn.
 void SchedThreadStart(XboxThread* t);
 // On a thread whose game code returned or that exits: the baton goes on.
