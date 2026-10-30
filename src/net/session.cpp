@@ -204,7 +204,7 @@ void ListFiles(const std::wstring& dir, const std::wstring& relative, std::vecto
     std::sort(out.begin(), out.end());
 }
 
-uint64_t HashFileQuick(const std::wstring& path, uint64_t h)
+uint64_t HashFileQuick(const std::wstring& path, uint64_t h, uint64_t wholeUpTo = 4 * 1024 * 1024)
 {
     HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
     if (f == INVALID_HANDLE_VALUE)
@@ -222,7 +222,7 @@ uint64_t HashFileQuick(const std::wstring& path, uint64_t h)
         ReadFile(f, buffer.data(), DWORD(buffer.size()), &read, nullptr);
         h = Fnv(buffer.data(), read, h);
     };
-    if (size.QuadPart <= 4 * 1024 * 1024) {
+    if (uint64_t(size.QuadPart) <= wholeUpTo) {
         for (LONGLONG at = 0; at < size.QuadPart; at += LONGLONG(buffer.size()))
             readAt(at);
     } else {
@@ -242,11 +242,17 @@ uint64_t BuildHash()
     return HashFileQuick(path, Fnv(SWROTS_VERSION, std::strlen(SWROTS_VERSION)));
 }
 
+// The game's files by their names and sizes (and the small ones whole: the settings files); the mods' by their
+// contents. Computed once (a few seconds at most), on the network thread.
 uint64_t ContentHash()
 {
+    static uint64_t cached = 0;
+    if (cached)
+        return cached;
     const std::wstring exe = ExeDirectory();
     uint64_t h = 0xCBF29CE484222325ull;
     for (const wchar_t* folder : { L"\\GameData", L"\\mods" }) {
+        const bool mods = folder[1] == L'm';
         std::vector<std::wstring> files;
         ListFiles(exe + folder, L"", files);
         for (const std::wstring& f : files) {
@@ -254,9 +260,17 @@ uint64_t ContentHash()
             for (wchar_t& c : lower)
                 c = wchar_t(towlower(c));
             h = Fnv(lower.data(), lower.size() * sizeof(wchar_t), h);
-            h = HashFileQuick(exe + folder + f, h);
+            if (mods) {
+                h = HashFileQuick(exe + folder + f, h);
+            } else {
+                WIN32_FILE_ATTRIBUTE_DATA a = {};
+                GetFileAttributesExW((exe + folder + f).c_str(), GetFileExInfoStandard, &a);
+                const uint64_t size = uint64_t(a.nFileSizeHigh) << 32 | a.nFileSizeLow;
+                h = size <= 64 * 1024 ? HashFileQuick(exe + folder + f, h) : Fnv(&size, 8, h);
+            }
         }
     }
+    cached = h;
     return h;
 }
 
@@ -900,6 +914,16 @@ void TickLocked()
 void NetThread(bool host, uint16_t port)
 {
     uint8_t buffer[2048];
+    const auto hashStart = Clock::now();
+    const uint64_t build = BuildHash(), content = ContentHash();
+    {
+        std::lock_guard<std::mutex> lock(g_S.lock);
+        g_S.build = build;
+        g_S.content = content;
+        g_S.started = g_S.lastHeard = Clock::now();
+        LOG_INFO("Online: build %016llX, game files %016llX (%lld ms)", build, content,
+            (long long)std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - hashStart).count());
+    }
     if (host) {
         // The public address: STUN (on by default: [Online] Stun=0 in settings.ini, or SWROTS_ONLINE_STUN=0, off).
         Endpoint publicAddress, localAddress{ LocalAddress(), port };
@@ -997,8 +1021,6 @@ bool Prepare(bool host, std::string& error)
     }
     std::lock_guard<std::mutex> lock(g_S.lock);
     ResetSessionLocked(host);
-    g_S.build = BuildHash();
-    g_S.content = ContentHash();
     g_S.inputDelay = 3;
     g_S.fps = uint32_t(std::clamp(GetSettings().fpsLimit, 10, 120));
     return true;
