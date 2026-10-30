@@ -266,6 +266,8 @@ void TestCompareMemory()
         uint64_t differingBytes = 0;
         std::vector<uint8_t> buffer;
         std::string report;
+        std::vector<uint32_t> pointers;
+        std::string pointerReport;
     } ctx;
     ctx.f = f;
     StateForEachRegion(
@@ -304,6 +306,31 @@ void TestCompareMemory()
                     std::snprintf(line, sizeof(line), " %08X:%08X/%08X", uint32_t(uintptr_t(base + at)), was, now);
                     words += line;
                 }
+                // Pointers outside the deterministic places: whose memory is it? (Windows' view of it.)
+                const bool placed = now < 0x10000 || now < 0x01010000 || (now >= 0x20000000 && now < 0x30000000) ||
+                    now >= 0x80000000 || (now >= 0x60000000 && now < 0x61000000);
+                if (!placed && c.pointers.size() < 12) {
+                    MEMORY_BASIC_INFORMATION info = {};
+                    if (VirtualQuery(reinterpret_cast<void*>(uintptr_t(now)), &info, sizeof(info)) &&
+                        info.State == MEM_COMMIT) {
+                        const uint32_t allocation = uint32_t(uintptr_t(info.AllocationBase));
+                        bool seen = false;
+                        for (uint32_t a : c.pointers)
+                            seen |= a == allocation;
+                        if (!seen) {
+                            c.pointers.push_back(allocation);
+                            wchar_t module[MAX_PATH] = L"";
+                            if (info.Type == MEM_IMAGE)
+                                GetModuleFileNameW(static_cast<HMODULE>(info.AllocationBase), module, MAX_PATH);
+                            std::snprintf(line, sizeof(line),
+                                "\n  pointer %08X (in %s at %08X): allocation %08X, %s%s%ls", now, name,
+                                uint32_t(uintptr_t(base + at)), allocation,
+                                info.Type == MEM_IMAGE ? "image " : info.Type == MEM_MAPPED ? "mapped" : "private",
+                                info.Type == MEM_IMAGE ? "" : "", module);
+                            c.pointerReport += line;
+                        }
+                    }
+                }
             }
             if (regionWords) {
                 ++c.differingRegions;
@@ -319,6 +346,8 @@ void TestCompareMemory()
     std::fclose(f);
     LOG_INFO("nettest: memory at the session's start: %u regions, %u placed differently, %u differing in %u word(s)%s",
         ctx.regions, ctx.moved, ctx.differingRegions, ctx.words, ctx.report.c_str());
+    if (!ctx.pointerReport.empty())
+        LOG_INFO("nettest: differing pointers to memory outside the deterministic places:%s", ctx.pointerReport.c_str());
 }
 
 void TestLoadFrames()

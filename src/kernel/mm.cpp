@@ -423,6 +423,12 @@ NTSTATUS XBAPI NtAllocateVirtualMemory(void** BaseAddress, ULONG_PTR ZeroBits, U
     }
     if (status < 0)
         status = ::NtAllocateVirtualMemory(GetCurrentProcess(), BaseAddress, ZeroBits, &size, type, HostProtect(Protect));
+    if (g_DetAddresses && status >= 0 && (type & MEM_RESERVE)) {
+        static int logged = 0;
+        if (logged++ < 20)
+            LOG_WARN("Netplay: NtAllocateVirtualMemory(%08lX, %lu bytes) placed by Windows at %p (not deterministic)",
+                AllocationType, ULONG(size), *BaseAddress);
+    }
     *AllocationSize = ULONG(size);
     if (status < 0)
         LOG_WARN("NtAllocateVirtualMemory(%p, %lu, %08lX) -> %08lX", *BaseAddress, size, AllocationType, status);
