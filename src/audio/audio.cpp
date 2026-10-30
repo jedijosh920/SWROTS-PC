@@ -27,6 +27,7 @@
 #include "core/window.h"
 #include "kernel/clock.h"
 #include "kernel/kernel.h"
+#include "kernel/reboot.h"
 #include "xapi/xapi.h"
 
 namespace swrots::audio {
@@ -783,7 +784,7 @@ struct Stream : Voice {
             std::lock_guard<std::mutex> lock(g_CallbackLock);
             g_Callbacks.push_back({ callback, context, m.pContext, DWORD(status) });
         } else if (m.hCompletionEvent) {
-            SetEvent(m.hCompletionEvent);
+            SetEvent(kernel::ToHostHandle(m.hCompletionEvent));
         }
     }
 
@@ -1072,7 +1073,7 @@ static void StreamQueueCallback(ModelVoice& m, const MediaPacket& p, DWORD statu
         if (g_Model.callbackCount < kModelCallbacks)
             g_Model.callbacks[g_Model.callbackCount++] = { m.callback, m.context, p.pContext, status };
     } else if (p.hCompletionEvent) {
-        SetEvent(p.hCompletionEvent);
+        SetEvent(kernel::ToHostHandle(p.hCompletionEvent));
     }
 }
 

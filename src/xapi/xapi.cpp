@@ -12,6 +12,7 @@
 #include "game/game.h"
 #include "kernel/clock.h"
 #include "kernel/kernel.h"
+#include "kernel/reboot.h"
 
 namespace swrots::xapi {
 
@@ -123,7 +124,7 @@ static BOOL __stdcall XFormatUtilityDrive()
 // ---------------------------------------------------------------------------
 static BOOL __stdcall XCancelIo(HANDLE file)
 {
-    return CancelIo(file) || GetLastError() == ERROR_NOT_FOUND;
+    return CancelIo(kernel::ToHostHandle(file)) || GetLastError() == ERROR_NOT_FOUND;
 }
 
 // ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@
 #include "net/rollback.h"
 
 #include <windows.h>
+#include <tlhelp32.h>
 
 #include <algorithm>
 #include <chrono>
@@ -253,6 +254,78 @@ void TestDumpMemory()
     LOG_INFO("nettest: memory at the session's start written (%.1f MiB)", bytes / 1048576.0);
 }
 
+// What a private allocation outside the deterministic places is (nettest's report): its size, and whether it is a
+// thread's stack (whose, and where that thread started) or a heap's first segment.
+std::string DescribeAllocation(uint32_t allocation)
+{
+    char out[300];
+    uint32_t reserved = 0, committed = 0;
+    for (uintptr_t at = allocation;;) {
+        MEMORY_BASIC_INFORMATION m = {};
+        if (!VirtualQuery(reinterpret_cast<void*>(at), &m, sizeof(m)) || uint32_t(uintptr_t(m.AllocationBase)) != allocation)
+            break;
+        reserved += uint32_t(m.RegionSize);
+        if (m.State == MEM_COMMIT)
+            committed += uint32_t(m.RegionSize);
+        at += m.RegionSize;
+    }
+    int n = std::snprintf(out, sizeof(out), " %u KiB (%u committed)", reserved / 1024, committed / 1024);
+    HANDLE heaps[64];
+    const DWORD heapCount = GetProcessHeaps(64, heaps);
+    for (DWORD i = 0; i < heapCount && i < 64; ++i)
+        if (uint32_t(uintptr_t(heaps[i])) == allocation)
+            n += std::snprintf(out + n, sizeof(out) - n, ", heap %lu%s", i, heaps[i] == GetProcessHeap() ? " (the process's)" : "");
+    using QueryThread = LONG(WINAPI*)(HANDLE, ULONG, void*, ULONG, ULONG*);
+    static auto query = reinterpret_cast<QueryThread>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationThread"));
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap != INVALID_HANDLE_VALUE && query) {
+        THREADENTRY32 te = { sizeof(te) };
+        for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+            if (te.th32OwnerProcessID != GetCurrentProcessId())
+                continue;
+            HANDLE h = OpenThread(THREAD_QUERY_INFORMATION, FALSE, te.th32ThreadID);
+            if (!h)
+                continue;
+            struct { LONG status; void* teb; uintptr_t pid, tid; uintptr_t affinity; LONG priority, base; } basic = {};
+            void* start = nullptr;
+            if (query(h, 0, &basic, sizeof(basic), nullptr) >= 0 && basic.teb) {
+                const auto* teb = static_cast<const uint8_t*>(basic.teb);
+                const uint32_t deallocation = *reinterpret_cast<const uint32_t*>(teb + 0xE0C);
+                const uint32_t stackBase = *reinterpret_cast<const uint32_t*>(teb + 4);
+                if (deallocation == allocation || (stackBase > allocation && stackBase <= allocation + reserved)) {
+                    query(h, 9 /*ThreadQuerySetWin32StartAddress*/, &start, sizeof(start), nullptr);
+                    HMODULE module = nullptr;
+                    wchar_t name[MAX_PATH] = L"?";
+                    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            static_cast<LPCWSTR>(start), &module))
+                        GetModuleFileNameW(module, name, MAX_PATH);
+                    const wchar_t* file = std::wcsrchr(name, L'\\');
+                    n += std::snprintf(out + n, sizeof(out) - n, ", stack of thread %lu%s (started at %ls+%X)",
+                        te.th32ThreadID, te.th32ThreadID == GetCurrentThreadId() ? " (this one)" : "",
+                        file ? file + 1 : name, uint32_t(uintptr_t(start) - uintptr_t(module)));
+                }
+            }
+            CloseHandle(h);
+            if (n >= int(sizeof(out)) - 1)
+                break;
+        }
+    }
+    if (snap != INVALID_HANDLE_VALUE)
+        CloseHandle(snap);
+    std::string text = out;
+    MEMORY_BASIC_INFORMATION first = {};
+    if (VirtualQuery(reinterpret_cast<void*>(uintptr_t(allocation)), &first, sizeof(first)) && first.State == MEM_COMMIT &&
+        !(first.Protect & (PAGE_NOACCESS | PAGE_GUARD))) { // its first words (a heap's or a library's header)
+        text += ", starts";
+        for (int i = 0; i < 16; ++i) {
+            char word[12];
+            std::snprintf(word, sizeof(word), " %08X", reinterpret_cast<const uint32_t*>(uintptr_t(allocation))[i]);
+            text += word;
+        }
+    }
+    return text;
+}
+
 void TestCompareMemory()
 {
     FILE* f = _wfopen(TestPath("mem").c_str(), L"rb");
@@ -309,7 +382,7 @@ void TestCompareMemory()
                 // Pointers outside the deterministic places: whose memory is it? (Windows' view of it.)
                 const bool placed = now < 0x10000 || now < 0x01010000 || (now >= 0x20000000 && now < 0x30000000) ||
                     now >= 0x80000000 || (now >= 0x60000000 && now < 0x61000000);
-                if (!placed && c.pointers.size() < 12) {
+                if (!placed && c.pointers.size() < 24) {
                     MEMORY_BASIC_INFORMATION info = {};
                     if (VirtualQuery(reinterpret_cast<void*>(uintptr_t(now)), &info, sizeof(info)) &&
                         info.State == MEM_COMMIT) {
@@ -328,6 +401,8 @@ void TestCompareMemory()
                                 info.Type == MEM_IMAGE ? "image " : info.Type == MEM_MAPPED ? "mapped" : "private",
                                 info.Type == MEM_IMAGE ? "" : "", module);
                             c.pointerReport += line;
+                            if (info.Type == MEM_PRIVATE)
+                                c.pointerReport += DescribeAllocation(allocation);
                         }
                     }
                 }

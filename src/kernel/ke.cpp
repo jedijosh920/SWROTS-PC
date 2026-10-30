@@ -440,8 +440,10 @@ NTSTATUS XBAPI NtCreateEvent(HANDLE* EventHandle, xbox::OBJECT_ATTRIBUTES* Objec
 {
     WarnNamed(ObjectAttributes, "NtCreateEvent");
     NTSTATUS status = ::NtCreateEvent(EventHandle, EVENT_ALL_ACCESS, nullptr, EventType, InitialState);
-    if (status >= 0)
+    if (status >= 0) {
         TrackGameHandle(*EventHandle);
+        *EventHandle = ToGameHandle(*EventHandle);
+    }
     return status;
 }
 
@@ -449,16 +451,24 @@ NTSTATUS XBAPI NtCreateSemaphore(HANDLE* SemaphoreHandle, xbox::OBJECT_ATTRIBUTE
 {
     WarnNamed(ObjectAttributes, "NtCreateSemaphore");
     NTSTATUS status = ::NtCreateSemaphore(SemaphoreHandle, SEMAPHORE_ALL_ACCESS, nullptr, InitialCount, MaximumCount);
-    if (status >= 0)
+    if (status >= 0) {
         TrackGameHandle(*SemaphoreHandle);
+        *SemaphoreHandle = ToGameHandle(*SemaphoreHandle);
+    }
     return status;
 }
 
-NTSTATUS XBAPI NtSetEvent(HANDLE EventHandle, LONG* PreviousState) { return ::NtSetEvent(EventHandle, PreviousState); }
-NTSTATUS XBAPI NtPulseEvent(HANDLE EventHandle, LONG* PreviousState) { return ::NtPulseEvent(EventHandle, PreviousState); }
+NTSTATUS XBAPI NtSetEvent(HANDLE EventHandle, LONG* PreviousState)
+{
+    return ::NtSetEvent(ToHostHandle(EventHandle), PreviousState);
+}
+NTSTATUS XBAPI NtPulseEvent(HANDLE EventHandle, LONG* PreviousState)
+{
+    return ::NtPulseEvent(ToHostHandle(EventHandle), PreviousState);
+}
 NTSTATUS XBAPI NtReleaseSemaphore(HANDLE SemaphoreHandle, LONG ReleaseCount, LONG* PreviousCount)
 {
-    return ::NtReleaseSemaphore(SemaphoreHandle, ReleaseCount, PreviousCount);
+    return ::NtReleaseSemaphore(ToHostHandle(SemaphoreHandle), ReleaseCount, PreviousCount);
 }
 
 NTSTATUS XBAPI NtWaitForSingleObject(HANDLE Handle, BOOLEAN Alertable, LARGE_INTEGER* Timeout)
@@ -522,10 +532,10 @@ NTSTATUS XBAPI PsCreateSystemThreadEx(HANDLE* ThreadHandle, ULONG ThreadExtensio
     if (!h)
         return X_STATUS_INSUFFICIENT_RESOURCES;
     LOG_DEBUG("Thread %lu created: start %p ctx %p stack %lu tls %lu", tid, StartRoutine, StartContext, KernelStackSize, TlsDataSize);
-    *ThreadHandle = h;
     TrackGameHandle(h);
-    if (ThreadId)
-        *ThreadId = reinterpret_cast<HANDLE>(uintptr_t(tid));
+    *ThreadHandle = ToGameHandle(h);
+    if (ThreadId) // netplay: not the host's id, which differs from PC to PC (the game's handle's number)
+        *ThreadId = SchedActive() ? *ThreadHandle : reinterpret_cast<HANDLE>(uintptr_t(tid));
     return X_STATUS_SUCCESS;
 }
 
@@ -537,11 +547,12 @@ void XBAPI PsTerminateSystemThread(NTSTATUS ExitStatus)
 
 NTSTATUS XBAPI NtSuspendThread(HANDLE ThreadHandle, ULONG* PreviousSuspendCount)
 {
-    return ::NtSuspendThread(ThreadHandle, PreviousSuspendCount);
+    return ::NtSuspendThread(ToHostHandle(ThreadHandle), PreviousSuspendCount);
 }
 
 NTSTATUS XBAPI NtResumeThread(HANDLE ThreadHandle, ULONG* PreviousSuspendCount)
 {
+    ThreadHandle = ToHostHandle(ThreadHandle);
     SchedResumed(ThreadHandle);
     return ::NtResumeThread(ThreadHandle, PreviousSuspendCount);
 }
@@ -612,6 +623,7 @@ static KEVENT* EventProxyFor(HANDLE handle)
 
 NTSTATUS XBAPI ObReferenceObjectByHandle(HANDLE Handle, OBJECT_TYPE* ObjectType, void** ReturnedObject)
 {
+    Handle = ToHostHandle(Handle);
     if (ObjectType == &PsThreadObjectType || ObjectType == nullptr) {
         if (XboxThread* t = ThreadFromHandle(Handle)) {
             *ReturnedObject = t;
@@ -649,14 +661,16 @@ static HANDLE CsEvent(xbox::RTL_CRITICAL_SECTION* cs)
     auto* slot = reinterpret_cast<HANDLE volatile*>(&cs->Event.WaitListHead);
     HANDLE h = *slot;
     if (h)
-        return h;
+        return ToHostHandle(h);
     HANDLE created = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    HANDLE prev = InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(slot), created, nullptr);
+    HANDLE numbered = ToGameHandle(created); // lives in game memory: the game's numbering (netplay)
+    HANDLE prev = InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(slot), numbered, nullptr);
     if (prev) {
+        ForgetGameHandle(numbered);
         CloseHandle(created);
-        return prev;
+        return ToHostHandle(prev);
     }
-    TrackGameHandle(created); // lives in game memory
+    TrackGameHandle(created);
     return created;
 }
 

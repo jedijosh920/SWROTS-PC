@@ -256,7 +256,7 @@ static NTSTATUS TranslateAttributes(const xbox::OBJECT_ATTRIBUTES* xoa, ::OBJECT
     std::wstring& storage, std::string* xboxPathOut = nullptr)
 {
     std::string xpath = FromObjectString(xoa->ObjectName);
-    HANDLE root = xoa->RootDirectory;
+    HANDLE root = ToHostHandle(xoa->RootDirectory);
 
     if (root == reinterpret_cast<HANDLE>(-3)) { // ObDosDevicesDirectory()
         xpath = "\\??\\" + xpath;
@@ -291,6 +291,7 @@ void ResetLinkHandlesForReboot()
 {
     std::lock_guard<std::mutex> lock(g_PseudoLock);
     g_LinkHandles.clear();
+    g_NextPseudo = 0x7F000000; // the same numbers after each start (netplay: the same on every PC)
 }
 
 static bool IsPseudoHandle(HANDLE h)
@@ -441,8 +442,10 @@ NTSTATUS XBAPI NtCreateFile(HANDLE* FileHandle, ACCESS_MASK DesiredAccess, xbox:
     if (!QuietFileLog(xpath))
         LOG_DEBUG("NtCreateFile '%s' disp %lu opts %08lX -> %08lX handle %p", xpath.c_str(), CreateDisposition, CreateOptions,
             status, status >= 0 ? *FileHandle : nullptr);
-    if (status >= 0)
+    if (status >= 0) {
         TrackGameHandle(*FileHandle);
+        *FileHandle = ToGameHandle(*FileHandle);
+    }
     TraceOpenCallers(xpath, _AddressOfReturnAddress());
     return status;
 }
@@ -473,6 +476,8 @@ static NTSTATUS FinishIo(NTSTATUS status, xbox::IO_STATUS_BLOCK* IoStatusBlock, 
 NTSTATUS XBAPI NtReadFile(HANDLE FileHandle, HANDLE Event, xbox::PIO_APC_ROUTINE ApcRoutine, void* ApcContext,
     xbox::IO_STATUS_BLOCK* IoStatusBlock, void* Buffer, ULONG Length, LARGE_INTEGER* ByteOffset)
 {
+    FileHandle = ToHostHandle(FileHandle);
+    Event = ToHostHandle(Event);
     if (SchedHolding())
         return FinishIo(Check("NtReadFile", FileHandle, ::NtReadFile(FileHandle, Event, nullptr, nullptr,
             reinterpret_cast<PIO_STATUS_BLOCK>(IoStatusBlock), Buffer, Length, ByteOffset, nullptr)),
@@ -484,6 +489,8 @@ NTSTATUS XBAPI NtReadFile(HANDLE FileHandle, HANDLE Event, xbox::PIO_APC_ROUTINE
 NTSTATUS XBAPI NtWriteFile(HANDLE FileHandle, HANDLE Event, xbox::PIO_APC_ROUTINE ApcRoutine, void* ApcContext,
     xbox::IO_STATUS_BLOCK* IoStatusBlock, void* Buffer, ULONG Length, LARGE_INTEGER* ByteOffset)
 {
+    FileHandle = ToHostHandle(FileHandle);
+    Event = ToHostHandle(Event);
     if (SchedHolding())
         return FinishIo(Check("NtWriteFile", FileHandle, ::NtWriteFile(FileHandle, Event, nullptr, nullptr,
             reinterpret_cast<PIO_STATUS_BLOCK>(IoStatusBlock), Buffer, Length, ByteOffset, nullptr)),
@@ -495,6 +502,7 @@ NTSTATUS XBAPI NtWriteFile(HANDLE FileHandle, HANDLE Event, xbox::PIO_APC_ROUTIN
 NTSTATUS XBAPI NtQueryInformationFile(HANDLE FileHandle, xbox::IO_STATUS_BLOCK* IoStatusBlock, void* FileInformation,
     ULONG Length, ULONG FileInformationClass)
 {
+    FileHandle = ToHostHandle(FileHandle);
     switch (FileInformationClass) {
     case xbox::XFileBasicInformation:
     case xbox::XFileStandardInformation:
@@ -515,6 +523,7 @@ NTSTATUS XBAPI NtQueryInformationFile(HANDLE FileHandle, xbox::IO_STATUS_BLOCK* 
 NTSTATUS XBAPI NtSetInformationFile(HANDLE FileHandle, xbox::IO_STATUS_BLOCK* IoStatusBlock, void* FileInformation,
     ULONG Length, ULONG FileInformationClass)
 {
+    FileHandle = ToHostHandle(FileHandle);
     if (FileInformationClass == xbox::XFileRenameInformation) {
         // Xbox: { BOOLEAN ReplaceIfExists; HANDLE RootDirectory; OBJECT_STRING FileName; }
         struct XRename {
@@ -548,6 +557,7 @@ NTSTATUS XBAPI NtSetInformationFile(HANDLE FileHandle, xbox::IO_STATUS_BLOCK* Io
 NTSTATUS XBAPI NtQueryVolumeInformationFile(HANDLE FileHandle, xbox::IO_STATUS_BLOCK* IoStatusBlock, void* FsInformation,
     ULONG Length, ULONG FsInformationClass)
 {
+    FileHandle = ToHostHandle(FileHandle);
     NTSTATUS status = ::NtQueryVolumeInformationFile(FileHandle, reinterpret_cast<PIO_STATUS_BLOCK>(IoStatusBlock),
         FsInformation, Length, FsInformationClass);
     if (status >= 0 && FsInformationClass == 3 /*FileFsSizeInformation*/) {
@@ -661,6 +671,8 @@ NTSTATUS XBAPI NtQueryDirectoryFile(HANDLE FileHandle, HANDLE Event, xbox::PIO_A
     xbox::IO_STATUS_BLOCK* IoStatusBlock, void* FileInformation, ULONG Length, ULONG FileInformationClass,
     xbox::OBJECT_STRING* FileMask, BOOLEAN RestartScan)
 {
+    FileHandle = ToHostHandle(FileHandle);
+    Event = ToHostHandle(Event);
     if (ApcRoutine)
         LOG_WARN("NtQueryDirectoryFile: APC completion not supported");
     if (FileInformationClass != xbox::XFileDirectoryInformation) {
@@ -749,6 +761,7 @@ NTSTATUS XBAPI NtQueryDirectoryFile(HANDLE FileHandle, HANDLE Event, xbox::PIO_A
 
 NTSTATUS XBAPI NtFlushBuffersFile(HANDLE FileHandle, xbox::IO_STATUS_BLOCK* IoStatusBlock)
 {
+    FileHandle = ToHostHandle(FileHandle);
     return Check("NtFlushBuffersFile", FileHandle, ::NtFlushBuffersFile(FileHandle, reinterpret_cast<PIO_STATUS_BLOCK>(IoStatusBlock)));
 }
 
@@ -777,6 +790,7 @@ NTSTATUS XBAPI NtClose(HANDLE Handle)
         if (g_LinkHandles.erase(uintptr_t(Handle)))
             return xbox::X_STATUS_SUCCESS;
     }
+    Handle = ForgetGameHandle(Handle); // the host's (netplay's numbering: the number is free again)
     UntrackGameHandle(Handle);
     return Check("NtClose", Handle, ::NtClose(Handle));
 }

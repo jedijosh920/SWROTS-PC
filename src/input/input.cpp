@@ -25,6 +25,7 @@
 #include "debug/menu.h"
 #include "input/controls.h"
 #include "input/playstation.h"
+#include "kernel/reboot.h"
 #include "game/game.h"
 #include "xapi/xapi.h"
 
@@ -838,7 +839,7 @@ static DWORD __stdcall XbInputSetState(HANDLE device, XFeedback* feedback)
     // Rumble completes asynchronously on the Xbox; here it is done at once.
     feedback->Header.dwStatus = ERROR_SUCCESS;
     if (feedback->Header.hEvent)
-        SetEvent(feedback->Header.hEvent);
+        SetEvent(kernel::ToHostHandle(feedback->Header.hEvent));
     return ERROR_IO_PENDING;
 }
 
