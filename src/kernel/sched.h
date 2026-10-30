@@ -50,6 +50,11 @@ void SchedWaitUntil(uint64_t time);
 using ApcFunction = void(__stdcall*)(void* context, void* ioStatus, ULONG reserved);
 void SchedQueueApc(ApcFunction routine, void* context, void* ioStatus);
 
+// Called by the thread holding the baton each time it hands it over (a wait, a yield): what moves with the fixed
+// clock and the game waits for (the sound model's stream packets: audio::OnFrame), at points that are the same on
+// every PC.
+void SetSchedTurnHook(void (*hook)());
+
 // A hash of every turn so far (which thread, at what time): two PCs whose games did the same have the same (netplay's
 // check that a match has not parted).
 uint64_t SchedTraceHash();

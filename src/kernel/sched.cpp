@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 #include "core/log.h"
@@ -227,10 +228,72 @@ bool DeterministicBootRequested() { return g_Requested; }
 bool SchedActive() { return g_Active; }
 bool SchedHolding() { return g_Active && t_Self && g_Current == t_Self; }
 
+static uint32_t ReadWordSafely(uint32_t address)
+{
+    __try {
+        return *reinterpret_cast<const uint32_t*>(uintptr_t(address));
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+// Diagnostics: a turn that lasts (the thread holding the baton never hands it over: it spins, or waits on something the
+// scheduler does not see) is logged with where that thread is, every 5 s of it.
+void StallWatch()
+{
+    uint64_t lastSwitches = ~0ull;
+    int still = 0;
+    for (;;) {
+        Sleep(1000);
+        if (!g_Active) {
+            still = 0;
+            continue;
+        }
+        uint64_t switches;
+        DWORD holder = 0;
+        uint32_t index = 0;
+        size_t count = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_Lock);
+            switches = g_Stats.switches;
+            holder = g_Current ? g_Current->id : 0;
+            count = g_Threads.size();
+            for (uint32_t i = 0; i < count; ++i)
+                if (g_Threads[i] == g_Current)
+                    index = i;
+        }
+        still = switches == lastSwitches ? still + 1 : 0;
+        lastSwitches = switches;
+        if (still == 0 || still % 5 != 0 || !holder)
+            continue;
+        CONTEXT c = {};
+        c.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+        HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, holder);
+        if (h && SuspendThread(h) != DWORD(-1)) {
+            GetThreadContext(h, &c);
+            uint32_t stack[12] = {};
+            for (int i = 0; i < 12; ++i)
+                stack[i] = ReadWordSafely(c.Esp + 4 * i);
+            ResumeThread(h);
+            LOG_WARN("Scheduler: thread %u (host %lu) has held its turn for %d s (turn %llu, %zu threads): eip %08lX esp "
+                     "%08lX, stack %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X",
+                index, holder, still, switches, count, c.Eip, c.Esp, stack[0], stack[1], stack[2], stack[3], stack[4],
+                stack[5], stack[6], stack[7], stack[8], stack[9], stack[10], stack[11]);
+        }
+        if (h)
+            CloseHandle(h);
+    }
+}
+
 void SchedBoot()
 {
     SchedReset();
     g_Active = g_Requested;
+    static bool watching = false;
+    if (g_Active && !watching) {
+        watching = true;
+        std::thread(StallWatch).detach();
+    }
     if (g_Active) {
         g_Stats = Stats();
         SetFixedClock(false); // from its origin at every start: the same on every PC
@@ -324,11 +387,16 @@ void SchedThreadEnd()
     delete self;
 }
 
+static void (*g_TurnHook)() = nullptr;
+void SetSchedTurnHook(void (*hook)()) { g_TurnHook = hook; }
+
 DWORD SchedWait(DWORD count, const HANDLE* handles, BOOL waitAll, DWORD ms, BOOL alertable)
 {
     SThread* self = t_Self;
     if (!SchedHolding())
         return WAIT_FAILED;
+    if (g_TurnHook)
+        g_TurnHook();
     std::unique_lock<std::mutex> lock(g_Lock);
     ++g_Stats.waits;
     if (alertable && !self->apcs.empty()) {
@@ -357,6 +425,8 @@ void SchedYield()
     SThread* self = t_Self;
     if (!SchedHolding())
         return;
+    if (g_TurnHook)
+        g_TurnHook();
     std::unique_lock<std::mutex> lock(g_Lock);
     self->state = State::Ready;
     SwitchAway(self, lock);

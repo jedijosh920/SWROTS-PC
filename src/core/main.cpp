@@ -178,8 +178,10 @@ static void StartGame(const void* launchData)
 {
     ResetStubsForBoot(); // the same stubs at the same places at every start (netplay)
     kernel::BootInit(launchData);
-    if (kernel::SchedActive()) // a netplay match's start: the sound model from the start too
+    if (kernel::SchedActive()) { // a netplay match's start: the sound model from the start too
         audio::SetDeterministic(true);
+        kernel::SetSchedTurnHook(&audio::OnFrame); // its streams move on with the fixed clock, at every turn
+    }
     kernel::InstallThunks(g_Xbe.KernelThunkAddress());
     kernel::InstallFsPatches();
     xapi::InstallHooks();
