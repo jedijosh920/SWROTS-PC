@@ -91,6 +91,8 @@ XboxThread* ThreadFromHandle(HANDLE handle);
 void ForEachThread(void (*fn)(XboxThread* t, void* ctx), void* ctx);
 HANDLE CreateXboxThread(StartRoutine start, void* context, SystemRoutine system, uint32_t stackSize,
     uint32_t tlsSize, bool suspended, DWORD* threadId);
+// Called with each game thread made, still suspended (diagnostics: netplay's watch of a word from the start).
+void SetNewThreadHook(void (*hook)(void* suspendedThread));
 // Keeps a thread that runs game code on the one CPU core shared by all of them.
 void PinToGameCpu(HANDLE thread);
 

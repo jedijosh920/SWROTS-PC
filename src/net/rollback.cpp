@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -759,6 +760,8 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
         audio::OnFrame();
         WatchSetFrame(0, false);
         g_Mode = Mode::Running;
+        if (g_Test != Test::None && Watching())
+            WatchStopAndLog("from the game's start to the session's"); // SWROTS_WATCH_BOOT
         if (g_Test == Test::Record) {
             TestDumpMemory();
             g_TestOut = _wfopen(TestPath("frames").c_str(), L"wb");
@@ -879,6 +882,18 @@ void StartNetTest(bool record, const std::string& name, uint32_t frames)
         LOG_WARN("nettest: no deterministic addresses on this PC");
     kernel::SetDeterministicBoot(true); // the game's threads take turns, on the fixed clock, from the restart on
     g_TestBootPending = true;
+    // Diagnostics: SWROTS_WATCH_BOOT=addr[,addr...] (hex, up to 4): who writes those words from the restart on.
+    char watch[128] = "";
+    if (GetEnvironmentVariableA("SWROTS_WATCH_BOOT", watch, sizeof(watch)) && watch[0]) {
+        uint32_t words[kWatchSlots];
+        int count = 0;
+        for (char* p = watch; *p && count < kWatchSlots;) {
+            char* end = nullptr;
+            words[count++] = uint32_t(std::strtoul(p, &end, 16));
+            p = *end ? end + 1 : end;
+        }
+        WatchFromBoot(words, count);
+    }
     kernel::RestartMission();
     g_Distance = 0; // no rollback: frames are only saved (their checksums)
     g_Every = 1;

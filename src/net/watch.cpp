@@ -26,6 +26,7 @@ struct Hit {
     uint32_t value;
     uint32_t frame;
     uint32_t resim;
+    uint32_t callers[6]; // return addresses found on the stack (the game's code, or the port's)
 };
 constexpr uint32_t kMaxHits = 8192;
 Hit g_Hits[kMaxHits];
@@ -63,6 +64,16 @@ LONG __stdcall OnSingleStep(EXCEPTION_POINTERS* info)
         h.value = *reinterpret_cast<const volatile uint32_t*>(uintptr_t(g_Addresses[i]));
         h.frame = g_Frame;
         h.resim = g_Resim;
+        int found = 0;
+        const auto* stack = reinterpret_cast<const uint32_t*>(uintptr_t(c->Esp));
+        for (int k = 0; k < 96 && found < 6; ++k) {
+            uint32_t v;
+            __try { v = stack[k]; } __except (EXCEPTION_EXECUTE_HANDLER) { break; }
+            if ((v >= 0x11000 && v < 0x4FF000) || (v >= 0x60001000 && v < 0x61000000))
+                h.callers[found++] = v;
+        }
+        for (int k = found; k < 6; ++k)
+            h.callers[k] = 0;
     }
     c->Dr6 = 0;
     return EXCEPTION_CONTINUE_EXECUTION;
@@ -161,6 +172,7 @@ void WatchStopAndLog(const char* title)
     for (int slot = 0; slot < kWatchSlots && g_Addresses[slot]; ++slot) {
         struct Writer {
             uint32_t thread, eip, shown, again, firstFrame, firstValue;
+            const uint32_t* callers;
         };
         std::vector<Writer> writers;
         for (uint32_t i = 0; i < total; ++i) {
@@ -170,7 +182,7 @@ void WatchStopAndLog(const char* title)
             auto it = std::find_if(writers.begin(), writers.end(),
                 [&](const Writer& w) { return w.thread == h.thread && w.eip == h.eip; });
             if (it == writers.end()) {
-                writers.push_back({ h.thread, h.eip, 0, 0, h.frame, h.value });
+                writers.push_back({ h.thread, h.eip, 0, 0, h.frame, h.value, h.callers });
                 it = writers.end() - 1;
             }
             (h.resim ? it->again : it->shown)++;
@@ -178,14 +190,54 @@ void WatchStopAndLog(const char* title)
         LOG_INFO("Netplay watch:   %08X: %zu writer(s)", g_Addresses[slot], writers.size());
         for (const Writer& w : writers)
             LOG_INFO("Netplay watch:     thread %5u, after %08X: %u in frames shown, %u in frames played again "
-                     "(first at frame %u: %08X)",
-                w.thread, w.eip, w.shown, w.again, w.firstFrame, w.firstValue);
+                     "(first at frame %u: %08X; callers %08X %08X %08X %08X %08X %08X)",
+                w.thread, w.eip, w.shown, w.again, w.firstFrame, w.firstValue, w.callers[0], w.callers[1],
+                w.callers[2], w.callers[3], w.callers[4], w.callers[5]);
     }
     for (int i = 0; i < kWatchSlots; ++i)
         g_Addresses[i] = 0;
 }
 
 bool Watching() { return g_Watching; }
+
+bool WatchFromBoot(const uint32_t* addresses, int count)
+{
+    if (g_Watching)
+        WatchStopAndLog("replaced");
+    count = std::clamp(count, 0, kWatchSlots);
+    if (!count)
+        return false;
+    if (!g_Handler)
+        g_Handler = AddVectoredExceptionHandler(1, OnSingleStep);
+    if (!g_Handler)
+        return false;
+    for (int i = 0; i < kWatchSlots; ++i)
+        g_Addresses[i] = i < count ? (addresses[i] & ~3u) : 0;
+    g_Count = count;
+    g_HitCount = 0;
+    g_HitsLost = 0;
+    g_Watching = true;
+    kernel::SetNewThreadHook(&WatchNewThread);
+    LOG_INFO("Netplay watch: watching writes from the game's start (%d word(s))", count);
+    return true;
+}
+
+void WatchNewThread(void* suspended)
+{
+    if (!g_Watching || !g_Count)
+        return;
+    CONTEXT c = {};
+    c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+    if (!GetThreadContext(suspended, &c))
+        return;
+    c.Dr0 = g_Addresses[0];
+    c.Dr1 = g_Addresses[1];
+    c.Dr2 = g_Addresses[2];
+    c.Dr3 = g_Addresses[3];
+    c.Dr6 = 0;
+    c.Dr7 = Dr7For(g_Count);
+    SetThreadContext(suspended, &c);
+}
 
 void WatchSuppress(bool on) { g_Suppress = on ? 1 : 0; }
 

@@ -231,6 +231,9 @@ void PinToGameCpu(HANDLE thread)
         SetThreadAffinityMask(thread, mask);
 }
 
+static void (*g_NewThreadHook)(void*) = nullptr;
+void SetNewThreadHook(void (*hook)(void* suspendedThread)) { g_NewThreadHook = hook; }
+
 HANDLE CreateXboxThread(StartRoutine start, void* context, SystemRoutine system, uint32_t stackSize,
     uint32_t tlsSize, bool suspended, DWORD* threadId)
 {
@@ -260,6 +263,8 @@ HANDLE CreateXboxThread(StartRoutine start, void* context, SystemRoutine system,
     if (threadId)
         *threadId = tid;
     t->threadId = tid;
+    if (g_NewThreadHook)
+        g_NewThreadHook(h);
     SchedAddThread(t, suspended); // its turns, in the order threads are made
     if (!suspended)
         ResumeThread(h);

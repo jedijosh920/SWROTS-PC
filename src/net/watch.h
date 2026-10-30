@@ -18,6 +18,11 @@ bool WatchWords(const uint32_t* addresses, int count);
 // Stops watching (all threads) and logs what was seen since WatchWords, grouped by word, thread and instruction.
 void WatchStopAndLog(const char* title);
 bool Watching();
+// The same from the game's next start on (diagnostics: SWROTS_WATCH_BOOT): every game thread made from then on is
+// watched from its first instruction. The writes are logged by WatchStopAndLog (nettest does at its start).
+bool WatchFromBoot(const uint32_t* addresses, int count);
+// A game thread just made, still suspended: its debug registers set (kernel::SetNewThreadHook).
+void WatchNewThread(void* suspendedThread);
 
 // The frame being played and whether it is played again, noted with each write.
 void WatchSetFrame(uint32_t frame, bool resimulated);
