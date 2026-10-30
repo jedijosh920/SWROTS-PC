@@ -42,12 +42,22 @@ void PatchNop(uint32_t address, uint32_t length)
     PatchBytes(address, code, length);
 }
 
+// Stubs live in the loader's image range, past the game's image and before the PE header copy (0x9F0000-0xF00000,
+// executable, never cleared by a reboot), so that they are at the same addresses on every PC: the game's libraries
+// are patched with jumps to them, and netplay compares that memory. Taken in order, as the port makes them.
 uint8_t* AllocStub(uint32_t size)
 {
-    static uint8_t* s_page = nullptr;
+    static constexpr uint32_t kStubStart = 0x009F0000, kStubEnd = 0x00F00000;
+    static uint32_t s_next = kStubStart;
+    static uint8_t* s_page = nullptr; // beyond the range: from Windows, as before
     static uint32_t s_used = 0;
-    static const uint32_t kPage = 0x10000;
     size = (size + 15) & ~15u;
+    if (s_next + size <= kStubEnd) {
+        uint8_t* p = reinterpret_cast<uint8_t*>(uintptr_t(s_next));
+        s_next += size;
+        return p;
+    }
+    static const uint32_t kPage = 0x10000;
     if (!s_page || s_used + size > kPage) {
         s_page = static_cast<uint8_t*>(VirtualAlloc(nullptr, kPage, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE));
         s_used = 0;

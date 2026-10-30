@@ -54,8 +54,10 @@ void ResetThreadsForReboot()
     for (auto& [tid, t] : g_Threads) {
         if (t->hostHandle)
             CloseHandle(t->hostHandle);
-        _aligned_free(t->tlsData);
-        _aligned_free(t);
+        if (!t->fixedMemory) { // fixed memory goes with the reboot's reset of the fixed range
+            _aligned_free(t->tlsData);
+            _aligned_free(t);
+        }
     }
     g_Threads.clear();
 }
@@ -95,17 +97,22 @@ void ForEachThread(void (*fn)(XboxThread* t, void* ctx), void* ctx)
 
 static XboxThread* AllocThread(uint32_t tlsSize)
 {
-    auto* t = static_cast<XboxThread*>(_aligned_malloc(sizeof(XboxThread), 16));
+    if (!tlsSize)
+        tlsSize = ((g_TlsRawSize + g_TlsZeroFill + 15) & ~15u) + 4;
+    // Deterministic addresses (netplay): the thread object and its TLS in the fixed range, where every PC has them
+    // at the same addresses (the game keeps pointers to them).
+    const uint32_t objectBytes = (sizeof(XboxThread) + 15) & ~15u;
+    uint8_t* fixed = static_cast<uint8_t*>(AllocFixedThreadMemory(objectBytes + ((tlsSize + 15) & ~15u)));
+    auto* t = fixed ? reinterpret_cast<XboxThread*>(fixed) : static_cast<XboxThread*>(_aligned_malloc(sizeof(XboxThread), 16));
     std::memset(t, 0, sizeof(XboxThread));
+    t->fixedMemory = fixed != nullptr;
 
     // TLS block: [pointer to data][raw template][zero fill]. The block ends at
     // NtTib.StackBase and XAPI sets _tls_index to -(size / 4), so the game finds
     // the block's first word at fs:[4] + _tls_index * 4. The size must match
     // what XAPI computed ((raw + zero fill + 15) & ~15) + 4.
-    if (!tlsSize)
-        tlsSize = ((g_TlsRawSize + g_TlsZeroFill + 15) & ~15u) + 4;
     t->tlsSize = tlsSize;
-    t->tlsData = static_cast<uint8_t*>(_aligned_malloc((tlsSize + 15) & ~15u, 16));
+    t->tlsData = fixed ? fixed + objectBytes : static_cast<uint8_t*>(_aligned_malloc((tlsSize + 15) & ~15u, 16));
     std::memset(t->tlsData, 0, tlsSize);
     *reinterpret_cast<uint8_t**>(t->tlsData) = t->tlsData + 4;
     if (g_TlsRawSize)
@@ -146,14 +153,51 @@ XboxThread* AdoptCurrentThread()
     return t;
 }
 
-static DWORD WINAPI XboxThreadProc(void* param)
+static void __cdecl RunXboxThread(XboxThread* t)
 {
-    auto* t = static_cast<XboxThread*>(param);
     BindThread(t);
     if (t->system)
         t->system(t->start, t->context);
     else
         t->start(t->context);
+}
+
+// Calls fn(t) on the stack whose top is `top`, and comes back to the caller's.
+static __declspec(naked) void __cdecl RunOnStack(void* top, void(__cdecl* fn)(XboxThread*), XboxThread* t)
+{
+    __asm {
+        push ebp
+        mov ebp, esp
+        mov eax, [ebp + 8]
+        mov ecx, [ebp + 12]
+        mov edx, [ebp + 16]
+        mov esp, eax
+        push edx
+        call ecx
+        mov esp, ebp
+        pop ebp
+        ret
+    }
+}
+
+static DWORD WINAPI XboxThreadProc(void* param)
+{
+    auto* t = static_cast<XboxThread*>(param);
+    if (t->fixedStack) {
+        // Deterministic addresses (netplay): the game's code runs on a stack in the fixed range, at the same address
+        // on every PC (the game keeps pointers into its stacks). The TEB's stack bounds follow, for exception
+        // dispatch (and the Swap's stack scrub).
+        auto* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+        void* const base = tib->StackBase;
+        void* const limit = tib->StackLimit;
+        tib->StackBase = t->fixedStack + t->fixedStackSize;
+        tib->StackLimit = t->fixedStack;
+        RunOnStack(t->fixedStack + t->fixedStackSize - 16, &RunXboxThread, t);
+        tib->StackBase = base;
+        tib->StackLimit = limit;
+        return 0;
+    }
+    RunXboxThread(t);
     return 0;
 }
 
@@ -195,6 +239,11 @@ HANDLE CreateXboxThread(StartRoutine start, void* context, SystemRoutine system,
     // Xbox stacks are tiny (64 KiB by default); host code we call into (drivers,
     // audio, file I/O) needs far more headroom.
     SIZE_T reserve = stackSize < 0x100000 ? 0x100000 : stackSize;
+    if (uint8_t* stack = static_cast<uint8_t*>(AllocFixedThreadMemory(uint32_t(reserve)))) {
+        t->fixedStack = stack;
+        t->fixedStackSize = uint32_t(reserve);
+        reserve = 0x10000; // the host's own stack only starts the thread
+    }
     DWORD tid = 0;
     HANDLE h = CreateThread(nullptr, reserve, XboxThreadProc, t, CREATE_SUSPENDED | STACK_SIZE_PARAM_IS_A_RESERVATION, &tid);
     if (!h)

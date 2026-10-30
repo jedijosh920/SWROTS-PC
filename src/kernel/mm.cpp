@@ -199,6 +199,9 @@ constexpr uintptr_t kFixedBase = 0x20000000;
 constexpr uint32_t kFixedSize = 0x10000000; // 256 MiB
 constexpr uint32_t kArenaSize = 64u << 20;  // the pool's arena, at the start of the range
 constexpr uint32_t kGranularity = 0x10000;  // Windows' allocation granularity, kept for the game's reservations
+// The range's last part holds the game threads' own memory (stacks, thread objects, TLS): placed the same way, but
+// not the game's state for netplay's snapshots (restoring another thread's stack while it is stopped would break it).
+constexpr uint32_t kThreadZone = 32u << 20;
 
 uint8_t* g_Fixed = nullptr;
 std::atomic<bool> g_DetAddresses{ false };
@@ -233,17 +236,22 @@ std::map<uintptr_t, uint32_t>::iterator PlacedAt(const void* p)
     return a < it->first + it->second ? it : g_Placed.end();
 }
 
-// First fit after the arena, at the allocation granularity; 0 when the range is full.
-uintptr_t Place(uint32_t size)
+// First fit after the arena (or in the thread zone), at the allocation granularity; 0 when there is no room.
+uintptr_t Place(uint32_t size, bool threadZone = false)
 {
     size = (size + kGranularity - 1) & ~(kGranularity - 1);
-    uintptr_t at = kFixedBase + kArenaSize;
+    const uintptr_t zoneStart = kFixedBase + kFixedSize - kThreadZone;
+    const uintptr_t low = threadZone ? zoneStart : kFixedBase + kArenaSize;
+    const uintptr_t high = threadZone ? kFixedBase + kFixedSize : zoneStart;
+    uintptr_t at = low;
     for (const auto& [base, length] : g_Placed) {
+        if (base + length <= at)
+            continue;
         if (at + size <= base)
             break;
         at = std::max(at, (base + length + kGranularity - 1) & ~uintptr_t(kGranularity - 1));
     }
-    if (at + size > kFixedBase + kFixedSize)
+    if (at + size > high)
         return 0;
     g_Placed[at] = size;
     return at;
@@ -270,6 +278,20 @@ bool SetDeterministicAddresses(bool on)
 }
 
 bool DeterministicAddresses() { return g_DetAddresses; }
+
+void* AllocFixedThreadMemory(uint32_t size)
+{
+    if (!g_DetAddresses || !g_Fixed)
+        return nullptr;
+    std::lock_guard<std::mutex> lock(g_PlaceLock);
+    const uintptr_t at = Place(size, true);
+    if (!at)
+        return nullptr;
+    void* p = VirtualAlloc(reinterpret_cast<void*>(at), size, MEM_COMMIT, PAGE_READWRITE);
+    if (!p)
+        g_Placed.erase(at);
+    return p;
+}
 
 // ---------------------------------------------------------------------------
 // System memory and protection
@@ -684,9 +706,11 @@ std::vector<std::pair<uintptr_t, size_t>> GameMemoryRegions()
     if (g_Fixed) { // the fixed range's committed parts (the pool's arena, the game's placed memory)
         auto* p = g_Fixed;
         MEMORY_BASIC_INFORMATION info;
-        while (p < g_Fixed + kFixedSize && VirtualQuery(p, &info, sizeof(info)) && info.AllocationBase == g_Fixed) {
+        while (p < g_Fixed + kFixedSize - kThreadZone && VirtualQuery(p, &info, sizeof(info)) &&
+               info.AllocationBase == g_Fixed) {
             if (info.State == MEM_COMMIT && !(info.Protect & (PAGE_GUARD | PAGE_NOACCESS)))
-                regions.push_back({ uintptr_t(info.BaseAddress), info.RegionSize });
+                regions.push_back({ uintptr_t(info.BaseAddress),
+                    std::min<size_t>(info.RegionSize, size_t(g_Fixed + kFixedSize - kThreadZone - p)) });
             p += info.RegionSize;
         }
     }

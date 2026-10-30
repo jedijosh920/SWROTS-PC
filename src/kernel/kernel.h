@@ -74,6 +74,11 @@ struct XboxThread {
     StartRoutine start = nullptr;
     void* context = nullptr;
     SystemRoutine system = nullptr;
+    // Deterministic addresses (netplay): the thread object and TLS are in the fixed range (not freed with the
+    // heap), and the thread runs on a stack there.
+    bool fixedMemory = false;
+    uint8_t* fixedStack = nullptr;
+    uint32_t fixedStackSize = 0;
 };
 
 void ThreadingInit(const XbeFile& xbe);
@@ -135,6 +140,10 @@ bool SetDeterministicPool(bool on);
 // the same addresses. Stays on across reboots. False when the range is taken on this PC.
 bool SetDeterministicAddresses(bool on);
 bool DeterministicAddresses();
+// While deterministic addresses are on: committed memory for a game thread's own use (its stack, its thread object
+// and TLS), at an address the same on every PC, outside what netplay's snapshots cover. Null otherwise. Freed by
+// the next reboot.
+void* AllocFixedThreadMemory(uint32_t size);
 
 // --- File system (file.cpp) ------------------------------------------------
 void FileSystemInit(const Paths& paths);
