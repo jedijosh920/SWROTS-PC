@@ -304,3 +304,27 @@ the level with it), the game's threads take turns:
   (`wait(s) only the PC could end`): those are where determinism is still lost.
 - The vertical blank is the fixed clock's: the game runs as fast as the PC allows (pacing to real time is for later,
   without touching the fixed clock).
+
+### Deterministic match start: done (nettest, 2026-10-30, evening)
+
+With the scheduler, the last differences were values the host put into the game's memory. Each was found with
+`SWROTS_WATCH_BOOT=addr[,addr...]` (debug registers on every game thread from the restart on; the writers, their
+instruction and the return addresses found on their stack are logged when the session starts) and nettest's report
+of pointers outside the deterministic places (what the allocation is: its size, a thread's stack, a heap, its first
+words):
+
+| Source | Fix |
+|---|---|
+| Host handle values (event handles at `0x646268`) | the game's handles numbered in its own order while the scheduler runs (`kernel::ToGameHandle`, translated back at every export); thread ids follow; symbolic link pseudo handles restart at each boot |
+| XAPI's heap's large blocks (`NtAllocateVirtualMemory(MEM_COMMIT)` with no base, which reserves too) left to Windows | placed in the fixed range like reservations (also tracked for the reboot and write-watched) |
+| The port's code leaving heap pointers and return addresses on the game's stack, read back through the game's uninitialised locals (a half-filled vertex shader constant buffer, a vector's unused lane) | gates (`core/gates.h`): every kernel export, XDK replacement (but Swap) and port hook of a game function (`PatchHook`) is called through a gate at a fixed address that zeroes the stack below after it; the resource hooks also zero it before calling the game's decoders (`ScrubStack`) |
+| Memory files over the port's `std::vector` (host heap addresses kept by the engine) | the data copied to `GameAlloc` memory for the decode; a manual file's (kept) to the engine's memory |
+| Strings the port hands to the game (menu handler names, the port's texts) | from a pool in core.dll (`GameString`, `GameText`) |
+| nettest itself: a frame that starts a new snapshot session got no recorded frame (the recording shifted by one) | recorded and compared as any other |
+
+Result: **the memory at the match's start is identical in two runs (545 regions, 0 words differ), and 1,800 frames
+(a minute of the duel, with a new snapshot session at frame 920 when the game loaded something) played from the
+recorded inputs have the same checksum as the recording, every one.** The scheduler's traces match too.
+
+Next: the lockstep session itself (transport, the Online menu, the lobby), real-time pacing, and the stubs at fixed
+places per patch site (see the note above) so that two PCs that did different things before a match still agree.
