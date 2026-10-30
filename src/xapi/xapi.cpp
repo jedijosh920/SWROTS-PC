@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <cstring>
+#include <intrin.h>
 #include <map>
 #include <string>
 
@@ -53,6 +54,91 @@ static LONGLONG HostQpcFrequency()
         return f.QuadPart;
     }();
     return freq;
+}
+
+// The game's own rdtsc instructions (a profiler's counters, two timing helpers): while the fixed clock is on (netplay),
+// the time-stamp counter is the fixed clock's at the Xbox's 733 MHz, not the PC's.
+static uint64_t __cdecl GameTsc()
+{
+    if (kernel::FixedClockOn())
+        return kernel::FixedClockNow() * 733 / 10;
+    return __rdtsc();
+}
+
+// `rdtsc; ret` (0x5081B0).
+static __declspec(naked) void TscReturn()
+{
+    __asm {
+        push ecx
+        call GameTsc
+        pop ecx
+        ret
+    }
+}
+
+// A function returning the counter / 16 in eax and ecx both, keeping edx (0x227170).
+static __declspec(naked) void TscBy16()
+{
+    __asm {
+        push edx
+        call GameTsc
+        shrd eax, edx, 4
+        pop edx
+        mov ecx, eax
+        ret
+    }
+}
+
+// `rdtsc; mov [esp+8], eax` (0x2420FE) and `rdtsc; mov [esp+0xC], eax` (0x242148), called in their place.
+static __declspec(naked) void TscStore8()
+{
+    __asm {
+        push ecx
+        call GameTsc
+        pop ecx
+        mov [esp + 0x0C], eax
+        ret
+    }
+}
+
+static __declspec(naked) void TscStoreC()
+{
+    __asm {
+        push ecx
+        call GameTsc
+        pop ecx
+        mov [esp + 0x10], eax
+        ret
+    }
+}
+
+static void PatchGameTsc()
+{
+    static const uint8_t kReturn[] = { 0x0F, 0x31, 0xC3, 0xCC, 0xCC };
+    static const uint8_t kBy16[] = { 0x51, 0x50, 0x52, 0x0F, 0x31 };
+    static const uint8_t kStore8[] = { 0x0F, 0x31, 0x89, 0x44, 0x24, 0x08 };
+    static const uint8_t kStoreC[] = { 0x0F, 0x31, 0x89, 0x44, 0x24, 0x0C };
+    auto at = [](uint32_t address, const uint8_t* bytes, size_t size) {
+        return std::memcmp(reinterpret_cast<const void*>(uintptr_t(address)), bytes, size) == 0;
+    };
+    int patched = 0;
+    if (at(0x005081B0, kReturn, sizeof kReturn)) {
+        PatchJump(0x005081B0, reinterpret_cast<const void*>(&TscReturn));
+        ++patched;
+    }
+    if (at(0x00227170, kBy16, sizeof kBy16)) {
+        PatchJump(0x00227170, reinterpret_cast<const void*>(&TscBy16));
+        ++patched;
+    }
+    if (at(0x002420FE, kStore8, sizeof kStore8)) {
+        PatchCall(0x002420FE, reinterpret_cast<const void*>(&TscStore8), 6);
+        ++patched;
+    }
+    if (at(0x00242148, kStoreC, sizeof kStoreC)) {
+        PatchCall(0x00242148, reinterpret_cast<const void*>(&TscStoreC), 6);
+        ++patched;
+    }
+    LOG_INFO("Netplay: %d of the game's 4 rdtsc reads on the fixed clock", patched);
 }
 
 static BOOL __stdcall XQueryPerformanceCounter(LARGE_INTEGER* counter)
@@ -209,6 +295,8 @@ void InstallHooks()
     PatchJump(game::kUnhandledExceptionFilter, &GameUnhandledExceptionFilter);
     static const uint8_t kRet = 0xC3;
     PatchBytes(game::kXapiReclaimKernelInit, &kRet, 1);
+    if (kernel::SchedActive())
+        PatchGameTsc();
 
     uint32_t count, replaced = 0, trapped = 0, native = 0;
     const game::SdkSymbol* syms = game::SdkSymbols(&count);
