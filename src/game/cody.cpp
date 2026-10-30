@@ -44,6 +44,7 @@
 #include "game/hvv.h"
 #include "game/meshedit.h"
 #include "game/resources.h"
+#include "kernel/clock.h"
 
 namespace swrots::game {
 
@@ -128,7 +129,7 @@ const float* Position(uint8_t* character)
 
 uint32_t Dice()
 {
-    static uint32_t state = 0x9E3779B9u ^ uint32_t(GetTickCount64());
+    static uint32_t state = 0x9E3779B9u ^ uint32_t(kernel::GameTickCount64());
     state ^= state << 13;
     state ^= state >> 17;
     state ^= state << 5;

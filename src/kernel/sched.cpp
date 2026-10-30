@@ -391,6 +391,8 @@ void SchedQueueApc(ApcFunction routine, void* context, void* ioStatus)
         self->apcs.push_back({ routine, context, ioStatus });
 }
 
+uint64_t SchedTraceHash() { return g_Stats.trace * 0x100000001B3ull ^ g_Stats.switches; }
+
 void SchedLogStats()
 {
     LOG_INFO("Scheduler: %llu switches, %llu waits, %llu polls, %llu clock jumps, %llu timer rounds, %llu wait(s) only "

@@ -31,6 +31,10 @@ uint64_t FixedClockNow();
 // The fixed time without moving it on (for the port's own models of time, e.g. the audio layer's).
 uint64_t FixedClockPeek();
 
+// The port's own game logic (src/game) asks the time here, in milliseconds: the fixed clock's while it is on (a netplay
+// match: the same on every PC), else the PC's (GetTickCount64).
+uint64_t GameTickCount64();
+
 // The same in milliseconds (KeTickCount), and as a system time (KeQuerySystemTime: a fixed date plus the fixed
 // time, so nothing the game derives from the date differs either).
 uint32_t FixedClockTickCount();

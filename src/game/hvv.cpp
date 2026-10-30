@@ -26,6 +26,7 @@
 #include "game/game.h"
 #include "input/controls.h"
 #include "kernel/kernel.h"
+#include "kernel/clock.h"
 
 namespace swrots::game {
 
@@ -1086,7 +1087,7 @@ constexpr uint32_t kSaveProfile = 0x0024D300;
 constexpr uint32_t kSessionSettings = 0x0066F7A4;
 
 // Saves the profile for the next start; false without one (a start from Default_Xbox.cfg, before the menus).
-bool SaveProfile(int& controller, int& memoryUnit)
+bool SaveProfileImpl(int& controller, int& memoryUnit)
 {
     __try {
         uint8_t* profile = *reinterpret_cast<uint8_t**>(uintptr_t(kProfile));
@@ -1107,7 +1108,7 @@ bool SaveProfile(int& controller, int& memoryUnit)
 std::string SessionArguments()
 {
     int controller = 0, memoryUnit = 0;
-    if (!SaveProfile(controller, memoryUnit))
+    if (!SaveProfileImpl(controller, memoryUnit))
         return {};
     return " v_sessionCreated:1 playlicensemovie:0 title:0 controller:" + std::to_string(controller) +
         " memoryunit:" + std::to_string(memoryUnit);
@@ -1672,6 +1673,8 @@ void HeroFell(int i)
 
 } // namespace
 
+bool SaveProfileForStart(int& controller, int& memoryUnit) { return SaveProfileImpl(controller, memoryUnit); }
+
 void InstallHvv()
 {
     g_Active = false;
@@ -1849,7 +1852,7 @@ void InstallHvv()
     SetCameraAdjuster(&HvvCamera); // in place of co-op's for this start
     InstallEffectHooks();
     g_Active = true;
-    std::srand(unsigned(GetTickCount()));
+    std::srand(unsigned(kernel::GameTickCount64()));
     std::string heroes, villains;
     for (int i = 0; i < g_Count; ++i)
         (i < g_Heroes ? heroes : villains) += (i == 0 || i == g_Heroes ? "" : ", ") + classes[i];
@@ -1885,7 +1888,7 @@ ULONGLONG g_RealTick = 0, g_GameTime = 100000;
 
 void GameTimeFrame()
 {
-    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG now = kernel::GameTickCount64();
     if (g_RealTick && !GamePaused())
         g_GameTime += std::min<ULONGLONG>(now - g_RealTick, 250); // a long frame (a load) counts as a short one
     g_RealTick = now;

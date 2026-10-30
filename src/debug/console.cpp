@@ -28,6 +28,7 @@
 #include "game/versus.h"
 #include "kernel/kernel.h"
 #include "net/rollback.h"
+#include "net/session.h"
 
 namespace swrots::debug {
 
@@ -1032,6 +1033,26 @@ void NetTest(const std::vector<std::string>& words)
         record ? "record" : "compare", words[2].c_str());
 }
 
+// online host | online join <code or address> | online leave | online: online play (net/session.h).
+void Online(const std::vector<std::string>& words)
+{
+    const std::string what = words.size() >= 2 ? words[1] : "";
+    if (_stricmp(what.c_str(), "host") == 0) {
+        net::OnlineHost();
+    } else if (_stricmp(what.c_str(), "join") == 0 && words.size() >= 3) {
+        std::string code;
+        for (size_t i = 2; i < words.size(); ++i)
+            code += words[i];
+        net::OnlineJoin(code);
+    } else if (_stricmp(what.c_str(), "leave") == 0) {
+        net::OnlineLeave();
+    } else if (!what.empty()) {
+        Print(LineKind::Output, "  online host | online join <room code or host[:port]> | online leave | online");
+        return;
+    }
+    Print(LineKind::Output, "  %s", net::OnlineStatusLine().c_str());
+}
+
 // Returns false when the line is for the game's own console.
 bool RunPortCommand(uint8_t* console, const std::string& line)
 {
@@ -1063,7 +1084,8 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         command != "infiniteforce" && command != "memory" && command != "team" &&
         command != "findrefs" && command != "despawn" && command != "characters" && command != "scale" &&
         command != "screenshot" && command != "coop" &&
-        command != "devmap" && command != "hvv" && command != "versus" && command != "mission" && command != "kill" && command != "synctest" && command != "nettest")
+        command != "devmap" && command != "hvv" && command != "versus" && command != "mission" && command != "kill" && command != "synctest" && command != "nettest" &&
+        command != "online")
         return false;
     Print(LineKind::Output, "> %s", line.c_str());
     if (command == "duelist") {
@@ -1084,6 +1106,8 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         SyncTest(words);
     } else if (command == "nettest") {
         NetTest(words);
+    } else if (command == "online") {
+        Online(words);
     } else if (command == "saber") {
         Saber(words);
     } else if (command == "spawn") {
@@ -1304,7 +1328,7 @@ void RunQueuedConsoleCommands()
             // and gone while a level loads).
             const std::vector<std::string> words = Words(line);
             static const char* const kStandalone[] = { "player", "variants", "meshes", "restart", "autorestart",
-                "duelist", "freecam", "saber", "spawn", "peek", "infiniteforce", "memory", "team", "findrefs", "despawn", "characters", "scale", "screenshot", "coop", "devmap", "hvv", "versus", "mission", "kill", "synctest", "nettest", "clear", "cls" };
+                "duelist", "freecam", "saber", "spawn", "peek", "infiniteforce", "memory", "team", "findrefs", "despawn", "characters", "scale", "screenshot", "coop", "devmap", "hvv", "versus", "mission", "kill", "synctest", "nettest", "online", "clear", "cls" };
             const bool standalone = !words.empty() && std::any_of(std::begin(kStandalone), std::end(kStandalone),
                 [&](const char* c) { return _stricmp(words[0].c_str(), c) == 0; });
             if (standalone) {

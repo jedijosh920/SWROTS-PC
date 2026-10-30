@@ -23,6 +23,7 @@
 #include "game/resources.h"
 #include "input/controls.h"
 #include "kernel/kernel.h"
+#include "kernel/clock.h"
 
 namespace swrots::game {
 
@@ -876,7 +877,7 @@ SpawnChoice ChooseSpawn(uint8_t* player)
     uint8_t* clone = nullptr;
     Side side = PlayerSide(player, clone);
     if (side == Side::Unknown) {
-        if (GetTickCount64() - g_State.levelSeen < kSideWaitMs)
+        if (kernel::GameTickCount64() - g_State.levelSeen < kSideWaitMs)
             return {}; // not yet: the level's characters are still loading
         side = _strnicmp(TypeName(player), "IVader", 6) == 0 ? Side::Sith : Side::Jedi;
     }
@@ -1012,7 +1013,7 @@ void Leash(uint8_t* player, ULONGLONG now)
 // player 2.
 bool SharedCamera(float m[16], float fov)
 {
-    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG now = kernel::GameTickCount64();
     const float dt = g_LastCameraTick ? std::min(float(now - g_LastCameraTick) / 1000.0f, 0.1f) : 0.0f;
     g_LastCameraTick = now;
     float target[3] = {};
@@ -1074,7 +1075,7 @@ void Respawn(uint8_t* player)
     PlaceSafely(player);
     Field<float>(g_State.p2, kCharacterHealth) = Field<float>(g_State.p2, kCharacterMaxHealth);
     Field<uint8_t>(g_State.p2, kCharacterInvincible) = 1;
-    g_State.shieldUntil = GetTickCount64() + kShieldMs;
+    g_State.shieldUntil = kernel::GameTickCount64() + kShieldMs;
     LOG_INFO("Co-op: player 2 came back beside player 1");
 }
 
@@ -1135,7 +1136,7 @@ void ClonePlayer2Shooting(uint8_t* script, uint8_t* instance)
         }
         return;
     }
-    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG now = kernel::GameTickCount64();
     if (!g_CloneShooting) {
         reinterpret_cast<void(__cdecl*)(const char*, int, int, float, int, int, int, int, int)>(uintptr_t(kScriptPlayLayer))(
             kCloneShootingLoop, 0, 0, 1.0f, 5, 2, 0, 1, 2);
@@ -1284,7 +1285,7 @@ void CoopFrame()
         g_State.reason = "no story mission is running";
         return;
     }
-    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG now = kernel::GameTickCount64();
     FollowPlayer1(player, now);
     if (!g_State.levelSeen)
         g_State.levelSeen = now;
@@ -1540,7 +1541,7 @@ void CoopCharacterRemoving(uint8_t* character)
         return;
     Unregister("the character is removed", true);
     g_State.p2 = nullptr;
-    g_State.respawnAt = GetTickCount64() + kRespawnDelayMs;
+    g_State.respawnAt = kernel::GameTickCount64() + kRespawnDelayMs;
 }
 
 uint8_t* CoopPlayer2()

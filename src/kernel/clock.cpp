@@ -98,6 +98,8 @@ uint64_t FixedClockNow()
 
 uint64_t FixedClockPeek() { return g_State.now; }
 
+uint64_t GameTickCount64() { return g_On ? g_State.now / 10000 : GetTickCount64(); }
+
 uint32_t FixedClockTickCount() { return uint32_t(g_State.now / 10000); }
 
 uint64_t FixedClockSystemTime() { return kSystemTimeOrigin + g_State.now; }

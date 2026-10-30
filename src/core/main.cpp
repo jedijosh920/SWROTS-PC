@@ -51,6 +51,7 @@
 #include "kernel/reboot.h"
 #include "kernel/sched.h"
 #include "net/rollback.h"
+#include "net/session.h"
 #include "xapi/xapi.h"
 #include "version.h"
 
@@ -225,6 +226,7 @@ static void StartGame(const void* launchData)
 static void ResetRuntime()
 {
     net::ResetRollbackForReboot();
+    net::OnlineReboot();
     audio::ResetForReboot();
     d3d::ResetForReboot();
     input::ResetPortsForReboot();
@@ -253,10 +255,15 @@ static void Run(void* reserveBase, unsigned reserveSize, void* contiguousBase, u
     // continues it.
     const std::wstring logDir = exeDir + L"\\logs";
     CreateDirectoryW(logDir.c_str(), nullptr);
-    const std::wstring logPath = logDir + L"\\swrots.log";
+    // Test switch SWROTS_INSTANCE=<name>: a second copy of the game running from the same folder (online tests on one
+    // PC) has its own log (swrots.<name>.log) and cache folder (cache.<name>).
+    wchar_t instance[64] = {};
+    GetEnvironmentVariableW(L"SWROTS_INSTANCE", instance, 64);
+    const std::wstring suffix = instance[0] ? std::wstring(L".") + instance : std::wstring();
+    const std::wstring logPath = logDir + L"\\swrots" + suffix + L".log";
     const bool relaunch = wcsstr(GetCommandLineW(), L"--relaunch") != nullptr;
     if (!relaunch)
-        MoveFileExW(logPath.c_str(), (logDir + L"\\swrots.previous.log").c_str(), MOVEFILE_REPLACE_EXISTING);
+        MoveFileExW(logPath.c_str(), (logDir + L"\\swrots" + suffix + L".previous.log").c_str(), MOVEFILE_REPLACE_EXISTING);
     LogInit(logPath.c_str(), console, relaunch);
     if (relaunch)
         LOG_INFO("---- The game was restarted to reboot (fallback) ----");
@@ -287,7 +294,7 @@ static void Run(void* reserveBase, unsigned reserveSize, void* contiguousBase, u
         paths.saves = testSaves;
         CreateDirectoryW(testSaves, nullptr);
     }
-    paths.cache = exeDir + L"\\cache";
+    paths.cache = exeDir + L"\\cache" + suffix;
     paths.mods = exeDir + L"\\mods";
     paths.logs = logDir;
     LOG_INFO("Game data: %ls", paths.gameData.c_str());

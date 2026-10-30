@@ -97,6 +97,9 @@ void ReadLivePad(int port, GamePad& pad);
 // the pad changes). Null for none.
 using PadSource = bool (*)(int port, GamePad& pad, uint32_t& packet);
 void SetPadSource(PadSource source);
+// An online match (net/session.h): ports 0 and 1 connected whatever the PC's devices, from the next start of the game
+// (the game looks at its ports when it starts).
+void SetOnlinePorts(bool on);
 
 // The game rebooted in-process: its controller ports are closed again.
 void ResetPortsForReboot();

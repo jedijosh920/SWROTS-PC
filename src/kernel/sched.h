@@ -50,6 +50,10 @@ void SchedWaitUntil(uint64_t time);
 using ApcFunction = void(__stdcall*)(void* context, void* ioStatus, ULONG reserved);
 void SchedQueueApc(ApcFunction routine, void* context, void* ioStatus);
 
+// A hash of every turn so far (which thread, at what time): two PCs whose games did the same have the same (netplay's
+// check that a match has not parted).
+uint64_t SchedTraceHash();
+
 // Statistics for the log: switches, waits that only the PC could end (not deterministic), clock jumps.
 void SchedLogStats();
 

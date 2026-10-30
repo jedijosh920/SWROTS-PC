@@ -29,6 +29,7 @@
 #include "game/resources.h"
 #include "game/roster.h"
 #include "input/controls.h"
+#include "kernel/clock.h"
 
 namespace swrots::game {
 
@@ -1043,7 +1044,7 @@ bool __fastcall Player1EventHook(uint8_t* screen, void*, int event)
 void __fastcall SelectFrameHook(uint8_t* screen, void*, uint32_t arg)
 {
     g_SelectScreen = screen;
-    g_SelectSeen = GetTickCount64();
+    g_SelectSeen = kernel::GameTickCount64();
     if (!DrawSelectStrip(screen, arg))
         reinterpret_cast<FrameFn>(uintptr_t(kSelectFrame))(screen, nullptr, arg);
 }

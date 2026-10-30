@@ -39,6 +39,7 @@
 #include "game/resources.h"
 #include "input/controls.h"
 #include "kernel/kernel.h"
+#include "kernel/clock.h"
 
 namespace swrots::game {
 
@@ -871,7 +872,7 @@ uint32_t __fastcall DrawQuadHook(void* self, void*, const float* topLeft, const 
     const uintptr_t from = reinterpret_cast<uintptr_t>(_ReturnAddress());
     const bool keyboard = input::KeyboardPrompts();
     static ULONGLONG lastSync = 0;
-    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG now = kernel::GameTickCount64();
     if (now - lastSync >= 100) { // the tip table, a few times a second
         lastSync = now;
         __try {

@@ -129,12 +129,32 @@ void FileSystemInit(const Paths& paths)
 // Host folder for an Xbox hard disk partition: 1 is the save drive (E:),
 // 3 the utility drive (Z:); the others (the system partition and the other
 // cache partitions) are created under the cache folder if a title uses them.
+static std::wstring g_SessionSaves, g_SessionUtility; // an online match's own (SetSessionDrives)
+
+void SetSessionDrives(const std::wstring& saves, const std::wstring& utility)
+{
+    g_SessionSaves = saves;
+    g_SessionUtility = utility;
+    for (const std::wstring& dir : { saves, utility })
+        if (!dir.empty())
+            CreateDirectoryW(dir.c_str(), nullptr);
+    if (!saves.empty()) {
+        CreateDirectoryW((saves + L"\\TDATA").c_str(), nullptr);
+        CreateDirectoryW((saves + L"\\UDATA").c_str(), nullptr);
+    }
+    LOG_INFO("Drives: the save drive is %ls, the utility drive %ls", (saves.empty() ? g_Saves : saves).c_str(),
+        (utility.empty() ? g_Cache : utility).c_str());
+}
+
+std::wstring SaveDrivePath() { return g_SessionSaves.empty() ? g_Saves : g_SessionSaves; }
+std::wstring UtilityDrivePath() { return g_SessionUtility.empty() ? g_Cache : g_SessionUtility; }
+
 static std::wstring PartitionRoot(const std::string& number)
 {
     if (number == "1")
-        return g_Saves;
+        return SaveDrivePath();
     if (number == "3")
-        return g_Cache;
+        return UtilityDrivePath();
     std::wstring root = g_Cache + L"\\partition" + Widen(number);
     CreateDirectoryW(root.c_str(), nullptr);
     return root;

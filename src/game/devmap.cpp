@@ -19,6 +19,7 @@
 #include "game/hvv.h"
 #include "game/resources.h"
 #include "kernel/kernel.h"
+#include "kernel/clock.h"
 
 namespace swrots::game {
 
@@ -150,7 +151,7 @@ bool DuelCamera(float m[16], float)
     const float eye[3] = { m[12], m[13], m[14] };
     // a little behind the game's eye (its forward row reversed): an eye right at a wall shows the wall's inside
     const float behind[3] = { eye[0] - m[8] * kDuelEyeRoom, eye[1] - m[9] * kDuelEyeRoom, eye[2] - m[10] * kDuelEyeRoom };
-    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG now = kernel::GameTickCount64();
     const bool gameGood = eye[1] > floorY + kDuelLowest && CustomMapLineOfSight(*g_Map, a, eye) &&
         CustomMapLineOfSight(*g_Map, b, eye) && CustomMapLineOfSight(*g_Map, focus, behind) &&
         // not at a fighter's shoulder (the game fades a character that near the eye)

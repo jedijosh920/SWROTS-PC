@@ -22,6 +22,13 @@ struct Paths {
     std::wstring logs;     // the game's own log (it writes D:\\Message.log), next to ours
 };
 
+// An online match's own save drive (E:) and utility drive (Z:) folders, in place of the player's (empty: the
+// player's again). For the files opened from then on: set before the match's start of the game.
+void SetSessionDrives(const std::wstring& saves, const std::wstring& utility);
+// The host folders the save drive and the utility drive are now.
+std::wstring SaveDrivePath();
+std::wstring UtilityDrivePath();
+
 // Order matters: Init once per process; BootInit each time the game image is (re)started,
 // with the launch data page handed over by a reboot (or null).
 void Init(const XbeFile& xbe, const Paths& paths);

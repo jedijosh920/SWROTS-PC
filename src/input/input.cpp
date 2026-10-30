@@ -120,10 +120,13 @@ static std::vector<Source> Sources()
 
 // Co-op (SetCoopInput): whether the keyboard alone is player 1, the host controllers then starting at port 1.
 static std::atomic<bool> g_CoopInput = false;
+// An online match (SetOnlinePorts): ports 0 and 1 are connected on both PCs whatever their devices, everything on
+// this PC plays its player (sampled as port 0), and player 2's shooting comes from the frame's own input.
+static std::atomic<bool> g_OnlinePorts = false;
 
 static bool KeyboardAlone(size_t controllers)
 {
-    if (!g_CoopInput)
+    if (!g_CoopInput || g_OnlinePorts)
         return false;
     const int mode = GetSettings().coopInput;
     return mode == 1 || (mode == 0 && controllers == 1);
@@ -146,8 +149,12 @@ void SetPlayer2ShootButton(bool active)
     g_Player2Shoot = active;
 }
 
+static std::atomic<bool> g_OnlineShooting = false;
+
 bool Player2Shooting()
 {
+    if (g_OnlinePorts)
+        return g_Player2Shoot && g_OnlineShooting;
     return g_Player2Shoot && GetTickCount64() - g_Player2ShotAt < 150;
 }
 
@@ -231,6 +238,8 @@ bool Player2HasController()
 // Connected-port mask: port 0 always, others by host controller presence.
 static ULONG ConnectedMask()
 {
+    if (g_OnlinePorts)
+        return 3;
     ULONG mask = TestPad2() ? 3 : 1;
     const size_t count = Sources().size();
     for (DWORD i = 1; i < 4; ++i)
@@ -714,6 +723,12 @@ static std::atomic<PadSource> g_PadSource{ nullptr };
 
 void SetPadSource(PadSource source) { g_PadSource = source; }
 
+void SetOnlinePorts(bool on)
+{
+    g_OnlinePorts = on;
+    g_OnlineShooting = false;
+}
+
 // What port `index`'s player holds now (the keyboard and mouse, controllers, the test inputs).
 static void ReadPortLive(DWORD index, XGamepad& g)
 {
@@ -803,6 +818,10 @@ static DWORD __stdcall XbInputGetState(HANDLE device, XInputState* state)
         GamePad pad;
         uint32_t packet = 0;
         if (source(int(index), pad, packet)) {
+            if (index == 1 && g_Player2Shoot) { // co-op's clone trooper: Y held is shooting; the game does not see it
+                g_OnlineShooting = pad.analog[XB_Y] > 0x40;
+                pad.analog[XB_Y] = 0;
+            }
             std::memcpy(&port->last, &pad, sizeof(pad));
             state->dwPacketNumber = packet;
             std::memcpy(&state->Gamepad, &pad, sizeof(pad));

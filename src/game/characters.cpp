@@ -26,6 +26,7 @@
 #include "game/hvv.h"
 #include "game/resources.h"
 #include "kernel/kernel.h"
+#include "kernel/clock.h"
 
 namespace swrots::game {
 
@@ -1668,7 +1669,7 @@ std::vector<uint8_t*> LevelCharacters()
     static std::vector<uint8_t*> kept;
     static uint8_t* keptScene = nullptr;
     ULONGLONG& keptAt = g_LevelCharactersAt;
-    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG now = kernel::GameTickCount64();
     uint8_t* scene = *reinterpret_cast<uint8_t**>(uintptr_t(0x0068D944)); // the game's services: a new boot, a new list
     if (keptAt && now - keptAt < kLevelCharactersKeepMs && scene == keptScene) {
         std::vector<uint8_t*> still;
@@ -1840,7 +1841,7 @@ int ClearReferencesTo(const std::vector<uint8_t*>& removed)
 
 int RepointPlayerReferences(uint8_t* from, uint8_t* to)
 {
-    const ULONGLONG started = GetTickCount64();
+    const ULONGLONG started = kernel::GameTickCount64();
     std::vector<std::pair<uintptr_t, size_t>> regions = kernel::GameMemoryRegions();
     regions.push_back({ 0x00612BE0, 0x0096E000 - 0x00612BE0 }); // the image's .data and .bss
     std::sort(regions.begin(), regions.end());
@@ -1924,7 +1925,7 @@ int RepointPlayerReferences(uint8_t* from, uint8_t* to)
     }
     LOG_INFO("Characters: %zu camera focus list(s) resolved again, %d HUD portrait(s) to pick again, %d "
         "instance id(s) moved, %d other pointer(s) to the old player left (its own parts); %zu candidates, %llu ms",
-        focusLists.size(), portraits, ids, kept, checked, GetTickCount64() - started);
+        focusLists.size(), portraits, ids, kept, checked, kernel::GameTickCount64() - started);
     g_ScanRegions = nullptr;
     g_ReadablePages = nullptr;
     return moved;
