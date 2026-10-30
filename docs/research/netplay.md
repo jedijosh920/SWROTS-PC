@@ -222,3 +222,43 @@ Next: the deterministic audio model, then SyncTest again on the developer map an
      source is filled by the worker's results), to check once 1 is done.
 - **Costs**: with the debug-register watch on, every write to a watched word raises an exception (tens of thousands
   per round), which slowed run 8 down threefold (save 15 ms instead of 4); the watch is a diagnostic only.
+
+## Lockstep first (decided 2026-10-30), rollback after
+
+Lockstep (each PC waits for the other's inputs, with 2-4 frames of input delay) needs no snapshots, but it needs the
+same thing at its root: **two PCs must start the match in the same state** and compute the same frames.
+
+### nettest: two runs compared
+
+`nettest record <name>` / `nettest compare <name>` (console) record the memory at the session's start and every
+frame's inputs and checksum, then compare a second run playing the same inputs. Two runs of the developer map duel
+on the same PC, one after the other:
+
+- **509 of 512 memory regions are at different addresses** in the two runs: the game's pool blocks on the PC's heap,
+  its virtual memory (placed by Windows), the netplay pool arena, the port's own state in `core.dll` (relocated by
+  ASLR: the port's jumps patched into the game's libraries differ too).
+- So **every frame differs**, from the first.
+
+Two PCs will differ in the same ways, and more: everything the game holds that the PC chose (an address, a handle,
+an object of the port's) differs, and so does everything that depended on timing while the level loaded (how many
+frames the loading screen lasted, which loading thread allocated first, where the sounds started during the load
+are).
+
+### What a deterministic match start needs
+
+The game's "machine" is the port's kernel and libraries, so they must behave like a deterministic machine from the
+moment the match's level starts loading (the in-process reboot into it), not only from a settled frame:
+
+1. **A fixed host address space**: `core.dll` at a fixed base; the pool arena at a fixed address and used from the
+   reboot on; the game's virtual memory placed by the port in a fixed range (first-fit) rather than by Windows; the
+   port's objects the game holds (sound objects, thread objects, kernel handles) from arenas or numbered by the port.
+2. **Deterministic scheduling of the game's threads**: they already share one CPU core; they must also take turns in
+   the same order on every PC: one game thread runs at a time and hands over only where it waits (a kernel wait, a
+   yield, an event), in an order the port decides, not when Windows preempts it. This is what makes the loading
+   threads, and the in-match worker thread that rollback replays (`0x79230`), deterministic.
+3. **The fixed clock from the reboot on**, moved by that scheduler (time passes when the game waits), and the sound
+   model on from the start.
+4. Then nettest again: the memory at the session's start should match, then the frames.
+
+This is the foundation of both netcodes (rollback also needs the PCs to agree); it is only switched on for a netplay
+match, so single-player games keep running exactly as they do.
