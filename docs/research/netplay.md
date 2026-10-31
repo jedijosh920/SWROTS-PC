@@ -328,3 +328,30 @@ recorded inputs have the same checksum as the recording, every one.** The schedu
 
 Next: the lockstep session itself (transport, the Online menu, the lobby), real-time pacing, and the stubs at fixed
 places per patch site (see the note above) so that two PCs that did different things before a match still agree.
+
+### Online play, first cut (net/session.cpp, net/transport.cpp; 2026-10-31)
+
+Console for now (`online host`, `online join <room code or host[:port]>`, `online leave`, `online`); the Online menu
+comes next. The host opens a UDP port (27960, `[Online] Port`), asks STUN for its public address (on by default;
+`[Online] Stun=0` or `SWROTS_ONLINE_STUN=0` off) and shows a room code (both its addresses, 21 characters, checked).
+The guest calls both addresses; both check they run the same build and the same game files (names and sizes, the
+small files and the mods whole); the host's profile (saved by the game for its next start), its saves and its gameplay
+settings go to the guest; both start the game again (the scheduler, fixed addresses, the match's own save and utility
+drives under `netplay\online`) at the main menu (the title without a profile). Every Swap each PC sends its input for
+3 frames ahead and waits for the other's; player 1 is the host, player 2 the guest; ports 0 and 1 are connected on
+both PCs. A hash of the scheduler's course and the game's data is compared every 60 frames
+(`SWROTS_ONLINE_CHECK_EVERY` for more); a desync writes the data checked to `netplay\desync-*.bin`. The pace follows
+the game's own time (the fixed clock).
+
+What a start of the game from the dashboard needed under the scheduler, found on the way:
+
+- the sound model's streams move on at every scheduler turn (they waited for rollback's frames);
+- resuming a thread yields the turn, and thread suspensions are the scheduler's (the movie player suspends itself);
+- the game's four rdtsc reads come from the fixed clock;
+- a critical section's owner is the thread object, not the host's thread id;
+- NtQueryVirtualMemory shows each placed reservation as its own allocation;
+- the hooks' trampolines are made again at every start (statics from the first start pointed at stubs a later start
+  had replaced: the front end's faults at 0x50965 and 0x532F0).
+
+Result on one PC (two copies of the game, `netplay-online.bat`, random test inputs on both): 4,200 frames in lockstep,
+from the intro through the title into the menus, checked every frame, the same on both.
