@@ -545,7 +545,8 @@ void SetItemX(std::vector<uint8_t>& data, size_t item, float x)
 }
 
 // The code screen: the game's Codes screen (its keyboard the port's), and in its footer a fourth prompt, Y Paste: a
-// copy of the Back prompt (its ButtonIcon's icon, 82 bytes after its name: 0 A, 1 X, 2 B, 3 Y) and of its text. The
+// copy of the Back prompt (its ButtonIcon's icon, 82 bytes after its name, item +0x84: 0 A, 1 Y, 2 B, 3 X; the
+// texture interfc\front_end\s_buttons_xbox_<letter>, 0x2C4C90) and of its text. The
 // prompts are spread again: Scroll, Select, Paste, Back.
 bool BuildCodeScreen(std::vector<uint8_t>& data)
 {
@@ -562,8 +563,10 @@ bool BuildCodeScreen(std::vector<uint8_t>& data)
         return false;
     }
     size_t iconBegin, iconEnd, textBegin, textEnd;
-    char off[8] = "";
-    if (GetEnvironmentVariableA("SWROTS_TEST_NOPASTE", off, sizeof(off)))
+    // The prompt hangs the front end's loading as made so far (2026-10-31: the shell stays on LOADING once it is in
+    // the screen); until that is understood it is only made for tests (SWROTS_TEST_PASTEMODE=y, icon0, icon3, text).
+    char mode[16] = "";
+    if (!GetEnvironmentVariableA("SWROTS_TEST_PASTEMODE", mode, sizeof(mode)))
         return true;
     if (!LeafItem(data, "backbutton", iconBegin, iconEnd) || !LeafItem(data, "cancel", textBegin, textEnd) ||
         iconBegin + 18 + 10 + 82 >= iconEnd) {
@@ -574,9 +577,7 @@ bool BuildCodeScreen(std::vector<uint8_t>& data)
     std::vector<uint8_t> text(data.begin() + textBegin, data.begin() + textEnd);
     size_t e = icon.size();
     MenuReplaceString(icon, 0, e, "backbutton", "pastebutton");
-    char mode[16] = "";
-    GetEnvironmentVariableA("SWROTS_TEST_PASTEMODE", mode, sizeof(mode));
-    icon[18 + 11 + 82] = std::strcmp(mode, "icon0") == 0 ? 0 : 3; // Y
+    icon[18 + 11 + 82] = std::strcmp(mode, "icon0") == 0 ? 0 : std::strcmp(mode, "icon3") == 0 ? 3 : 1; // Y
     e = text.size();
     MenuReplaceString(text, 0, e, "cancel", "pastetext");
     e = text.size();
@@ -642,8 +643,7 @@ void InstallOnlineMenu()
         LOG_WARN("Online menu: the code keyboard is not as expected; no Online entry");
         return;
     }
-    char off[8] = "";
-    if (SlotIs(kIntroVtable, 0, kIntroInit) && !GetEnvironmentVariableA("SWROTS_TEST_NOINTRO", off, sizeof(off))) {
+    if (SlotIs(kIntroVtable, 0, kIntroInit)) {
         const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(&IntroInit));
         PatchBytes(kIntroVtable, &hook, 4);
     }
