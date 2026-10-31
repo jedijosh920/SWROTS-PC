@@ -7,5 +7,7 @@ namespace swrots::debug {
 // ends, why, for a few seconds. In the game's own font (gamefont.h). Inside the overlay's ImGui frame, on the game
 // thread; drawn by this PC only (nothing of the game's own changes), so the two PCs may show different things.
 void DrawOnlineHud();
+// Whether there is a session (the overlay is drawn then).
+bool OnlineHudWanted();
 
 } // namespace swrots::debug

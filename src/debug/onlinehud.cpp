@@ -64,6 +64,11 @@ void Banner(const ImGuiViewport* vp, float u, float y, ImU32 colour, const std::
 
 } // namespace
 
+bool OnlineHudWanted()
+{
+    return net::OnlineStatus().phase != net::OnlinePhase::Off;
+}
+
 void DrawOnlineHud()
 {
     static net::OnlinePhase last = net::OnlinePhase::Off;

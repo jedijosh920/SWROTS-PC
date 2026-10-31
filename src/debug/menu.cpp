@@ -1102,8 +1102,8 @@ void HvvTab()
 
 bool OverlayShown()
 {
-    // HvV's screen, Cody's clones' marks, a mission's screen
-    return g_Ready && (game::HvvActive() || !game::CodyHelpers().empty() || game::MissionActive());
+    // HvV's screen, Cody's clones' marks, a mission's screen, online play's notices
+    return g_Ready && (game::HvvActive() || !game::CodyHelpers().empty() || game::MissionActive() || OnlineHudWanted());
 }
 
 void RenderMenu()

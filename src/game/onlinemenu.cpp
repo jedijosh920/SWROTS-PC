@@ -565,7 +565,7 @@ void InstallOnlineMenu()
     SetMenuText("IDS_PORT_ONLINE_CODE", L"Room Code");
     SetMenuText("IDS_PORT_ONLINE_STATUS", L"Status");
     SetMenuText("IDS_PORT_ONLINE_LEAVE", L"Leave");
-    SetMenuText("IDS_PORT_ONLINE_ENTER_CODE", L"Enter the Room Code (Y or Ctrl+V: paste)");
+    SetMenuText("IDS_PORT_ONLINE_ENTER_CODE", L"Room Code  (Y: Paste)");
     g_PasteDown = false;
     UpdateTexts();
     AddShellHandler("OnlineValue", &MakeValue);
