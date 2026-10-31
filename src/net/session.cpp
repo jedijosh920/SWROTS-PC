@@ -360,6 +360,7 @@ struct Session {
     int pingMs = -1;
     Clock::time_point paceStart;
     uint32_t paceFrame = 0;
+    uint64_t paceClock = 0; // the fixed clock at paceStart: the match runs at the game's own time
     struct Check {
         uint32_t frame;
         uint64_t hash;
@@ -1179,6 +1180,7 @@ void OnlineReboot()
     g_S.remoteContiguous = std::max(g_S.remoteContiguous, g_S.inputDelay); // the other may have started first
     g_S.paceFrame = 0;
     g_S.paceStart = Clock::now();
+    g_S.paceClock = 0; // set at the first frame
     g_S.phase = OnlinePhase::Playing;
     g_S.lastHeard = Clock::now();
     SetMessage(std::string("the match starts: player ") + (g_S.host ? "1 (host)" : "2 (guest)") + ", input delay " +
@@ -1262,6 +1264,7 @@ void OnlineFrame()
             SetMessage("playing");
         g_S.paceStart = Clock::now(); // the wait shifted the pace
         g_S.paceFrame = next;
+        g_S.paceClock = kernel::FixedClockPeek();
     }
     // The packet numbers (they move on when a pad changes), then the frame.
     for (int p = 0; p < 2; ++p)
@@ -1269,18 +1272,23 @@ void OnlineFrame()
             ++g_S.packets[p];
     g_S.frame = next;
 
-    // The pace: frames at the match's rate; a little slower while this PC is ahead of the other.
+    // The pace: the game's own time (the fixed clock, which its vertical blanks and frame limiter move on) shown at
+    // the PC's; a little slower while this PC is ahead of the other.
     const auto period = std::chrono::microseconds(1000000 / g_S.fps);
+    const uint64_t gameNow = kernel::FixedClockPeek();
+    if (!g_S.paceClock)
+        g_S.paceClock = gameNow;
     const uint32_t remoteFrame = g_S.remoteLatest > g_S.inputDelay ? g_S.remoteLatest - g_S.inputDelay : 0;
     if (next > remoteFrame + 1)
         g_S.paceStart += period / 4; // this PC is ahead: it slows down until the other catches up
-    const auto target = g_S.paceStart + period * (next - g_S.paceFrame);
+    const auto target = g_S.paceStart + std::chrono::microseconds((gameNow - g_S.paceClock) / 10);
     lock.unlock();
     const auto now = Clock::now();
-    if (target > now + period * 4 || now > target + period * 4) { // far off (a load): the pace starts again here
-        std::lock_guard<std::mutex> relock(g_S.lock);
+    if (target > now + std::chrono::milliseconds(150) || now > target + std::chrono::milliseconds(150)) {
+        std::lock_guard<std::mutex> relock(g_S.lock); // far off (a load): the pace starts again here
         g_S.paceStart = now;
         g_S.paceFrame = next;
+        g_S.paceClock = gameNow;
         return;
     }
     while (Clock::now() < target) {
