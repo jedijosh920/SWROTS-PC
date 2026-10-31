@@ -372,3 +372,13 @@ Settings screen: **Host Game**, **Join Game**, **Room Code**, **Status**, **Leav
   nothing, and Leave ends the session on both.
 - Over the picture (the overlay, drawn by each PC alone): a small `ONLINE P1 (HOST) 23 MS` corner line in a match, a
   banner while the match starts, a red one on a desync, and why a session ended for 10 s.
+
+UPnP (net/upnp.cpp): before STUN, the host asks its router (SSDP, then the WANIPConnection/WANPPPConnection
+service's AddPortMapping) to open its UDP port, the same port outside, leased for 6 hours (permanent only on routers
+that take no other, error 725), taken back when the session ends; `[Online] Upnp=0` or `SWROTS_ONLINE_UPNP=0` turns it
+off. The room code then holds the mapped port at the address STUN saw (or the router's own).
+
+Result on one PC (2026-10-31, `online-ui.bat`, both copies driven by scripted presses): Online screen, Host Game
+(UPnP mapped the port on the test PC's router; the code shown and copied), the guest's Join Game, the code pasted with Y
+on the game's keyboard, Done: joined, profile sent, both started again at the main menu (which shows the Online row)
+and played 3,000+ frames in lockstep with the same checks.
