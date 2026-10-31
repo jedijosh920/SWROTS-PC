@@ -503,11 +503,10 @@ NTSTATUS XBAPI NtFreeVirtualMemory(void** BaseAddress, ULONG* FreeSize, ULONG Fr
             *FreeSize = it->second;
             g_Placed.erase(it);
         } else {
-            // A decommit in the fixed range leaves the pages committed as they are. Under netplay the front end
-            // faulted on a live object whose pages a heap the game builds inside another heap's block had decommitted
-            // (0x2408D000+0x1A000, then 0x532F0 reading 0x240A3590): kept, the object stays whole, as the same calls
-            // happen to leave it on Windows' own addresses.
-            (void)FreeSize;
+            const uintptr_t begin = uintptr_t(*BaseAddress) & ~uintptr_t(0xFFF);
+            const uintptr_t end = *FreeSize ? (uintptr_t(*BaseAddress) + *FreeSize + 0xFFF) & ~uintptr_t(0xFFF)
+                                            : it->first + it->second;
+            VirtualFree(reinterpret_cast<void*>(begin), end - begin, MEM_DECOMMIT);
         }
         ++g_LayoutGeneration;
         return xbox::X_STATUS_SUCCESS;
