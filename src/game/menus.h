@@ -60,4 +60,15 @@ bool MenuRowBlock(const std::vector<uint8_t>& data, const std::string& name, siz
 // An item's position (x, y) in a block that starts with the item.
 bool MenuItemPosition(std::vector<uint8_t>& block, float* x, float* y, bool write);
 
+// A front-end screen of the port's own made from the game's Settings screen (settings.xbl_xml: rows from y 138, 24
+// apart, each with a veil behind it): `rows` in order, a value row a copy of Subtitles (an On/Off control) with the
+// action `valueAction`, a button a copy of Codes with `buttonAction`; the title `titleId`. A row's name tells its
+// handler which it is (handler +8 the item, its +4 the name's key, MenuKey).
+struct ShellScreenRow {
+    std::string name, textId;
+    bool button;
+};
+bool BuildSettingsScreen(std::vector<uint8_t>& data, const char* screenName, const std::vector<ShellScreenRow>& rows,
+    const char* titleId, const char* valueAction, const char* buttonAction);
+
 } // namespace swrots::game

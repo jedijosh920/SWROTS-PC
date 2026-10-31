@@ -56,8 +56,38 @@ uint8_t Crc8(const uint8_t* data, size_t size)
     return crc;
 }
 
-constexpr size_t kCodeBytes = 13; // public ip and port, local ip and port, check
-constexpr size_t kCodeChars = 21; // 104 bits in 5-bit letters (105)
+// A room code's 75 bits (15 letters, the game's code keyboard holds 15): the public address and port (48), the low
+// half of the address on its network (16; the guest's own network gives the high half: a home network's addresses
+// share it), whether the host has one (1), whether its port there is the public one (1, else the guest's [Online]
+// Port), a spare bit, and a check (8) over the 67 before.
+constexpr size_t kCodeChars = 15;
+constexpr int kCodeBits = 75, kCheckedBits = 67;
+
+struct Bits {
+    uint8_t bytes[10] = {};
+    int at = 0;
+    void Put(uint32_t value, int count)
+    {
+        for (int i = count - 1; i >= 0; --i, ++at)
+            if (value >> i & 1)
+                bytes[at / 8] |= uint8_t(0x80 >> (at % 8));
+    }
+    uint32_t Get(int count)
+    {
+        uint32_t v = 0;
+        for (int i = 0; i < count; ++i, ++at)
+            v = v << 1 | uint32_t(bytes[at / 8] >> (7 - at % 8) & 1);
+        return v;
+    }
+};
+
+uint8_t CheckOf(const Bits& b)
+{
+    Bits copy = b; // the checked bits alone (the rest cleared)
+    for (int i = kCheckedBits; i < 80; ++i)
+        copy.bytes[i / 8] &= uint8_t(~(0x80 >> (i % 8)));
+    return Crc8(copy.bytes, 9);
+}
 
 } // namespace
 
@@ -257,61 +287,53 @@ bool StunPublicAddress(UdpSocket& socket, const Endpoint& server, Endpoint& out,
 
 std::string MakeRoomCode(const Endpoint& publicAddress, const Endpoint& localAddress)
 {
-    uint8_t bytes[kCodeBytes] = {};
-    for (int i = 0; i < 4; ++i)
-        bytes[i] = uint8_t(publicAddress.ip >> (24 - 8 * i));
-    bytes[4] = uint8_t(publicAddress.port >> 8);
-    bytes[5] = uint8_t(publicAddress.port);
-    for (int i = 0; i < 4; ++i)
-        bytes[6 + i] = uint8_t(localAddress.ip >> (24 - 8 * i));
-    bytes[10] = uint8_t(localAddress.port >> 8);
-    bytes[11] = uint8_t(localAddress.port);
-    bytes[12] = Crc8(bytes, 12);
+    Bits b;
+    b.Put(publicAddress.ip, 32);
+    b.Put(publicAddress.port, 16);
+    b.Put(localAddress.ip & 0xFFFF, 16);
+    b.Put(localAddress.Valid() ? 1 : 0, 1);
+    b.Put(localAddress.port == publicAddress.port ? 1 : 0, 1);
+    b.Put(0, 1);
+    b.Put(CheckOf(b), 8);
+    b.at = 0;
     std::string code;
-    uint32_t buffer = 0;
-    int bits = 0;
-    size_t byte = 0;
     for (size_t c = 0; c < kCodeChars; ++c) {
-        while (bits < 5) {
-            buffer = (buffer << 8) | (byte < kCodeBytes ? bytes[byte] : 0);
-            ++byte;
-            bits += 8;
-        }
-        code += kAlphabet[(buffer >> (bits - 5)) & 31];
-        bits -= 5;
-        if (c % 7 == 6 && c + 1 < kCodeChars)
+        code += kAlphabet[b.Get(5)];
+        if (c % 5 == 4 && c + 1 < kCodeChars)
             code += '-';
     }
     return code;
 }
 
-bool ReadRoomCode(const std::string& code, Endpoint& publicAddress, Endpoint& localAddress)
+bool ReadRoomCode(const std::string& code, uint16_t defaultPort, Endpoint& publicAddress, Endpoint& localAddress)
 {
-    uint8_t bytes[kCodeBytes + 1] = {};
-    uint32_t buffer = 0;
-    int bits = 0;
-    size_t byte = 0, chars = 0;
+    Bits b;
+    size_t chars = 0;
     for (char c : code) {
         if (c == '-' || c == ' ' || c == '\t' || c == '\r' || c == '\n')
             continue;
         const int v = AlphabetValue(c);
-        if (v < 0)
+        if (v < 0 || ++chars > kCodeChars)
             return false;
-        ++chars;
-        buffer = (buffer << 5) | uint32_t(v);
-        bits += 5;
-        if (bits >= 8) {
-            if (byte < sizeof(bytes))
-                bytes[byte++] = uint8_t(buffer >> (bits - 8));
-            bits -= 8;
-        }
+        b.Put(uint32_t(v), 5);
     }
-    if (chars != kCodeChars || Crc8(bytes, 12) != bytes[12])
+    if (chars != kCodeChars)
         return false;
-    publicAddress.ip = uint32_t(bytes[0]) << 24 | uint32_t(bytes[1]) << 16 | uint32_t(bytes[2]) << 8 | bytes[3];
-    publicAddress.port = uint16_t(bytes[4] << 8 | bytes[5]);
-    localAddress.ip = uint32_t(bytes[6]) << 24 | uint32_t(bytes[7]) << 16 | uint32_t(bytes[8]) << 8 | bytes[9];
-    localAddress.port = uint16_t(bytes[10] << 8 | bytes[11]);
+    b.at = 0;
+    publicAddress.ip = b.Get(32);
+    publicAddress.port = uint16_t(b.Get(16));
+    const uint32_t low = b.Get(16);
+    const bool hasLocal = b.Get(1) != 0, samePort = b.Get(1) != 0;
+    b.Get(1);
+    const uint8_t check = uint8_t(b.Get(8));
+    if (check != CheckOf(b))
+        return false;
+    localAddress = {};
+    const uint32_t own = LocalAddress();
+    if (hasLocal && own) {
+        localAddress.ip = (own & 0xFFFF0000u) | low;
+        localAddress.port = samePort ? publicAddress.port : defaultPort;
+    }
     return publicAddress.Valid() || localAddress.Valid();
 }
 

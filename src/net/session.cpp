@@ -1098,7 +1098,9 @@ bool OnlineJoin(const std::string& codeOrAddress)
     }
     std::lock_guard<std::mutex> lock(g_S.lock);
     Endpoint publicAddress, localAddress, direct;
-    if (ReadRoomCode(codeOrAddress, publicAddress, localAddress)) {
+    const std::wstring ini = ExeDirectory() + L"\\settings.ini";
+    const uint16_t port = uint16_t(GetPrivateProfileIntW(L"Online", L"Port", kDefaultPort, ini.c_str()));
+    if (ReadRoomCode(codeOrAddress, port, publicAddress, localAddress)) {
         if (localAddress.Valid())
             g_S.candidates.push_back(localAddress);
         if (publicAddress.Valid() && publicAddress != localAddress)

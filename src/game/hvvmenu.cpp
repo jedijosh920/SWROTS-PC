@@ -26,6 +26,7 @@
 #include "game/hvv.h"
 #include "game/menus.h"
 #include "game/missionsmenu.h"
+#include "game/onlinemenu.h"
 #include "game/resources.h"
 #include "game/roster.h"
 #include "input/controls.h"
@@ -46,7 +47,6 @@ constexpr const char* kSetupScreen = "hvv_setup";
 constexpr const char* kLineupScreen = "hvv_lineup";
 constexpr const char* kSetupFile = "interfc\\front_end\\xml\\hvv_setup.xml";
 constexpr const char* kLineupFile = "interfc\\front_end\\xml\\hvv_lineup.xml";
-constexpr const char* kSettingsFile = "interfc\\front_end\\xml\\settings.xml";
 constexpr float kRowStep = 24.0f; // the submenu's rows
 
 constexpr uint32_t kSwitchButtonVtable = 0x005D5580;
@@ -162,6 +162,7 @@ void PatchMainMenuResource(std::vector<uint8_t>& data)
     if (PatchMainMenu(copy))
         data.swap(copy);
     PatchMissionsMainMenu(data); // Single Player > Custom Missions (missionsmenu.cpp)
+    PatchMainMenuOnline(data); // the Online row (onlinemenu.h): the same resource
 }
 
 using EventFn = bool(__fastcall*)(uint8_t*, void*, int, int);
@@ -418,10 +419,7 @@ std::string MapChoice()
 //     drawn and the others' links (the item's up and down neighbours, the keys of their names at +0x18 and +0x1C) are
 //     set for the team size as they draw.
 // A row's name tells the handlers which it is (handler +8 the item, its +4 the name's key).
-struct ScreenRow {
-    std::string name, textId;
-    bool button;
-};
+using ScreenRow = ShellScreenRow;
 
 std::vector<ScreenRow> SetupRows()
 {
@@ -447,164 +445,15 @@ std::vector<ScreenRow> LineupRows()
     return rows;
 }
 
-constexpr const char* kSettingsRows[] = { "controller", "vibration", "subtitles", "musicvolume", "effectsvolume",
-    "dialoguevolume", "difficulty", "codes", "restoredefaults" };
-constexpr const char* kSettingsVeils[] = { "controllerveil", "vibrationveil", "subtitlesveil", "mvolumeveil",
-    "evolumeveil", "dvolumeveil", "difficultyveil", "codesveil", "restoreveil" };
-constexpr float kSettingsStep = 24.0f;
-
-// A top-level item without children (a veil): where it starts and where the next item starts.
-bool ItemBlock(const std::vector<uint8_t>& data, const std::string& name, size_t& begin, size_t& end)
-{
-    const std::vector<uint8_t> item = MenuString("screenItem");
-    std::vector<uint8_t> what = item;
-    const std::vector<uint8_t> n = MenuString(name);
-    what.insert(what.end(), n.begin(), n.end());
-    begin = MenuFind(data, what, 0, data.size());
-    if (begin == std::string::npos)
-        return false;
-    end = MenuFind(data, item, begin + 1, data.size());
-    return end != std::string::npos;
-}
-
-// A row from a template row: its name, text, neighbours and action (the template's in the order they come: its name,
-// text id, down, up, [the Codes row's screen,] action).
-bool MakeRow(std::vector<uint8_t>& row, const std::string& templateName, const std::string& textId,
-    const std::string& down, const std::string& up, const std::string& action, const ScreenRow& r, const std::string& rowDown,
-    const std::string& rowUp, bool button)
-{
-    const size_t nameAt = MenuString("screenItem").size();
-    size_t end = row.size();
-    bool ok = MenuReplaceString(row, 0, end, templateName, r.name) &&
-              MenuReplaceString(row, nameAt + 4, end, textId, r.textId) &&
-              MenuReplaceString(row, nameAt + 4, end, down, rowDown) &&
-              MenuReplaceString(row, nameAt + 4, end, up, rowUp);
-    if (ok && button) // the Codes row's screen: none of the port's rows goes to it
-        ok = MenuReplaceString(row, nameAt + 4, end, templateName, r.name);
-    return ok && MenuReplaceString(row, nameAt + 4, end, action, button ? "HvvButton" : "HvvValue");
-}
-
-bool BuildScreen(std::vector<uint8_t>& data, const char* screenName, const std::vector<ScreenRow>& rows,
-    const char* titleId)
-{
-    if (!ReadDiscResource(kSettingsFile, data))
-        return false;
-    size_t valueBegin, valueEnd, buttonBegin, buttonEnd, veilBegin, veilEnd;
-    if (!MenuRowBlock(data, "subtitles", valueBegin, valueEnd) || !MenuRowBlock(data, "codes", buttonBegin, buttonEnd) ||
-        !ItemBlock(data, "restoreveil", veilBegin, veilEnd)) {
-        LOG_WARN("HvV menu: the Settings screen is not as expected; no %s screen", screenName);
-        return false;
-    }
-    const std::vector<uint8_t> valueRow(data.begin() + valueBegin, data.begin() + valueEnd);
-    const std::vector<uint8_t> buttonRow(data.begin() + buttonBegin, data.begin() + buttonEnd);
-    const std::vector<uint8_t> veil(data.begin() + veilBegin, data.begin() + veilEnd);
-    const int count = int(rows.size()), settingsRows = int(std::size(kSettingsRows));
-    int itemDelta = 0;
-    // more rows than Settings has: copies after its last row, and a veil each after its last veil (their places set
-    // below with the others)
-    for (int i = settingsRows; i < count; ++i) {
-        size_t begin, end;
-        if (!MenuRowBlock(data, kSettingsRows[settingsRows - 1], begin, end))
-            return false;
-        data.insert(data.begin() + end, buttonRow.begin(), buttonRow.end());
-        if (!ItemBlock(data, kSettingsVeils[settingsRows - 1], begin, end))
-            return false;
-        std::vector<uint8_t> v = veil;
-        float x, y;
-        MenuItemPosition(v, &x, &y, false);
-        y += kSettingsStep * float(i - settingsRows + 1);
-        MenuItemPosition(v, &x, &y, true);
-        size_t vEnd = v.size();
-        MenuReplaceString(v, 0, vEnd, kSettingsVeils[settingsRows - 1], "hvvveil" + std::to_string(i));
-        data.insert(data.begin() + end, v.begin(), v.end());
-        itemDelta += 2;
-    }
-    // the rows, from the last back (a change moves only what follows it): the first nine replace Settings' rows in
-    // place, the extra copies are replaced from the end
-    std::vector<std::pair<size_t, size_t>> blocks;
-    {
-        size_t at = 0;
-        for (int i = 0; i < std::max(count, settingsRows); ++i) {
-            size_t begin, end;
-            const std::string name = i < settingsRows ? kSettingsRows[i] : "codes";
-            if (i < settingsRows) {
-                if (!MenuRowBlock(data, name, begin, end))
-                    return false;
-            } else { // the copies: the next "codes" row after the last
-                const std::vector<uint8_t> item = MenuString("screenItem");
-                std::vector<uint8_t> what = item;
-                const std::vector<uint8_t> n = MenuString("codes");
-                what.insert(what.end(), n.begin(), n.end());
-                begin = MenuFind(data, what, at, data.size());
-                if (begin == std::string::npos)
-                    return false;
-                const size_t child = MenuFind(data, item, begin + 1, data.size());
-                end = child == std::string::npos ? std::string::npos : MenuFind(data, item, child + 1, data.size());
-                if (end == std::string::npos)
-                    return false;
-            }
-            at = end;
-            blocks.push_back({ begin, end });
-        }
-    }
-    float x = 106.0f, firstY = 138.0f;
-    for (int i = int(blocks.size()) - 1; i >= 0; --i) {
-        const size_t begin = blocks[size_t(i)].first, end = blocks[size_t(i)].second;
-        if (i >= count) { // a Settings row the screen does not need (its veil goes after: the veils come first)
-            data.erase(data.begin() + begin, data.begin() + end);
-            itemDelta -= 1;
-            continue;
-        }
-        const ScreenRow& r = rows[size_t(i)];
-        std::vector<uint8_t> row = r.button ? buttonRow : valueRow;
-        const std::string down = rows[size_t((i + 1) % count)].name, up = rows[size_t((i + count - 1) % count)].name;
-        const bool ok = r.button ? MakeRow(row, "codes", "IDS_SHELL_CODES", "restoredefaults", "difficulty",
-                                       "SettingsScreenButton", r, down, up, true)
-                                 : MakeRow(row, "subtitles", "IDS_SHELL_SUBTITLES", "musicvolume", "vibration",
-                                       "SettingsScreenOnOffControl", r, down, up, false);
-        if (!ok) {
-            LOG_WARN("HvV menu: the Settings screen's rows are not as expected; no %s screen", screenName);
-            return false;
-        }
-        float y = firstY + kSettingsStep * float(i);
-        MenuItemPosition(row, &x, &y, true);
-        data.erase(data.begin() + begin, data.begin() + end);
-        data.insert(data.begin() + begin, row.begin(), row.end());
-    }
-    for (int i = count; i < settingsRows; ++i) {
-        size_t vb, ve;
-        if (ItemBlock(data, kSettingsVeils[i], vb, ve)) {
-            data.erase(data.begin() + vb, data.begin() + ve);
-            itemDelta -= 1;
-        }
-    }
-    // the screen's name and its first item, then its number of items (after them), then the title
-    size_t end = 64;
-    if (!MenuReplaceString(data, 0, end, "settings", screenName) ||
-        !MenuReplaceString(data, 0, end, "controller", rows[0].name)) {
-        LOG_WARN("HvV menu: the Settings screen's header is not as expected; no %s screen", screenName);
-        return false;
-    }
-    const size_t countAt = 4 + MenuString(screenName).size() + MenuString(rows[0].name).size();
-    uint32_t items;
-    std::memcpy(&items, data.data() + countAt, 4);
-    items = uint32_t(int(items) + itemDelta);
-    std::memcpy(data.data() + countAt, &items, 4);
-    end = data.size();
-    if (!MenuReplaceString(data, 0, end, "IDS_SETTINGS", titleId))
-        LOG_WARN("HvV menu: the Settings screen's title is not as expected");
-    return true;
-}
-
 bool GenerateScreens(const std::string& lowerName, std::vector<uint8_t>& data)
 {
     bool ok = false;
     if (lowerName == kSetupFile)
-        ok = BuildScreen(data, kSetupScreen, SetupRows(), "IDS_PORT_HVV_TITLE");
+        ok = BuildSettingsScreen(data, kSetupScreen, SetupRows(), "IDS_PORT_HVV_TITLE", "HvvValue", "HvvButton");
     else if (lowerName == kLineupFile)
-        ok = BuildScreen(data, kLineupScreen, LineupRows(), "IDS_PORT_HVV_LINEUP_TITLE");
+        ok = BuildSettingsScreen(data, kLineupScreen, LineupRows(), "IDS_PORT_HVV_LINEUP_TITLE", "HvvValue", "HvvButton");
     else if (lowerName == kBfFile)
-        ok = BuildScreen(data, kBfScreen, BfRows(), "IDS_PORT_BF_TITLE");
+        ok = BuildSettingsScreen(data, kBfScreen, BfRows(), "IDS_PORT_BF_TITLE", "HvvValue", "HvvButton");
     return ok;
 }
 

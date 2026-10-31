@@ -55,10 +55,12 @@ uint32_t LocalAddress();
 // behind the router. Datagrams that are not the answer are dropped while it waits. False after `timeoutMs`.
 bool StunPublicAddress(UdpSocket& socket, const Endpoint& server, Endpoint& out, uint32_t timeoutMs);
 
-// Room codes: the host's public address and its address on its network, as 21 letters and digits in groups of seven
-// (e.g. "K3QF7ZM-A0WXRD2-PE5TQ9H"), with a check: mistyped codes are refused. Lower case, the letters I/L for 1 and
-// O for 0, spaces and dashes are accepted when read.
+// Room codes: the host's public address and (the low half of) its address on its network, as 15 letters and digits
+// in groups of five (e.g. "K3QF7-ZMA0W-XRD2P"; the game's code keyboard holds 15), with a check: mistyped codes are
+// refused. Lower case, the letters I/L for 1 and O for 0, spaces and dashes are accepted when read. The local
+// address read takes its high half from this PC's (the same home network); its port is the host's public one or
+// `defaultPort`.
 std::string MakeRoomCode(const Endpoint& publicAddress, const Endpoint& localAddress);
-bool ReadRoomCode(const std::string& code, Endpoint& publicAddress, Endpoint& localAddress);
+bool ReadRoomCode(const std::string& code, uint16_t defaultPort, Endpoint& publicAddress, Endpoint& localAddress);
 
 } // namespace swrots::net
