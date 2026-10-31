@@ -331,9 +331,10 @@ places per patch site (see the note above) so that two PCs that did different th
 
 ### Online play, first cut (net/session.cpp, net/transport.cpp; 2026-10-31)
 
-Console for now (`online host`, `online join <room code or host[:port]>`, `online leave`, `online`); the Online menu
-comes next. The host opens a UDP port (27960, `[Online] Port`), asks STUN for its public address (on by default;
-`[Online] Stun=0` or `SWROTS_ONLINE_STUN=0` off) and shows a room code (both its addresses, 21 characters, checked).
+From the main menu's Online entry (next section) or the console (`online host`, `online join <room code or
+host[:port]>`, `online leave`, `online`). The host opens a UDP port (27960, `[Online] Port`), asks STUN for its public address (on by default;
+`[Online] Stun=0` or `SWROTS_ONLINE_STUN=0` off) and shows a room code (15 characters, checked: its public address and port, the low half of its address on its
+network, whether that port is the same; the guest takes the high half from its own address, both on one home network).
 The guest calls both addresses; both check they run the same build and the same game files (names and sizes, the
 small files and the mods whole); the host's profile (saved by the game for its next start), its saves and its gameplay
 settings go to the guest; both start the game again (the scheduler, fixed addresses, the match's own save and utility
@@ -355,3 +356,19 @@ What a start of the game from the dashboard needed under the scheduler, found on
 
 Result on one PC (two copies of the game, `netplay-online.bat`, random test inputs on both): 4,200 frames in lockstep,
 from the intro through the title into the menus, checked every frame, the same on both.
+
+### The Online menu (game/onlinemenu.cpp, debug/onlinehud.cpp; 2026-10-31)
+
+The main menu gets a row **Online** between Multi Player and Settings (a copy of Settings' row; Settings and Features
+move one row down, onto the main menu's spare fifth veil). It opens the port's screen `online`, built from the
+Settings screen: **Host Game**, **Join Game**, **Room Code**, **Status**, **Leave**.
+
+- Host Game opens a room; the code shows on the Room Code row and goes to the clipboard (A on that row copies it again).
+- Join Game opens the game's own code keyboard (Settings > Codes: A-Z, 0-9, Back, Space, Done) on a screen
+  `online_code`; its keyboard is the game's with the port's Done (joins with the code typed, or refuses it with the
+  game's error sound) and holds 15 letters (the game's text buffer holds 16 characters). **Ctrl+V** or **Y** pastes
+  a code from the clipboard. The code's 15 characters were chosen for that keyboard.
+- In a match (the screens are then played on both PCs alike), the screen shows the same texts on both, Host and Join do
+  nothing, and Leave ends the session on both.
+- Over the picture (the overlay, drawn by each PC alone): a small `ONLINE P1 (HOST) 23 MS` corner line in a match, a
+  banner while the match starts, a red one on a desync, and why a session ended for 10 s.
