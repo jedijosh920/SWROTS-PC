@@ -261,8 +261,29 @@ static void Run(void* reserveBase, unsigned reserveSize, void* contiguousBase, u
     CreateDirectoryW(logDir.c_str(), nullptr);
     // Test switch SWROTS_INSTANCE=<name>: a second copy of the game running from the same folder (online tests on one
     // PC) has its own log (swrots.<name>.log) and cache folder (cache.<name>).
+    // A copy started while another runs from the same folder (two copies on one PC, e.g. trying online play alone)
+    // takes the next free name itself ("2", "3"...): two copies sharing the log, cache and online play's folder
+    // break each other (one's match start deletes the other's match folder).
     wchar_t instance[64] = {};
     GetEnvironmentVariableW(L"SWROTS_INSTANCE", instance, 64);
+    {
+        std::wstring key = exeDir;
+        for (wchar_t& c : key)
+            c = c == L'\\' || c == L':' ? L'_' : wchar_t(towlower(c));
+        for (int n = 1; n <= 8; ++n) {
+            const std::wstring name = instance[0] ? std::wstring(instance) : (n == 1 ? std::wstring() : std::to_wstring(n));
+            HANDLE mutex = CreateMutexW(nullptr, TRUE, (L"Local\\SWROTS-PC-" + key + L"-" + name).c_str());
+            const bool taken = mutex && GetLastError() == ERROR_ALREADY_EXISTS;
+            if (!taken || instance[0]) { // kept for the process's life
+                if (!instance[0] && !name.empty()) {
+                    wcsncpy_s(instance, name.c_str(), _TRUNCATE);
+                    SetEnvironmentVariableW(L"SWROTS_INSTANCE", instance); // for the rest (online play's folders)
+                }
+                break;
+            }
+            CloseHandle(mutex);
+        }
+    }
     const std::wstring suffix = instance[0] ? std::wstring(L".") + instance : std::wstring();
     const std::wstring logPath = logDir + L"\\swrots" + suffix + L".log";
     const bool relaunch = wcsstr(GetCommandLineW(), L"--relaunch") != nullptr;

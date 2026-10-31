@@ -119,6 +119,44 @@ bool PatchRows(std::vector<uint8_t>& data)
     return true;
 }
 
+// --- The main menu's intro ------------------------------------------------------------------------------------------
+// The main menu's intro (MainMenuIntro, vtable 0x5D55F0) animates its rows: its init (slot 0, 0x2CCBB0) lists their
+// handlers (each row item's +0x80) in a vector at +0x3C ({capacity, count, data}; push 0x13130), found by name
+// (0xD40C0, thiscall on the screen [[+8]+0x24], (const char*) -> item): Single Player, Multi Player, Settings,
+// Features. The Online row is put in that list after Multi Player, so it comes in with the others.
+constexpr uint32_t kIntroVtable = 0x005D55F0;
+constexpr uint32_t kIntroInit = 0x002CCBB0;
+constexpr uint32_t kFindItem = 0x000D40C0;
+constexpr uint32_t kVectorPush = 0x00013130;
+
+void __fastcall IntroInit(uint8_t* intro, void*)
+{
+    reinterpret_cast<void(__fastcall*)(uint8_t*, void*)>(uintptr_t(kIntroInit))(intro, nullptr);
+    __try {
+        uint8_t* owner = *reinterpret_cast<uint8_t**>(intro + 8);
+        uint8_t* screen = owner ? *reinterpret_cast<uint8_t**>(owner + 0x24) : nullptr;
+        uint8_t* item = screen ? reinterpret_cast<uint8_t*(__fastcall*)(uint8_t*, void*, const char*)>(
+                                     uintptr_t(kFindItem))(screen, nullptr, kRowName)
+                               : nullptr;
+        if (!item)
+            return;
+        uint32_t handler = *reinterpret_cast<uint32_t*>(item + 0x80);
+        uint8_t* list = intro + 0x3C;
+        reinterpret_cast<void(__fastcall*)(uint8_t*, void*, const uint32_t*)>(uintptr_t(kVectorPush))(list, nullptr,
+            &handler);
+        const uint32_t count = *reinterpret_cast<uint32_t*>(list + 4);
+        uint32_t* data = *reinterpret_cast<uint32_t**>(list + 8);
+        if (count >= 3 && data) { // after Multi Player: [sp, mp, online, settings, features]
+            const uint32_t last = data[count - 1];
+            for (uint32_t i = count - 1; i > 2; --i)
+                data[i] = data[i - 1];
+            data[2] = last;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        LOG_WARN("Online menu: the main menu's intro is not as expected");
+    }
+}
+
 // --- The screens' texts ----------------------------------------------------------------------------------------------
 std::string g_Typed;      // the guest's code, as typed
 std::string g_Copied;     // the room code last put on the clipboard
@@ -486,6 +524,29 @@ uint8_t* MakeKeyboard()
 uint8_t* __fastcall MakeKeyboardSlot(uint8_t*, void*) { return MakeKeyboard(); }
 
 // --- The screens -----------------------------------------------------------------------------------------------------
+// A top-level item without children: where it starts and where the next item starts.
+bool LeafItem(const std::vector<uint8_t>& data, const std::string& name, size_t& begin, size_t& end)
+{
+    const std::vector<uint8_t> item = MenuString("screenItem");
+    std::vector<uint8_t> what = item;
+    const std::vector<uint8_t> n = MenuString(name);
+    what.insert(what.end(), n.begin(), n.end());
+    begin = MenuFind(data, what, 0, data.size());
+    if (begin == std::string::npos)
+        return false;
+    end = MenuFind(data, item, begin + 1, data.size());
+    return end != std::string::npos;
+}
+
+// An item's x (after "screenItem", its name and a u32).
+void SetItemX(std::vector<uint8_t>& data, size_t item, float x)
+{
+    std::memcpy(data.data() + ItemY(data, item) - 4, &x, 4);
+}
+
+// The code screen: the game's Codes screen (its keyboard the port's), and in its footer a fourth prompt, Y Paste: a
+// copy of the Back prompt (its ButtonIcon's icon, 82 bytes after its name: 0 A, 1 X, 2 B, 3 Y) and of its text. The
+// prompts are spread again: Scroll, Select, Paste, Back.
 bool BuildCodeScreen(std::vector<uint8_t>& data)
 {
     if (!ReadDiscResource(kCodesFile, data))
@@ -496,9 +557,46 @@ bool BuildCodeScreen(std::vector<uint8_t>& data)
     ok = ok && MenuReplaceString(data, 0, end, "IDS_SHELL_ENTER_CODE", "IDS_PORT_ONLINE_ENTER_CODE");
     end = data.size();
     ok = ok && MenuReplaceString(data, 0, end, "CodesKeyboard", "OnlineKeyboard");
-    if (!ok)
+    if (!ok) {
         LOG_WARN("Online menu: the Codes screen is not as expected; no code screen");
-    return ok;
+        return false;
+    }
+    size_t iconBegin, iconEnd, textBegin, textEnd;
+    if (!LeafItem(data, "backbutton", iconBegin, iconEnd) || !LeafItem(data, "cancel", textBegin, textEnd) ||
+        iconBegin + 18 + 10 + 82 >= iconEnd) {
+        LOG_WARN("Online menu: the Codes screen's prompts are not as expected; no Paste prompt");
+        return true;
+    }
+    std::vector<uint8_t> icon(data.begin() + iconBegin, data.begin() + iconEnd);
+    std::vector<uint8_t> text(data.begin() + textBegin, data.begin() + textEnd);
+    size_t e = icon.size();
+    MenuReplaceString(icon, 0, e, "backbutton", "pastebutton");
+    icon[18 + 11 + 82] = 3; // Y
+    e = text.size();
+    MenuReplaceString(text, 0, e, "cancel", "pastetext");
+    e = text.size();
+    if (!MenuReplaceString(text, 0, e, "IDS_BACK", "IDS_PORT_ONLINE_PASTE"))
+        return true;
+    // the new prompt after the Back text; then the places, from the right: Back 485/518, Paste 375/408, Select 265/298
+    std::vector<uint8_t> both = icon;
+    both.insert(both.end(), text.begin(), text.end());
+    data.insert(data.begin() + textEnd, both.begin(), both.end());
+    const struct { const char* name; float x; } places[] = { { "selectbutton", 262 }, { "select", 295 },
+        { "pastebutton", 375 }, { "pastetext", 408 }, { "backbutton", 488 }, { "cancel", 521 } };
+    for (const auto& p : places) {
+        size_t b, en;
+        if (LeafItem(data, p.name, b, en))
+            SetItemX(data, b, p.x);
+    }
+    // the screen's item count: after its name and its first item's
+    uint32_t nameLength, firstLength, items;
+    std::memcpy(&nameLength, data.data(), 4);
+    std::memcpy(&firstLength, data.data() + 4 + nameLength, 4);
+    const size_t countAt = 4 + nameLength + 4 + firstLength;
+    std::memcpy(&items, data.data() + countAt, 4);
+    items += 2;
+    std::memcpy(data.data() + countAt, &items, 4);
+    return true;
 }
 
 bool GenerateScreens(const std::string& lowerName, std::vector<uint8_t>& data)
@@ -536,6 +634,10 @@ void InstallOnlineMenu()
         LOG_WARN("Online menu: the code keyboard is not as expected; no Online entry");
         return;
     }
+    if (SlotIs(kIntroVtable, 0, kIntroInit)) {
+        const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(&IntroInit));
+        PatchBytes(kIntroVtable, &hook, 4);
+    }
     std::memcpy(g_ValueVtable, reinterpret_cast<const void*>(uintptr_t(kOnOffVtable)), sizeof g_ValueVtable);
     g_OnOffDraw = reinterpret_cast<DrawFn>(uintptr_t(g_ValueVtable[3]));
     g_OnOffEvent = reinterpret_cast<ItemEventFn>(uintptr_t(g_ValueVtable[4]));
@@ -565,7 +667,8 @@ void InstallOnlineMenu()
     SetMenuText("IDS_PORT_ONLINE_CODE", L"Room Code");
     SetMenuText("IDS_PORT_ONLINE_STATUS", L"Status");
     SetMenuText("IDS_PORT_ONLINE_LEAVE", L"Leave");
-    SetMenuText("IDS_PORT_ONLINE_ENTER_CODE", L"Room Code  (Y: Paste)");
+    SetMenuText("IDS_PORT_ONLINE_PASTE", L"Paste");
+    SetMenuText("IDS_PORT_ONLINE_ENTER_CODE", L"Enter the Room Code");
     g_PasteDown = false;
     UpdateTexts();
     AddShellHandler("OnlineValue", &MakeValue);

@@ -34,7 +34,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr uint32_t kMagic = 0x4E525753; // 'SWRN'
-constexpr uint16_t kProtocol = 1;
+constexpr uint16_t kProtocol = 2; // 2: the players' names
 constexpr uint16_t kDefaultPort = 27960;
 constexpr uint32_t kHistory = 512;      // frames of inputs kept (a power of two)
 constexpr uint32_t kMaxSend = 48;       // inputs in one packet at most
@@ -72,6 +72,7 @@ struct HelloMsg {
     uint64_t content; // the game's files and the mods
     uint32_t nonce;
     char version[40];
+    char name[24];    // the guest's player name ([Online] Name)
 };
 struct WelcomeMsg {
     Header h;
@@ -81,6 +82,7 @@ struct WelcomeMsg {
     uint16_t reserved;
     uint32_t packageSize;
     uint64_t packageHash;
+    char name[24];    // the host's player name
 };
 struct RejectMsg {
     Header h;
@@ -324,6 +326,7 @@ void ApplyGameplay(const GameplaySettings& g)
 // --- The session's state --------------------------------------------------------------------------------------------
 
 struct Session {
+    std::string localName, remoteName; // the players' names ([Online] Name: the Windows user name by default)
     std::mutex lock;
     std::condition_variable inputs; // a frame's remote input came, or the session ended
     OnlinePhase phase = OnlinePhase::Off;
@@ -399,6 +402,43 @@ void SendLocked(const T& msg, size_t size = sizeof(T))
 {
     g_S.socket.SendTo(g_S.peer, &msg, size);
     g_S.lastSent = Clock::now();
+}
+
+// A player's name as received: printable characters only, at most `size` (none: `fallback`).
+std::string PlayerName(const char* text, size_t size, const char* fallback)
+{
+    std::string name;
+    for (size_t i = 0; i < size && text[i]; ++i)
+        if (text[i] >= 32 && text[i] < 127)
+            name += text[i];
+    while (!name.empty() && name.back() == ' ')
+        name.pop_back();
+    return name.empty() ? fallback : name;
+}
+
+// This PC's player name: [Online] Name, else the Windows user name (letters without accents kept as they are,
+// others dropped), at most 20 characters.
+std::string LocalPlayerName()
+{
+    wchar_t text[64] = {};
+    const std::wstring ini = ExeDirectory() + L"\\settings.ini";
+    GetPrivateProfileStringW(L"Online", L"Name", L"", text, 64, ini.c_str());
+    if (!text[0]) {
+        DWORD size = 64;
+        if (!GetUserNameW(text, &size))
+            text[0] = 0;
+    }
+    std::string name;
+    for (const wchar_t* c = text; *c && name.size() < 20; ++c) {
+        wchar_t w = *c;
+        static const wchar_t* const kFrom = L"\u00e0\u00e2\u00e4\u00e9\u00e8\u00ea\u00eb\u00ee\u00ef\u00f4\u00f6\u00f9\u00fb\u00fc\u00e7\u00c0\u00c9\u00c8\u00ca\u00c7";
+        static const char kTo[] = "aaaeeeeiioouuucAEEEC";
+        if (const wchar_t* at = wcschr(kFrom, w); at && w)
+            w = wchar_t(kTo[at - kFrom]);
+        if (w >= 32 && w < 127)
+            name += char(w);
+    }
+    return name.empty() ? "PLAYER" : name;
 }
 
 void SetMessage(const std::string& text)
@@ -517,6 +557,8 @@ void CompareChecksLocked()
                 LOG_INFO("Online: the game's data at frame %u written to %ls (scheduler trace %016llX)", r.frame,
                     path.c_str(), k.trace);
             }
+            // the two games no longer play the same match: it ends on both (each back to its title)
+            EndLocked("the two games no longer match (desync at frame " + std::to_string(r.frame) + ")", true);
         }
         return;
     }
@@ -739,6 +781,7 @@ void HandleLocked(const uint8_t* data, size_t size, const Endpoint& from)
             if (!g_S.peer.Valid()) {
                 g_S.peer = from;
                 g_S.nonce = m.nonce;
+                g_S.remoteName = PlayerName(m.name, sizeof(m.name), "PLAYER 2");
                 g_S.lastHeard = Clock::now();
                 g_S.phase = OnlinePhase::Preparing;
                 g_S.packageWanted = true;
@@ -752,6 +795,7 @@ void HandleLocked(const uint8_t* data, size_t size, const Endpoint& from)
                 w.fps = uint8_t(g_S.fps);
                 w.packageSize = uint32_t(g_S.package.size());
                 w.packageHash = g_S.packageHash;
+                std::snprintf(w.name, sizeof(w.name), "%s", g_S.localName.c_str());
                 SendLocked(w);
             }
             return;
@@ -805,6 +849,7 @@ void HandleLocked(const uint8_t* data, size_t size, const Endpoint& from)
             g_S.fps = w.fps ? w.fps : 30;
             g_S.package.assign(w.packageSize, 0);
             g_S.packageHash = w.packageHash;
+            g_S.remoteName = PlayerName(w.name, sizeof(w.name), "PLAYER 1");
             g_S.chunksDone.assign((w.packageSize + kChunk - 1) / kChunk, false);
             g_S.welcomed = true;
             g_S.lastHeard = Clock::now();
@@ -909,6 +954,7 @@ void TickLocked()
         m.content = g_S.content;
         m.nonce = g_S.nonce;
         std::snprintf(m.version, sizeof(m.version), "%s", SWROTS_VERSION);
+        std::snprintf(m.name, sizeof(m.name), "%s", g_S.localName.c_str());
         for (const Endpoint& e : g_S.candidates)
             g_S.socket.SendTo(e, &m, sizeof(m));
         return;
@@ -1077,6 +1123,8 @@ bool Prepare(bool host, std::string& error)
     }
     std::lock_guard<std::mutex> lock(g_S.lock);
     ResetSessionLocked(host);
+    g_S.localName = LocalPlayerName();
+    g_S.remoteName.clear();
     g_S.inputDelay = 3;
     g_S.fps = uint32_t(std::clamp(GetSettings().fpsLimit, 10, 120));
     return true;
@@ -1169,6 +1217,8 @@ OnlineStatusInfo OnlineStatus()
     i.pingMs = g_S.pingMs;
     i.stalls = g_S.stalls;
     i.desync = g_S.desync;
+    i.localName = g_S.localName;
+    i.remoteName = g_S.remoteName;
     return i;
 }
 
@@ -1222,6 +1272,7 @@ void OnlineFrame()
         w.fps = uint8_t(g_S.fps);
         w.packageSize = uint32_t(g_S.package.size());
         w.packageHash = g_S.packageHash;
+        std::snprintf(w.name, sizeof(w.name), "%s", g_S.localName.c_str());
         SendLocked(w);
         SetMessage("sending the profile to the guest");
     }

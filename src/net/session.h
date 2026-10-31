@@ -38,6 +38,7 @@ struct OnlineStatusInfo {
     int pingMs = -1;
     uint32_t stalls = 0;    // frames that waited for the other PC
     bool desync = false;    // the two games parted
+    std::string localName, remoteName; // the players' names ([Online] Name, else the Windows user name)
 };
 
 // The host opens a room. False when it could not (the message says why).
