@@ -562,6 +562,9 @@ bool BuildCodeScreen(std::vector<uint8_t>& data)
         return false;
     }
     size_t iconBegin, iconEnd, textBegin, textEnd;
+    char off[8] = "";
+    if (GetEnvironmentVariableA("SWROTS_TEST_NOPASTE", off, sizeof(off)))
+        return true;
     if (!LeafItem(data, "backbutton", iconBegin, iconEnd) || !LeafItem(data, "cancel", textBegin, textEnd) ||
         iconBegin + 18 + 10 + 82 >= iconEnd) {
         LOG_WARN("Online menu: the Codes screen's prompts are not as expected; no Paste prompt");
@@ -634,7 +637,8 @@ void InstallOnlineMenu()
         LOG_WARN("Online menu: the code keyboard is not as expected; no Online entry");
         return;
     }
-    if (SlotIs(kIntroVtable, 0, kIntroInit)) {
+    char off[8] = "";
+    if (SlotIs(kIntroVtable, 0, kIntroInit) && !GetEnvironmentVariableA("SWROTS_TEST_NOINTRO", off, sizeof(off))) {
         const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(&IntroInit));
         PatchBytes(kIntroVtable, &hook, 4);
     }
