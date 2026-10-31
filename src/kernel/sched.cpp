@@ -3,6 +3,7 @@
 #include "kernel/sched.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <atomic>
 #include <mutex>
 #include <thread>
@@ -36,6 +37,7 @@ struct SThread {
     DWORD id = 0;
     HANDLE go = nullptr; // set when it is its turn
     State state = State::Ready;
+    uint32_t wake = 0;     // why it could run last (diagnostics): 0 ready, 1 an APC, 2 a handle (+ which), 3 its timeout
     uint32_t suspends = 0; // NtSuspendThread's count, kept here (the thread takes no turn while it is not 0)
     // its wait
     DWORD count = 0;
@@ -67,6 +69,17 @@ void Trace(SThread* next, uint64_t now)
         if (g_Threads[i] == next)
             index = i;
     g_Stats.trace = (g_Stats.trace ^ (uint64_t(index) << 48) ^ now) * 0x100000001B3ull;
+    // Diagnostics: SWROTS_SCHED_TRACE=<file> writes the first 200000 turns (thread, clock, why it could run), to
+    // compare two runs line by line.
+    static FILE* file = [] {
+        char path[MAX_PATH] = "";
+        return GetEnvironmentVariableA("SWROTS_SCHED_TRACE", path, sizeof(path)) && path[0] ? std::fopen(path, "w") : nullptr;
+    }();
+    if (file && g_Stats.switches < 200000) {
+        std::fprintf(file, "%llu %u %llu %u %u\n", g_Stats.switches, index, now, next->wake, uint32_t(g_Threads.size()));
+        if (g_Stats.switches % 1024 == 0)
+            std::fflush(file);
+    }
     if (g_Stats.switches % 2048 == 0)
         LOG_INFO("Scheduler trace: turn %llu, clock %llu, %zu threads, hash %016llX, %llu waits only the PC ended",
             g_Stats.switches, now, g_Threads.size(), g_Stats.trace, g_Stats.external);
@@ -88,12 +101,15 @@ bool Runnable(SThread* s, uint64_t now)
 {
     if (s->suspends)
         return false;
-    if (s->state == State::Ready)
+    if (s->state == State::Ready) {
+        s->wake = 0;
         return true;
+    }
     if (s->state != State::Waiting)
         return false;
     if (s->alertable && !s->apcs.empty()) {
         s->result = WAIT_IO_COMPLETION;
+        s->wake = 1;
         return true;
     }
     if (s->count) {
@@ -101,11 +117,13 @@ bool Runnable(SThread* s, uint64_t now)
         const DWORD r = WaitForMultipleObjectsEx(s->count, s->handles, s->waitAll, 0, FALSE);
         if (r != WAIT_TIMEOUT) {
             s->result = r;
+            s->wake = 2 + 16 * r;
             return true;
         }
     }
     if (s->deadline <= now) {
         s->result = WAIT_TIMEOUT;
+        s->wake = 3;
         return true;
     }
     return false;
