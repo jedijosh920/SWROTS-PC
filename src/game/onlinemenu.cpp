@@ -574,15 +574,20 @@ bool BuildCodeScreen(std::vector<uint8_t>& data)
     std::vector<uint8_t> text(data.begin() + textBegin, data.begin() + textEnd);
     size_t e = icon.size();
     MenuReplaceString(icon, 0, e, "backbutton", "pastebutton");
-    icon[18 + 11 + 82] = 3; // Y
+    char mode[16] = "";
+    GetEnvironmentVariableA("SWROTS_TEST_PASTEMODE", mode, sizeof(mode));
+    icon[18 + 11 + 82] = std::strcmp(mode, "icon0") == 0 ? 0 : 3; // Y
     e = text.size();
     MenuReplaceString(text, 0, e, "cancel", "pastetext");
     e = text.size();
     if (!MenuReplaceString(text, 0, e, "IDS_BACK", "IDS_PORT_ONLINE_PASTE"))
         return true;
     // the new prompt after the Back text; then the places, from the right: Back 485/518, Paste 375/408, Select 265/298
-    std::vector<uint8_t> both = icon;
-    both.insert(both.end(), text.begin(), text.end());
+    std::vector<uint8_t> both;
+    if (std::strcmp(mode, "text") != 0)
+        both = icon;
+    if (std::strcmp(mode, "icon3") != 0)
+        both.insert(both.end(), text.begin(), text.end());
     data.insert(data.begin() + textEnd, both.begin(), both.end());
     const struct { const char* name; float x; } places[] = { { "selectbutton", 262 }, { "select", 295 },
         { "pastebutton", 375 }, { "pastetext", 408 }, { "backbutton", 488 }, { "cancel", 521 } };
@@ -597,7 +602,7 @@ bool BuildCodeScreen(std::vector<uint8_t>& data)
     std::memcpy(&firstLength, data.data() + 4 + nameLength, 4);
     const size_t countAt = 4 + nameLength + 4 + firstLength;
     std::memcpy(&items, data.data() + countAt, 4);
-    items += 2;
+    items += std::strcmp(mode, "text") == 0 || std::strcmp(mode, "icon3") == 0 ? 1 : 2;
     std::memcpy(data.data() + countAt, &items, 4);
     return true;
 }
