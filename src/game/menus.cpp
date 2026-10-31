@@ -284,9 +284,9 @@ void InstallMenus()
         return;
     }
     // The stubs live in the port's memory and survive reboots; the jumps are patched into every new image.
-    static uint8_t* tableStub = Trampoline(kTableFind, kTableFindBytes, sizeof(kTableFindBytes));
-    static uint8_t* hudStub = Trampoline(kHudSetup, kHudSetupBytes, sizeof(kHudSetupBytes));
-    static uint8_t* shellStub = Trampoline(kShellSetup, kHudSetupBytes, sizeof(kHudSetupBytes));
+    uint8_t* tableStub = Trampoline(kTableFind, kTableFindBytes, sizeof(kTableFindBytes));
+    uint8_t* hudStub = Trampoline(kHudSetup, kHudSetupBytes, sizeof(kHudSetupBytes));
+    uint8_t* shellStub = Trampoline(kShellSetup, kHudSetupBytes, sizeof(kHudSetupBytes));
     g_OriginalTableFind = reinterpret_cast<TableFindFn>(tableStub);
     g_OriginalHudSetup = reinterpret_cast<HudSetupFn>(hudStub);
     PatchHook(kTableFind, reinterpret_cast<const void*>(&TableFindHook));

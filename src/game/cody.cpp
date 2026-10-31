@@ -944,7 +944,7 @@ void InstallCody()
     AddClassSequences(&MoveSequences);
     if (FindCustomCharacter("IDroidCommander")) {
         if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kDroidStateManager)), kStateManagerBytes, sizeof kStateManagerBytes) == 0) {
-            static uint8_t* stub = Trampoline(kDroidStateManager, kStateManagerBytes, sizeof kStateManagerBytes);
+            uint8_t* stub = Trampoline(kDroidStateManager, kStateManagerBytes, sizeof kStateManagerBytes);
             g_OriginalDroidStateManager = reinterpret_cast<StateManagerFn>(stub);
             PatchHook(kDroidStateManager, reinterpret_cast<const void*>(&DroidStateManagerHook));
         } else {

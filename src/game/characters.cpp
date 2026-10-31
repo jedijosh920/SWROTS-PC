@@ -1071,8 +1071,8 @@ void HookReactions(ReactionWrapper wrapper)
         LOG_WARN("Characters: unexpected code at the hit reaction; hits are not filtered");
         return;
     }
-    // the stub lives in the port's memory and survives reboots; the jump goes into every new image
-    static uint8_t* stub = [] {
+    // made again at every start (ResetStubsForBoot), as the jump into every new image
+    uint8_t* stub = [] {
         uint8_t* s = AllocStub(sizeof kReactionCallBytes + 5);
         std::memcpy(s, kReactionCallBytes, sizeof kReactionCallBytes);
         s[sizeof kReactionCallBytes] = 0xE9;

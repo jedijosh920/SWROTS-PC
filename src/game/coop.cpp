@@ -1240,8 +1240,8 @@ void InstallCoop()
         std::memcpy(stub + length + 1, &rel, 4);
         return stub;
     };
-    static uint8_t* changeHealthStub = trampoline(kChangeHealth, kChangeHealthBytes, sizeof(kChangeHealthBytes));
-    static uint8_t* instantKillStub = trampoline(kInstantKill, kInstantKillBytes, sizeof(kInstantKillBytes));
+    uint8_t* changeHealthStub = trampoline(kChangeHealth, kChangeHealthBytes, sizeof(kChangeHealthBytes));
+    uint8_t* instantKillStub = trampoline(kInstantKill, kInstantKillBytes, sizeof(kInstantKillBytes));
     g_OriginalChangeHealth = reinterpret_cast<ChangeHealthFn>(changeHealthStub);
     g_OriginalInstantKill = reinterpret_cast<InstantKillFn>(instantKillStub);
     PatchHook(kChangeHealth, reinterpret_cast<const void*>(&ChangeHealthHook));
@@ -1250,21 +1250,21 @@ void InstallCoop()
     PatchHook(kInstantKill, reinterpret_cast<const void*>(&InstantKillHook));
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kCloneStateManager)), kCloneStateManagerBytes,
             sizeof(kCloneStateManagerBytes)) == 0) {
-        static uint8_t* stateManagerStub = trampoline(kCloneStateManager, kCloneStateManagerBytes, sizeof(kCloneStateManagerBytes));
+        uint8_t* stateManagerStub = trampoline(kCloneStateManager, kCloneStateManagerBytes, sizeof(kCloneStateManagerBytes));
         g_OriginalCloneStateManager = reinterpret_cast<StateManagerFn>(stateManagerStub);
         PatchHook(kCloneStateManager, reinterpret_cast<const void*>(&CloneStateManagerHook));
     } else {
         LOG_WARN("Co-op: unexpected code at the clone trooper's script; player 2's clone does not shoot");
     }
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kDismemberNotify)), kDismemberNotifyBytes, sizeof(kDismemberNotifyBytes)) == 0) {
-        static uint8_t* dismemberStub = trampoline(kDismemberNotify, kDismemberNotifyBytes, sizeof(kDismemberNotifyBytes));
+        uint8_t* dismemberStub = trampoline(kDismemberNotify, kDismemberNotifyBytes, sizeof(kDismemberNotifyBytes));
         g_OriginalDismemberNotify = reinterpret_cast<DismemberNotifyFn>(dismemberStub);
         PatchHook(kDismemberNotify, reinterpret_cast<const void*>(&DismemberNotifyHook));
     } else {
         LOG_WARN("Co-op: unexpected code at the dismemberment notice; player 2 can lose limbs");
     }
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kDismemberCut)), kDismemberCutBytes, sizeof(kDismemberCutBytes)) == 0) {
-        static uint8_t* cutStub = trampoline(kDismemberCut, kDismemberCutBytes, sizeof(kDismemberCutBytes));
+        uint8_t* cutStub = trampoline(kDismemberCut, kDismemberCutBytes, sizeof(kDismemberCutBytes));
         g_OriginalDismemberCut = reinterpret_cast<DismemberCutFn>(cutStub);
         PatchHook(kDismemberCut, reinterpret_cast<const void*>(&DismemberCutHook));
     } else {

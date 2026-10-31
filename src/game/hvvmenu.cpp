@@ -1101,9 +1101,9 @@ uint8_t* Trampoline(uint32_t address, const uint8_t* bytes, uint32_t length)
 void InstallHvvMenu()
 {
     InstallScreens();
-    // once (the port's memory outlives the game's reboots); the jumps into every new image
-    static uint8_t* transition = Trampoline(kTransition, kTransitionBytes, sizeof kTransitionBytes);
-    static uint8_t* childSwitch = Trampoline(kChildSwitch, kChildSwitchBytes, sizeof kChildSwitchBytes);
+    // made again at every start (ResetStubsForBoot), as the jumps into every new image
+    uint8_t* transition = Trampoline(kTransition, kTransitionBytes, sizeof kTransitionBytes);
+    uint8_t* childSwitch = Trampoline(kChildSwitch, kChildSwitchBytes, sizeof kChildSwitchBytes);
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kTransition)), kTransitionBytes, sizeof kTransitionBytes) == 0 &&
         std::memcmp(reinterpret_cast<const void*>(uintptr_t(kChildSwitch)), kChildSwitchBytes, sizeof kChildSwitchBytes) == 0) {
         g_Transition = reinterpret_cast<ScreenFn>(transition);
