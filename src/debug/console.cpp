@@ -28,6 +28,7 @@
 #include "game/versus.h"
 #include "kernel/kernel.h"
 #include "net/rollback.h"
+#include "game/menus.h"
 #include "net/session.h"
 
 namespace swrots::debug {
@@ -1046,8 +1047,11 @@ void Online(const std::vector<std::string>& words)
         net::OnlineJoin(code);
     } else if (_stricmp(what.c_str(), "leave") == 0) {
         net::OnlineLeave();
+    } else if (_stricmp(what.c_str(), "menu") == 0) { // the Online screen (from any front-end screen; tests)
+        Print(LineKind::Output, game::GoToShellScreen("online") ? "  to the Online screen" : "  not in the front end");
+        return;
     } else if (!what.empty()) {
-        Print(LineKind::Output, "  online host | online join <room code or host[:port]> | online leave | online");
+        Print(LineKind::Output, "  online host | online join <room code or host[:port]> | online leave | online menu | online");
         return;
     }
     Print(LineKind::Output, "  %s", net::OnlineStatusLine().c_str());

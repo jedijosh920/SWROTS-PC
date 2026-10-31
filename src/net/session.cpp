@@ -23,6 +23,7 @@
 #include "kernel/kernel.h"
 #include "kernel/sched.h"
 #include "net/transport.h"
+#include "net/upnp.h"
 
 #include "version.h"
 
@@ -950,6 +951,7 @@ void TickLocked()
 
 void NetThread(bool host, uint16_t port)
 {
+    UpnpMapping mapping; // the host's port on its router, taken back as the thread ends
     uint8_t buffer[2048];
     const auto hashStart = Clock::now();
     const uint64_t build = BuildHash(), content = ContentHash();
@@ -973,15 +975,31 @@ void NetThread(bool host, uint16_t port)
         GetPrivateProfileStringW(L"Online", L"StunServer", L"stun.l.google.com:19302", ini, MAX_PATH, iniPath.c_str());
         Endpoint server;
         const std::wstring serverName = ini;
+        // UPnP first (on by default: [Online] Upnp=0 off): the port opened on the router, the same port outside
+        bool upnp = GetPrivateProfileIntW(L"Online", L"Upnp", 1, iniPath.c_str()) != 0;
+        if (GetEnvironmentVariableA("SWROTS_ONLINE_UPNP", env, sizeof(env)) && env[0] == '0')
+            upnp = false;
+        if (upnp)
+            UpnpMapPort(port, localAddress.ip, 2500, mapping);
         if (stun && Resolve(std::string(serverName.begin(), serverName.end()), 3478, server)) {
             if (!StunPublicAddress(g_S.socket, server, publicAddress, 3000))
-                LOG_WARN("Online: the STUN server did not answer; the room code holds this PC's local address only");
+                LOG_WARN("Online: the STUN server did not answer");
+        }
+        if (mapping.Active()) { // the mapped port, at the address STUN saw (or the router's own)
+            if (!publicAddress.Valid())
+                publicAddress.ip = mapping.externalIp;
+            publicAddress.port = mapping.port;
         }
         std::lock_guard<std::mutex> lock(g_S.lock);
-        if (g_S.phase != OnlinePhase::Opening)
+        if (g_S.phase != OnlinePhase::Opening) {
+            UpnpUnmap(mapping);
             return;
-        if (!publicAddress.Valid())
+        }
+        if (!publicAddress.Valid()) {
+            LOG_WARN("Online: no public address (STUN and UPnP off or not answering); the room code holds this PC's "
+                     "local address only");
             publicAddress = localAddress;
+        }
         g_S.roomCode = MakeRoomCode(publicAddress, localAddress);
         g_S.phase = OnlinePhase::Waiting;
         SetMessage("room open: code " + g_S.roomCode + " (public " + publicAddress.ToString() + ", local " +
@@ -1002,6 +1020,7 @@ void NetThread(bool host, uint16_t port)
             TickLocked();
         }
     }
+    UpnpUnmap(mapping);
 }
 
 void StopThread()
