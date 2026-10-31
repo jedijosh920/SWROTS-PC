@@ -258,9 +258,14 @@ bool UpnpMapPort(uint16_t port, uint32_t localIp, uint32_t timeoutMs, UpnpMappin
                              "</NewExternalPort><NewProtocol>UDP</NewProtocol><NewInternalPort>" + p +
                              "</NewInternalPort><NewInternalClient>" + IpText(localIp) +
                              "</NewInternalClient><NewEnabled>1</NewEnabled><NewPortMappingDescription>SWROTS-PC online"
-                             "</NewPortMappingDescription><NewLeaseDuration>0</NewLeaseDuration>";
+                             "</NewPortMappingDescription><NewLeaseDuration>";
+    // a lease of 6 hours (a game that ends without taking it back leaves nothing behind for long); routers that only
+    // take permanent ones (error 725) get one
     std::string reply;
-    if (!Soap(m, "AddPortMapping", args, 2000, reply)) {
+    bool mapped = Soap(m, "AddPortMapping", args + "21600</NewLeaseDuration>", 2000, reply);
+    if (!mapped && Tag(reply, "errorCode") == "725")
+        mapped = Soap(m, "AddPortMapping", args + "0</NewLeaseDuration>", 2000, reply);
+    if (!mapped) {
         LOG_INFO("Online: UPnP: the router refused to map UDP port %u (%s)", port,
             Tag(reply, "errorDescription").c_str());
         return false;
