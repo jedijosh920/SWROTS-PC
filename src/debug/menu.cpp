@@ -28,6 +28,7 @@
 #include "debug/gamefont.h"
 #include "debug/hvvhud.h"
 #include "debug/missionhud.h"
+#include "debug/onlinehud.h"
 #include "game/game.h"
 #include "imgui.h"
 #include "kernel/kernel.h"
@@ -1138,6 +1139,7 @@ void RenderMenu()
     ImGui::NewFrame();
     DrawHvvHud();
     DrawMissionHud();
+    DrawOnlineHud();
     if (g_Open)
         BuildMenu();
     ImGui::Render();
