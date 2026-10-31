@@ -503,9 +503,22 @@ NTSTATUS XBAPI NtFreeVirtualMemory(void** BaseAddress, ULONG* FreeSize, ULONG Fr
             *FreeSize = it->second;
             g_Placed.erase(it);
         } else {
+            // A decommit in the fixed range leaves the pages committed and zeroes them (what a commit again would
+            // give): the game's heaps have been seen to read just past what they had committed again (the front end
+            // under netplay, 0x532F0), which a decommitted page turns into a fault.
             const uintptr_t begin = uintptr_t(*BaseAddress) & ~uintptr_t(0xFFF);
-            const uint32_t length = *FreeSize ? *FreeSize : uint32_t(it->first + it->second - begin);
-            VirtualFree(reinterpret_cast<void*>(begin), length, MEM_DECOMMIT);
+            const uintptr_t end = *FreeSize ? (uintptr_t(*BaseAddress) + *FreeSize + 0xFFF) & ~uintptr_t(0xFFF)
+                                            : it->first + it->second;
+            for (uintptr_t at = begin; at < end;) {
+                MEMORY_BASIC_INFORMATION m = {};
+                if (!VirtualQuery(reinterpret_cast<void*>(at), &m, sizeof(m)))
+                    break;
+                const uintptr_t regionEnd = std::min<uintptr_t>(uintptr_t(m.BaseAddress) + m.RegionSize, end);
+                if (m.State == MEM_COMMIT && !(m.Protect & PAGE_GUARD) &&
+                    (m.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_WRITECOPY)))
+                    std::memset(reinterpret_cast<void*>(at), 0, regionEnd - at);
+                at = regionEnd;
+            }
         }
         ++g_LayoutGeneration;
         return xbox::X_STATUS_SUCCESS;
