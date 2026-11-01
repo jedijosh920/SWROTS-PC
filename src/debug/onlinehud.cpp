@@ -14,6 +14,8 @@
 #include "game/coop.h"
 #include "game/devmap.h"
 #include "game/freecam.h"
+#include "game/hvvmenu.h"
+#include "game/menus.h"
 #include "imgui.h"
 #include "net/session.h"
 
@@ -127,6 +129,21 @@ void OtherPlayer(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float 
     Text(at.x, top - th - 3 * u, th, faded(kWhite), s.remoteName, 0.5f);
 }
 
+// The guest, while the host picks the match in the menus (the guest's controller plays player 2, which the menus do
+// not listen to): a waiting screen over them; not on the Versus fighters' and arenas' select screens, where both
+// players pick, nor once a level is on.
+void GuestWaiting(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u)
+{
+    if (s.host || game::PlayerObject())
+        return;
+    const uint32_t screen = game::LastShellScreen();
+    if (screen == 0x8DC51DC9u || screen == game::MenuKey("select_jedi") || screen == game::MenuKey("select_arena"))
+        return;
+    g_Draw->AddRectFilled(vp->Pos, ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y), IM_COL32(4, 6, 12, 215));
+    const std::string who = s.remoteName.empty() ? std::string("The host") : s.remoteName;
+    Banner(vp, u, 0.42f, kGold, "Waiting for the host", who + " is choosing the match");
+}
+
 } // namespace
 
 bool OnlineHudWanted()
@@ -164,6 +181,7 @@ void DrawOnlineHud()
         Text(vp->Pos.x + vp->Size.x - 16 * u, vp->Pos.y + 10 * u, 14 * u, kDim, line, 1.0f);
         if (!s.remoteName.empty())
             OtherPlayer(s, vp, u);
+        GuestWaiting(s, vp, u);
         if (s.desync)
             Banner(vp, u, 0.12f, kRed, "Desync", "The two games no longer match: leave and start again");
         break;

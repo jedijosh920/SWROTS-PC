@@ -750,7 +750,12 @@ void BuildPackageLocked()
     }
     std::vector<uint8_t>& p = g_S.package;
     p.clear();
-    const GameplaySettings g = CurrentGameplay();
+    GameplaySettings g = CurrentGameplay();
+    // The match's pace: [Online] Fps (30 by default, the console's own: both PCs must keep it, the slower sets it)
+    const std::wstring ini = ExeDirectory() + L"\\settings.ini";
+    const int onlineFps = std::clamp(int(GetPrivateProfileIntW(L"Online", L"Fps", 30, ini.c_str())), 20, 60);
+    g.fpsLimit = std::min(g.fpsLimit > 0 ? g.fpsLimit : 60, onlineFps);
+    g_S.inputDelay = g.fpsLimit >= 50 ? 3 : 2; // about 60 ms either way
     PutU32(p, 1); // the package's format
     p.insert(p.end(), reinterpret_cast<const uint8_t*>(&g), reinterpret_cast<const uint8_t*>(&g) + sizeof(g));
     PutU32(p, uint32_t(args.size()));
@@ -818,11 +823,9 @@ void BeginBootLocked()
         EndLocked("the match's package could not be unpacked", true);
         return;
     }
-    if (!g_S.host) {
-        g_S.saved = GetSettings();
-        g_S.settingsSaved = true;
-        ApplyGameplay(g);
-    }
+    g_S.saved = GetSettings(); // both PCs play with the host's gameplay settings and the match's pace
+    g_S.settingsSaved = true;
+    ApplyGameplay(g);
     g_S.fps = uint32_t(std::clamp(g.fpsLimit, 10, 120));
     kernel::SetSessionDrives(root + L"\\saves", root + L"\\utility");
     kernel::SetSessionFolders(root + L"\\nomods", root + L"\\cache"); // no mods in a match: the same game on both PCs

@@ -171,6 +171,8 @@ using EventFn = bool(__fastcall*)(uint8_t*, void*, int, int);
 // Villains mode or takes it out.
 bool __fastcall SwitchButtonEvent(uint8_t* self, void*, int event, int value)
 {
+    if (OnlineRefusesMainMenuEvent(self, event)) // a match: only Versus for now (onlinemenu.h)
+        return true;
     if (event == kChosen) {
         uint8_t* item = *reinterpret_cast<uint8_t**>(self + 8);
         const uint32_t key = item ? *reinterpret_cast<const uint32_t*>(item + 4) : 0;
@@ -917,9 +919,12 @@ bool ScreenMatches(const char* name, uint32_t key)
     return MenuKey(name) == key;
 }
 
+uint32_t g_LastScreen = 0; // the screen the front end last switched to (LastShellScreen)
+
 uint32_t __fastcall TransitionHook(void* self, void*, const uint32_t* name)
 {
     if (name) {
+        g_LastScreen = *name;
         LOG_DEBUG("Menus: screen 0x%08X", *name);
         input::NoteMenuScreen(&ScreenMatches, *name);
     }
@@ -947,8 +952,14 @@ uint8_t* Trampoline(uint32_t address, const uint8_t* bytes, uint32_t length)
 
 } // namespace
 
+uint32_t LastShellScreen()
+{
+    return g_LastScreen;
+}
+
 void InstallHvvMenu()
 {
+    g_LastScreen = 0;
     InstallScreens();
     // made again at every start (ResetStubsForBoot), as the jumps into every new image
     uint8_t* transition = Trampoline(kTransition, kTransitionBytes, sizeof kTransitionBytes);

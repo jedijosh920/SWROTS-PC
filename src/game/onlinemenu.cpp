@@ -161,6 +161,7 @@ void __fastcall IntroInit(uint8_t* intro, void*)
 std::string g_Typed;      // the guest's code, as typed
 std::string g_Copied;     // the room code last put on the clipboard
 std::string g_Note;       // a note of the menu's own (a code refused)
+ULONGLONG g_CopiedAt = 0; // when the host last copied its code with A (the row says so for 2 s)
 
 std::wstring Wide(const std::string& text)
 {
@@ -217,6 +218,7 @@ void UpdateTexts()
     const net::OnlineStatusInfo s = net::OnlineStatus();
     std::string code = "-", status;
     if (net::OnlineActive()) { // the same on both PCs
+        SetMenuText("IDS_PORT_ONLINE_HOST", L"Host Game");
         SetMenuText("IDS_PORT_ONLINE_V_CODE", L"-");
         SetMenuText("IDS_PORT_ONLINE_V_STATUS", L"IN A MATCH");
         return;
@@ -224,7 +226,7 @@ void UpdateTexts()
     switch (s.phase) {
     case net::OnlinePhase::Off: status = g_Note.empty() ? "NOT CONNECTED" : g_Note; break;
     case net::OnlinePhase::Opening: status = "OPENING A ROOM..."; break;
-    case net::OnlinePhase::Waiting: status = g_Copied == s.roomCode ? "WAITING (CODE COPIED)" : "WAITING FOR A FRIEND"; break;
+    case net::OnlinePhase::Waiting: status = "WAITING FOR A FRIEND"; break;
     case net::OnlinePhase::Connecting: status = "CALLING THE HOST..."; break;
     case net::OnlinePhase::Preparing: status = s.host ? "SENDING THE PROFILE..." : "GETTING THE PROFILE..."; break;
     case net::OnlinePhase::Starting: status = "STARTING..."; break;
@@ -241,6 +243,10 @@ void UpdateTexts()
         g_Copied = s.roomCode;
         LOG_INFO("Online menu: room code %s copied to the clipboard", s.roomCode.c_str());
     }
+    if (g_CopiedAt && GetTickCount64() - g_CopiedAt < 2000)
+        code = "CODE COPIED";
+    const bool hosting = s.host && s.phase != net::OnlinePhase::Off && s.phase != net::OnlinePhase::Ended;
+    SetMenuText("IDS_PORT_ONLINE_HOST", hosting ? L"Cancel Host" : L"Host Game");
     SetMenuText("IDS_PORT_ONLINE_V_CODE", Wide(code));
     SetMenuText("IDS_PORT_ONLINE_V_STATUS", Wide(Shorten(status, 40)));
 }
@@ -249,10 +255,28 @@ void UpdateTexts()
 std::vector<ShellScreenRow> Rows()
 {
     return { { "onlinehost", "IDS_PORT_ONLINE_HOST", true }, { "onlinejoin", "IDS_PORT_ONLINE_JOIN", true },
-        { "onlinecode", "IDS_PORT_ONLINE_CODE", false }, { "onlinestatus", "IDS_PORT_ONLINE_STATUS", false },
-        { "onlineleave", "IDS_PORT_ONLINE_LEAVE", true } };
+        { "onlinecode", "IDS_PORT_ONLINE_CODE", false }, { "onlineleave", "IDS_PORT_ONLINE_LEAVE", true },
+        { "onlinestatus", "IDS_PORT_ONLINE_STATUS", false } };
 }
-enum Row { kHost, kJoin, kCode, kStatus, kLeave };
+enum Row { kHost, kJoin, kCode, kLeave, kStatus, kRowCount };
+
+// Rows that cannot be chosen now: skipped by the cursor and dimmed. Status is never one (it only tells); Room Code
+// only once there is a code to copy; Join while this PC hosts or calls; in a match (the same on both PCs) all but
+// Leave.
+bool RowDisabled(int row)
+{
+    if (row == kStatus)
+        return true;
+    if (net::OnlineActive())
+        return row != kLeave;
+    const net::OnlineStatusInfo s = net::OnlineStatus();
+    const bool idle = s.phase == net::OnlinePhase::Off || s.phase == net::OnlinePhase::Ended;
+    if (row == kCode)
+        return !(s.host && !idle && !s.roomCode.empty());
+    if (row == kJoin)
+        return !idle;
+    return false;
+}
 
 constexpr uint32_t kMakeOnOff = 0x002D9690;   // SettingsScreenOnOffControl
 constexpr uint32_t kOnOffVtable = 0x005D7000;
@@ -282,6 +306,43 @@ int RowOf(uint8_t* handler)
     return -1;
 }
 
+// The cursor's way through the rows that can be chosen: each row's up and down neighbours (the item's +0x18 and
+// +0x1C, the keys of their names) set as it draws, past the disabled ones.
+void LinkRow(uint8_t* handler, int row)
+{
+    uint32_t* item = *reinterpret_cast<uint32_t**>(handler + 8);
+    if (!item)
+        return;
+    const std::vector<ShellScreenRow> rows = Rows();
+    const auto next = [&](int from, int step) {
+        for (int i = 1; i <= kRowCount; ++i) {
+            const int r = ((from + step * i) % kRowCount + kRowCount) % kRowCount;
+            if (!RowDisabled(r))
+                return r;
+        }
+        return from;
+    };
+    item[0x18 / 4] = MenuKey(rows[size_t(next(row, -1))].name.c_str());
+    item[0x1C / 4] = MenuKey(rows[size_t(next(row, 1))].name.c_str());
+}
+
+// A draw with the item dimmed (its colour, item +0x94 RGBA, as the main menu dims its own: alpha 0x69).
+template <typename Draw>
+char DrawDimmed(uint8_t* handler, bool dim, Draw draw)
+{
+    uint8_t* item = *reinterpret_cast<uint8_t**>(handler + 8);
+    if (!dim || !item)
+        return draw();
+    uint8_t saved[4];
+    std::memcpy(saved, item + 0x94, 4);
+    for (int i = 0; i < 3; ++i)
+        item[0x94 + i] = uint8_t(saved[i] * 45 / 100);
+    item[0x97] = uint8_t(std::min<int>(saved[3], 0x69));
+    const char result = draw();
+    std::memcpy(item + 0x94, saved, 4);
+    return result;
+}
+
 uint8_t* CurrentProfile()
 {
     uint8_t* profiles = *reinterpret_cast<uint8_t**>(uintptr_t(kProfiles));
@@ -299,13 +360,15 @@ char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
         return g_OnOffDraw(handler, nullptr, value);
     if (row == kCode)
         UpdateTexts(); // once a frame
+    LinkRow(handler, row);
     handler[0x23C] = 1;
     uint8_t* profile = CurrentProfile();
     const uint8_t saved = profile ? profile[0x2A] : 0;
     if (profile)
         profile[0x2A] = 1;
     SetOnOffTexts(text, text);
-    const char result = g_OnOffDraw(handler, nullptr, value);
+    const char result = DrawDimmed(handler, RowDisabled(row) && row != kStatus,
+        [&] { return g_OnOffDraw(handler, nullptr, value); });
     SetOnOffTexts(nullptr, nullptr);
     if (profile)
         profile[0x2A] = saved;
@@ -317,11 +380,14 @@ char __fastcall ValueEvent(uint8_t* handler, void*, int event, int value)
     if (event == kB)
         return reinterpret_cast<ItemEventFn>(uintptr_t(kItemEvent))(handler, nullptr, event, value);
     if (event == kLeft || event == kRight || event == kChosen) {
-        // A on the room code copies it again (it may have been replaced on the clipboard since)
-        if (RowOf(handler) == kCode && event == kChosen && !net::OnlineActive()) {
+        // A on the room code: Copy Code (to the clipboard; the row says CODE COPIED for 2 s)
+        if (RowOf(handler) == kCode && event == kChosen && !RowDisabled(kCode)) {
             const net::OnlineStatusInfo s = net::OnlineStatus();
-            if (s.host && !s.roomCode.empty() && CopyToClipboard(s.roomCode))
+            if (CopyToClipboard(s.roomCode)) {
                 g_Copied = s.roomCode;
+                g_CopiedAt = GetTickCount64();
+                g_OnOffEvent(handler, nullptr, event, value); // its sound
+            }
         }
         return 1; // the value is not the player's to change
     }
@@ -335,6 +401,8 @@ char __fastcall ButtonEvent(uint8_t* handler, void*, int event, int value)
         return reinterpret_cast<ItemEventFn>(uintptr_t(kItemEvent))(handler, nullptr, event, value);
     if (row < 0 || event != kChosen)
         return g_ButtonEvent(handler, nullptr, event, value);
+    if (RowDisabled(row))
+        return 1;
     if (row == kLeave) {
         g_Note.clear();
         net::OnlineLeave(); // in a match: on both PCs alike (both get the same press)
@@ -353,8 +421,11 @@ char __fastcall ButtonEvent(uint8_t* handler, void*, int event, int value)
             LOG_INFO("Online menu: Host Game");
             if (!net::OnlineHost())
                 g_Note = Shorten(net::OnlineStatus().message, 40);
-        } else if (s.host && !s.roomCode.empty() && CopyToClipboard(s.roomCode)) {
-            g_Copied = s.roomCode;
+        } else if (s.host) { // Cancel Host
+            g_Note.clear();
+            g_CopiedAt = 0;
+            net::OnlineLeave();
+            LOG_INFO("Online menu: Cancel Host");
         }
         UpdateTexts();
         return 1;
@@ -365,6 +436,61 @@ char __fastcall ButtonEvent(uint8_t* handler, void*, int event, int value)
         return 1;
     }
     return 1;
+}
+
+DrawFn g_ButtonDraw = nullptr;
+
+char __fastcall ButtonDraw(uint8_t* handler, void*, uint32_t value)
+{
+    const int row = RowOf(handler);
+    if (row < 0)
+        return g_ButtonDraw(handler, nullptr, value);
+    LinkRow(handler, row);
+    return DrawDimmed(handler, RowDisabled(row), [&] { return g_ButtonDraw(handler, nullptr, value); });
+}
+
+// --- The main menu in a match ----------------------------------------------------------------------------------------
+// In a match only Versus is played for now: Single Player, Settings and Features, and Multi Player's Cooperative,
+// Heroes vs Villains and Battlefront are dimmed and refuse A (the game's error sound), on both PCs alike (OnlineActive
+// is the same on both). The rows: MainMenuButton (vtable 0x5D5410: draw slot 3 0x2CC550, events slot 4 0x2CC7E0)
+// and MainMenuSwitchScreenButton (0x5D5580: draw 0x2CC060; its events are Heroes vs Villains' hook, which asks
+// OnlineRefusesMainMenuEvent).
+constexpr uint32_t kMainButtonVtable = 0x005D5410, kMainButtonDraw = 0x002CC550, kMainButtonEvent = 0x002CC7E0;
+constexpr uint32_t kSwitchVtable = 0x005D5580, kSwitchDraw = 0x002CC060;
+
+bool MainMenuRowDisabled(const uint8_t* handler)
+{
+    if (!net::OnlineActive())
+        return false;
+    const uint8_t* item = *reinterpret_cast<uint8_t* const*>(handler + 8);
+    if (!item)
+        return false;
+    const uint32_t key = *reinterpret_cast<const uint32_t*>(item + 4);
+    for (const char* name : { "singleplayer", "settings", "features", "cooperative", "hvv", "battlefront" })
+        if (key == MenuKey(name))
+            return true;
+    return false;
+}
+
+char __fastcall MainButtonDraw(uint8_t* handler, void*, uint32_t value)
+{
+    return DrawDimmed(handler, MainMenuRowDisabled(handler), [&] {
+        return reinterpret_cast<DrawFn>(uintptr_t(kMainButtonDraw))(handler, nullptr, value);
+    });
+}
+
+char __fastcall SwitchDraw(uint8_t* handler, void*, uint32_t value)
+{
+    return DrawDimmed(handler, MainMenuRowDisabled(handler), [&] {
+        return reinterpret_cast<DrawFn>(uintptr_t(kSwitchDraw))(handler, nullptr, value);
+    });
+}
+
+char __fastcall MainButtonEvent(uint8_t* handler, void*, int event, int value)
+{
+    if (OnlineRefusesMainMenuEvent(handler, event))
+        return 1;
+    return reinterpret_cast<ItemEventFn>(uintptr_t(kMainButtonEvent))(handler, nullptr, event, value);
 }
 
 uint8_t* MakeValue()
@@ -624,6 +750,15 @@ bool SlotIs(uint32_t vtable, int slot, uint32_t function)
 
 } // namespace
 
+bool OnlineRefusesMainMenuEvent(uint8_t* handler, int event)
+{
+    if ((event != kChosen && event != kRight) || !MainMenuRowDisabled(handler))
+        return false;
+    reinterpret_cast<void(__fastcall*)(uint8_t*, void*, int)>(
+        (*reinterpret_cast<void* const* const*>(handler))[11])(handler, nullptr, 0x10); // the error sound
+    return true;
+}
+
 void PatchMainMenuOnline(std::vector<uint8_t>& data)
 {
     std::vector<uint8_t> copy = data;
@@ -643,6 +778,17 @@ void InstallOnlineMenu()
         LOG_WARN("Online menu: the code keyboard is not as expected; no Online entry");
         return;
     }
+    if (SlotIs(kMainButtonVtable, 3, kMainButtonDraw) && SlotIs(kMainButtonVtable, 4, kMainButtonEvent) &&
+        SlotIs(kSwitchVtable, 3, kSwitchDraw)) {
+        const uint32_t draw = uint32_t(reinterpret_cast<uintptr_t>(&MainButtonDraw));
+        const uint32_t event = uint32_t(reinterpret_cast<uintptr_t>(&MainButtonEvent));
+        const uint32_t switchDraw = uint32_t(reinterpret_cast<uintptr_t>(&SwitchDraw));
+        PatchBytes(kMainButtonVtable + 3 * 4, &draw, 4);
+        PatchBytes(kMainButtonVtable + 4 * 4, &event, 4);
+        PatchBytes(kSwitchVtable + 3 * 4, &switchDraw, 4);
+    } else {
+        LOG_WARN("Online menu: the main menu's buttons are not as expected; all their rows stay open in a match");
+    }
     if (SlotIs(kIntroVtable, 0, kIntroInit)) {
         const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(&IntroInit));
         PatchBytes(kIntroVtable, &hook, 4);
@@ -658,6 +804,8 @@ void InstallOnlineMenu()
     std::memcpy(g_ButtonVtable, reinterpret_cast<const void*>(uintptr_t(kButtonVtable)), sizeof g_ButtonVtable);
     g_ButtonEvent = reinterpret_cast<ItemEventFn>(uintptr_t(g_ButtonVtable[4]));
     g_ButtonVtable[4] = uint32_t(reinterpret_cast<uintptr_t>(&ButtonEvent));
+    g_ButtonDraw = reinterpret_cast<DrawFn>(uintptr_t(g_ButtonVtable[3]));
+    g_ButtonVtable[3] = uint32_t(reinterpret_cast<uintptr_t>(&ButtonDraw));
     g_ButtonVtable[10] = uint32_t(reinterpret_cast<uintptr_t>(&MakeButtonSlot));
     std::memcpy(g_KeyboardVtable, reinterpret_cast<const void*>(uintptr_t(kCodesKeyboardVtable)), sizeof g_KeyboardVtable);
     g_KeyboardVtable[kInitSlot] = uint32_t(reinterpret_cast<uintptr_t>(&KeyboardInit));
