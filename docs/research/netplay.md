@@ -426,6 +426,39 @@ Method: record a duel's character objects every frame (the debug-register watch 
 the state of frame N from one run and write it into another run's frame N, and check the game carries on coherently
 (no crash, the fighters where they should be, the moves continuing).
 
+### Phase 1, first results (2026-11-01, `duelrec`, `duelsnap`)
+
+A scripted Versus duel (Obi-Wan against Anakin, the test AI on both pads) recorded every frame for 3600 frames
+(`duelrec`, net/duelstate.cpp): the fighters are re-created at every round (new addresses), and their changing
+fields are, for both fighters alike:
+
+| Offset | What |
+|---|---|
+| `+0x12C`, `+0x130`, `+0x134` | dead, health, max health (health copied at `+0x3B0`) |
+| `+0x150`..`+0x18B` | the transform: orientation rows, position at `+0x180` (copies at `+0x630`, `+0x750`) |
+| `+0x1B0`..`+0x1B8` | velocity (copied at `+0x410`) |
+| `+0x210`..`+0x22B`, `+0x280`..`+0x29B` | floats moving with the fight (facing, sway: to name) |
+| `+0x310` | frames since the current action started (back to 0 at each new move) |
+| `+0x314` | **the fighter's simulation tick** (one per game step, from the round's start) |
+| `+0x398`, `+0x3A0` | the action's timers |
+| `+0x3E4`, `+0x3F0`..`+0x3FC`, `+0x920` | state and flags (0..0x3C, bit flags, 0..0x19) |
+| `+0xA40`, `+0xA44` | Force, max Force |
+
+`+0x314` shows the game's simulation does not step once per drawn frame: some frames step 2 to 7 ticks (catching
+up after a hitch), some none (slow motion, the round's end). Netplay has to count **game ticks**, not frames.
+
+Capture and apply (`duelsnap test <a> <b>`, mode `full` = the whole 0x1800 bytes, `fields` = the 256 bytes of the
+table above per fighter, `pos` = the transform and its copies, 84 bytes): in all three the game **keeps what is
+written** (position, health, Force, tick and action counters the next frames carry on from the written values, no
+snap back, no crash); the duel carries on coherently on screen (the `fields` load took both fighters from mid-fight
+back to the round's start pose and full health; the round went on normally). So the fighter object is where the
+duel's state is: no hidden physics body pulls a fighter back. **256 bytes per fighter** is the order of size: about
+30 KiB/s at 60 ticks/s for both fighters, uncompressed.
+
+Still to check: whether the running animation (which clip, which time) follows the written action fields or lives
+in an object the fighter points to (`+0x91C` looks like a pointer); thrown sabers and Force powers in progress; the
+round state (round, timer, scores) and the random generator. Then phase 2 (two PCs).
+
 ### Phases
 
 1. **Duel state capture/apply** on one PC: the state's size (a few KiB expected), and whether writing it into a
