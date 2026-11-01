@@ -1051,6 +1051,12 @@ void Online(const std::vector<std::string>& words)
         net::OnlineJoin(code);
     } else if (_stricmp(what.c_str(), "leave") == 0) {
         net::OnlineLeave();
+    } else if (_stricmp(what.c_str(), "set") == 0 && words.size() >= 5) { // online set <rounds> <arena 0|1> <rematch 0|1>
+        net::OnlineRoomSettings room;
+        room.rounds = uint8_t(std::clamp(std::atoi(words[2].c_str()), 1, 5));
+        room.arena = uint8_t(std::atoi(words[3].c_str()) ? 1 : 0);
+        room.rematch = uint8_t(std::atoi(words[4].c_str()) ? 1 : 0);
+        net::SetOnlineRoom(room);
     } else if (_stricmp(what.c_str(), "start") == 0) { // the room's Start (tests)
         Print(LineKind::Output, game::OnlineStartVersus() ? "  to the Versus select" : "  not in the front end");
         return;
