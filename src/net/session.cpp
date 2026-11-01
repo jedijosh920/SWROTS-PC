@@ -306,9 +306,10 @@ uint64_t ContentHash()
             std::wstring lower = f;
             for (wchar_t& c : lower)
                 c = wchar_t(towlower(c));
-            if (mods && (lower.size() > 4 && (lower.compare(lower.size() - 4, 4, L".txt") == 0 ||
-                                                 lower.compare(lower.size() - 3, 3, L".md") == 0)))
-                continue;
+            if (mods && ((lower.size() > 4 && (lower.compare(lower.size() - 4, 4, L".txt") == 0 ||
+                                                  lower.compare(lower.size() - 3, 3, L".md") == 0)) ||
+                            lower.rfind(L"\\_", 0) == 0 || lower.find(L"\\__pycache__\\") != std::wstring::npos))
+                continue; // a mod's notes, and work folders (mods\\_work...) the game never reads
             uint64_t one = 0xCBF29CE484222325ull;
             WIN32_FILE_ATTRIBUTE_DATA a = {};
             GetFileAttributesExW((exe + folder + f).c_str(), GetFileExInfoStandard, &a);
