@@ -146,6 +146,24 @@ void SetSessionDrives(const std::wstring& saves, const std::wstring& utility)
         (utility.empty() ? g_Cache : utility).c_str());
 }
 
+static std::wstring g_DefaultMods, g_DefaultCache; // the PC's own, while a match has its own (SetSessionFolders)
+
+void SetSessionFolders(const std::wstring& mods, const std::wstring& cache)
+{
+    if (g_DefaultMods.empty()) {
+        g_DefaultMods = g_Mods;
+        g_DefaultCache = g_Cache;
+    }
+    g_Mods = mods.empty() ? g_DefaultMods : mods;
+    g_Cache = cache.empty() ? g_DefaultCache : cache;
+    CreateDirectoryW(g_Mods.c_str(), nullptr);
+    CreateDirectoryW(g_Cache.c_str(), nullptr);
+    LOG_INFO("Folders: mods %ls, cache %ls", g_Mods.c_str(), g_Cache.c_str());
+}
+
+std::wstring ModsPath() { return g_Mods; }
+std::wstring CachePath() { return g_Cache; }
+
 std::wstring SaveDrivePath() { return g_SessionSaves.empty() ? g_Saves : g_SessionSaves; }
 std::wstring UtilityDrivePath() { return g_SessionUtility.empty() ? g_Cache : g_SessionUtility; }
 

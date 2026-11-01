@@ -190,7 +190,8 @@ static void StartGame(const void* launchData)
     game::InstallDevOptions(g_Boot.debugDisplays);
     game::InstallGameFixes();
     game::InstallClassSetup();
-    game::InstallCustomCharacters(g_Boot.paths.mods, g_Boot.paths.gameData, g_Boot.paths.cache);
+    const std::wstring mods = kernel::ModsPath(), cache = kernel::CachePath(); // an online match's own
+    game::InstallCustomCharacters(mods, g_Boot.paths.gameData, cache);
     game::InstallCody();
     game::InstallRevan();
     game::InstallVersus();
@@ -198,16 +199,16 @@ static void StartGame(const void* launchData)
     game::InstallAnimationAliases();
     game::InstallCharacters();
     game::InstallMenus();
-    game::InstallPrompts(g_Boot.paths.cache);
+    game::InstallPrompts(cache);
     game::InstallCoop();
-    game::InstallCustomMaps(g_Boot.paths.mods);
-    game::InstallDevMap(g_Boot.paths.gameData, g_Boot.paths.mods);
+    game::InstallCustomMaps(mods);
+    game::InstallDevMap(g_Boot.paths.gameData, mods);
     game::InstallHvv();
     game::InstallHvvMenu();
     game::InstallMissions(g_Boot.paths.mods);
     game::InstallMissionsMenu();
     game::InstallOnlineMenu();
-    game::InstallResourceHooks(g_Boot.paths.gameData, g_Boot.paths.mods, g_Boot.paths.cache, g_Boot.dumpDir,
+    game::InstallResourceHooks(g_Boot.paths.gameData, mods, cache, g_Boot.dumpDir,
         g_Boot.logResources);
     game::InstallFreeCamera();
     audio::InitXboxGlobals();

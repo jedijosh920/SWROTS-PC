@@ -27,6 +27,12 @@ struct Paths {
 void SetSessionDrives(const std::wstring& saves, const std::wstring& utility);
 // The host folders the save drive and the utility drive are now.
 std::wstring SaveDrivePath();
+// An online match's own mods and cache folders (an empty mods folder: matches are played without mods, the same on
+// both PCs whatever each has installed; a cache of its own: nothing generated from a PC's mods is served). Empty:
+// the PC's own again. The next start of the game uses them (ModsPath, CachePath).
+void SetSessionFolders(const std::wstring& mods, const std::wstring& cache);
+std::wstring ModsPath();
+std::wstring CachePath();
 std::wstring UtilityDrivePath();
 
 // Order matters: Init once per process; BootInit each time the game image is (re)started,

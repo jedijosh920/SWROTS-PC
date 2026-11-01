@@ -298,7 +298,7 @@ uint64_t ContentHash()
     const std::wstring exe = ExeDirectory();
     uint64_t h = 0xCBF29CE484222325ull;
     std::string manifest;
-    for (const wchar_t* folder : { L"\\GameData", L"\\mods" }) {
+    for (const wchar_t* folder : { L"\\GameData" }) { // matches are played without mods (SetSessionFolders)
         const bool mods = folder[1] == L'm';
         std::vector<std::wstring> files;
         ListFiles(exe + folder, L"", files);
@@ -506,6 +506,7 @@ void RestoreLocked()
     kernel::SetDeterministicBoot(false);
     kernel::SetDeterministicAddresses(false);
     kernel::SetSessionDrives(std::wstring(), std::wstring());
+    kernel::SetSessionFolders(std::wstring(), std::wstring());
     if (g_S.settingsSaved) {
         EditSettings() = g_S.saved;
         g_S.settingsSaved = false;
@@ -824,6 +825,7 @@ void BeginBootLocked()
     }
     g_S.fps = uint32_t(std::clamp(g.fpsLimit, 10, 120));
     kernel::SetSessionDrives(root + L"\\saves", root + L"\\utility");
+    kernel::SetSessionFolders(root + L"\\nomods", root + L"\\cache"); // no mods in a match: the same game on both PCs
     input::SetOnlinePorts(true);
     input::SetPadSource(&PadFromSession);
     if (!kernel::SetDeterministicAddresses(true)) {
@@ -877,7 +879,7 @@ void HandleLocked(const uint8_t* data, size_t size, const Endpoint& from)
                 return;
             }
             if (m.content != g_S.content) {
-                reject("the host's game files or mods differ from yours (compare netplay\\content.txt on both PCs)");
+                reject("the host's game files differ from yours (compare netplay\\content.txt on both PCs)");
                 return;
             }
             if (!g_S.peer.Valid()) {

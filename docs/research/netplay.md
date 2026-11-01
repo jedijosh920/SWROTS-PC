@@ -382,3 +382,10 @@ Result on one PC (2026-10-31, `online-ui.bat`, both copies driven by scripted pr
 (UPnP mapped the port on the test PC's router; the code shown and copied), the guest's Join Game, the code pasted with Y
 on the game's keyboard, Done: joined, profile sent, both started again at the main menu (which shows the Online row)
 and played 3,000+ frames in lockstep with the same checks.
+
+### Matches without mods (2026-11-01)
+
+A match is played without mods, whatever each PC has installed: its start of the game uses an empty mods folder and a
+cache of its own (`netplay\online\nomods`, `netplay\online\cache`; kernel::SetSessionFolders), so nothing a PC's mods
+add or a PC's earlier sessions generated is loaded. Only GameData is compared when a guest joins (its files listed with
+their hashes in `netplay\content.txt`, to find a difference). The PC's own mods come back with the end of the match.
