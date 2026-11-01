@@ -883,9 +883,18 @@ uint32_t FrameBoundary(const void* frameStack, uint32_t swapCount)
 bool Resimulating() { return g_Resim; }
 bool RollbackActive() { return g_Mode == Mode::Running; }
 
-void StartSyncTest(uint32_t distance, uint32_t every)
+bool g_TestBootPending = false; // the test restarted the level: the session survives that reboot
+
+void StartSyncTest(uint32_t distance, uint32_t every, bool deterministic)
 {
     Stop("a new one starts");
+    if (deterministic) { // as a match plays: the level restarted with the scheduler and fixed addresses
+        if (!kernel::SetDeterministicAddresses(true))
+            LOG_WARN("SyncTest: no deterministic addresses on this PC");
+        kernel::SetDeterministicBoot(true);
+        g_TestBootPending = true;
+        kernel::RestartMission();
+    }
     g_Test = Test::None;
     g_Distance = std::clamp<uint32_t>(distance, 1, 30);
     g_WatchRound = 0;
@@ -893,8 +902,6 @@ void StartSyncTest(uint32_t distance, uint32_t every)
     g_Every = std::max<uint32_t>(every, 1);
     g_Mode = Mode::Arming;
 }
-
-bool g_TestBootPending = false; // the test restarted the level: the session survives that reboot
 
 void StartNetTest(bool record, const std::string& name, uint32_t frames)
 {
@@ -956,7 +963,7 @@ void ResetRollbackForReboot()
     if (keepTest) { // nettest restarted the level: it starts when the new one has settled
         g_TestBootPending = false;
         g_Mode = Mode::Arming;
-        LOG_INFO("nettest: waiting for the restarted level");
+        LOG_INFO("rollback: waiting for the restarted level");
     }
 }
 
