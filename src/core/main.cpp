@@ -199,7 +199,10 @@ static void StartGame(const void* launchData)
     game::InstallAnimationAliases();
     game::InstallCharacters();
     game::InstallMenus();
-    game::InstallPrompts(cache);
+    // The keyboard's button prompts load their own pictures through the game (its allocations and file reads): not in
+    // a netplay match, where the game must run the same on both PCs (one may play with the keyboard, the other not).
+    if (!kernel::SchedActive())
+        game::InstallPrompts(cache);
     game::InstallCoop();
     game::InstallCustomMaps(mods);
     game::InstallDevMap(g_Boot.paths.gameData, mods);
