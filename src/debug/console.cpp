@@ -1188,8 +1188,14 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
             else
                 classes.push_back(words[i]);
         }
+        // the names as registered; before any level (the title, the menus) the classes are not registered yet: then
+        // as typed
         const char* first = classes.size() == 2 ? game::RegisteredClassName(classes[0].c_str()) : nullptr;
         const char* second = classes.size() == 2 ? game::RegisteredClassName(classes[1].c_str()) : nullptr;
+        if (classes.size() == 2 && !first && !second && !game::PlayerObject()) {
+            first = classes[0].c_str();
+            second = classes[1].c_str();
+        }
         if (!first || !second) {
             Print(LineKind::Error, "versus <your class> <the computer's class> [map <map>] [rounds <n>]");
             return true;
