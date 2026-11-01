@@ -459,6 +459,27 @@ Still to check: whether the running animation (which clip, which time) follows t
 in an object the fighter points to (`+0x91C` looks like a pointer); thrown sabers and Force powers in progress; the
 round state (round, timer, scores) and the random generator. Then phase 2 (two PCs).
 
+### Phase 1, a manual duel played into a live one (2026-11-01, `duelplay`)
+
+A duel played by hand (Obi-Wan against the computer's Anakin: saber, Force with the left trigger, jumps,
+knockdowns; two rounds won) recorded with `duelrec`, then **played into another run's live duel**, both fighters'
+fields written every frame (`duelplay m 5560 1200 15 3`, screenshots every 15 frames):
+
+- The first try crashed (a pooled-string release at 0x2269C5): some fields **point into the game's memory**, valid
+  only in the run that recorded them: `+0x15C`, `+0x16C`, `+0x17C` (the transform's rows' 4th dwords), `+0x21C`,
+  `+0x39C`, and `+0x3EC`, a pooled string, **the state's name** (e.g. `HIT`). Left out, the playback runs to the end.
+- Positions, health and Force follow the recording. **The animations do not**: each fighter plays what the live
+  game decided (the live Anakin kicks Obi-Wan down where the recording had no knockdown, the live Obi-Wan stands
+  idle where the recording attacked). So the running move (which action, which animation, its time) is **not** in
+  the fields written: it lives in the fighter's action state machine (the state's name at `+0x3EC` and objects the
+  fighter points to).
+
+Consequence for the model: a fighter cannot be shown from position and health alone. Either the action state
+machine is found and written too (its move and time, names translated to the receiving game's pooled strings), or
+the remote fighter is played from **its inputs** (it then animates by itself) with the state only correcting
+position, health and Force, and the action written only where they part (a hit landed on one PC only). Both need
+the action state machine's layout: next step.
+
 ### Phases
 
 1. **Duel state capture/apply** on one PC: the state's size (a few KiB expected), and whether writing it into a
