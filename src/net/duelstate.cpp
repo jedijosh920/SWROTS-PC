@@ -134,14 +134,20 @@ namespace {
 struct Range { uint16_t offset, bytes; };
 constexpr Range kFields[] = {
     { 0x12C, 0x0C }, // dead, health, max health
-    { 0x150, 0x3C }, // the transform: orientation rows and the position (+0x180)
+    { 0x150, 0x0C }, // the transform's rows (their 4th dwords are not floats: +0x15C, +0x16C, +0x17C point into
+    { 0x160, 0x0C }, // the game's memory) and the position (+0x180)
+    { 0x170, 0x0C },
+    { 0x180, 0x0C },
     { 0x1B0, 0x0C }, // velocity
-    { 0x210, 0x1C },
+    { 0x210, 0x0C }, // (+0x21C points)
+    { 0x220, 0x0C },
     { 0x280, 0x1C },
-    { 0x310, 0x08 }, // the action and its frame
-    { 0x398, 0x0C }, // the action's timers
+    { 0x310, 0x08 }, // the action's frame, the fighter's tick
+    { 0x398, 0x04 }, // the action's timers (+0x39C points)
+    { 0x3A0, 0x04 },
     { 0x3B0, 0x04 }, // health (copy)
-    { 0x3E4, 0x1C }, // state, flags
+    { 0x3E4, 0x08 }, // state (+0x3EC: a pooled string, the state's name)
+    { 0x3F0, 0x10 }, // flags
     { 0x410, 0x0C }, // velocity (copy)
     { 0x5A8, 0x04 },
     { 0x5D0, 0x04 },
@@ -152,7 +158,8 @@ constexpr Range kFields[] = {
     { 0xA40, 0x08 }, // Force, max Force
     { 0xA60, 0x04 },
 };
-constexpr Range kPosition[] = { { 0x150, 0x3C }, { 0x630, 0x0C }, { 0x750, 0x0C } };
+constexpr Range kPosition[] = { { 0x150, 0x0C }, { 0x160, 0x0C }, { 0x170, 0x0C }, { 0x180, 0x0C }, { 0x630, 0x0C },
+    { 0x750, 0x0C } };
 
 struct Snap {
     bool valid = false;
@@ -196,13 +203,34 @@ template <typename T> T At(const uint8_t* o, uint32_t offset)
     return v;
 }
 
+// The fighter's state's name (+0x3EC, a pooled string), or "".
+void ReadStateName(const uint8_t* o, char* text)
+{
+    __try {
+        const char* name = *reinterpret_cast<const char* const*>(o + 0x3EC);
+        if (name)
+            for (int i = 0; i < 39 && name[i]; ++i)
+                text[i] = (name[i] >= 32 && name[i] < 127) ? name[i] : '?';
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        text[0] = 0;
+    }
+}
+
+std::string StateName(const uint8_t* o)
+{
+    char text[40] = {};
+    ReadStateName(o, text);
+    return text;
+}
+
 void LogFighter(const char* what, int i, const uint8_t* o)
 {
     LOG_INFO("Duel snap: %s P%d pos %.1f %.1f %.1f vel %.1f %.1f %.1f health %.0f force %.0f action 0x%x/%u "
-             "state 0x%x 0x%x 0x%x",
+             "state 0x%x 0x%x 0x%x '%s'",
         what, i + 1, At<float>(o, 0x180), At<float>(o, 0x184), At<float>(o, 0x188), At<float>(o, 0x1B0),
         At<float>(o, 0x1B4), At<float>(o, 0x1B8), At<float>(o, 0x130), At<float>(o, 0xA40), At<uint32_t>(o, 0x310),
-        At<uint32_t>(o, 0x314), At<uint32_t>(o, 0x3E4), At<uint32_t>(o, 0x3F8), At<uint32_t>(o, 0x920));
+        At<uint32_t>(o, 0x314), At<uint32_t>(o, 0x3E4), At<uint32_t>(o, 0x3F8), At<uint32_t>(o, 0x920),
+        StateName(o).c_str());
 }
 
 std::string Save()
@@ -315,8 +343,10 @@ void PlayFrame()
         std::snprintf(name, sizeof(name), "play-%05u", g_PlayFrame);
         d3d::RequestScreenshot(name);
     }
-    if (g_PlayFrame % 60 == 0)
+    if (g_PlayFrame % 20 == 0) {
         LogFighter("played", 0, p[0]);
+        LogFighter("played", 1, p[1]);
+    }
     ++g_PlayFrame;
     --g_PlayLeft;
 }
