@@ -899,9 +899,9 @@ bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
             packet = ++g_S.ownPacket;
             return true;
         }
-        if (port == 1 && both) { // (player 2's join comes in the guest's pad: as a Start of its own)
-            pad = g_S.remotePad;
-            packet = g_S.remotePacket;
+        if (port == 1) { // the guest's pad, always there (the menus only listen to a pad they have seen all along);
+            pad = both ? g_S.remotePad : input::GamePad{}; // its buttons only where both play (its join: a Start of
+            packet = g_S.remotePacket;                       // the guest's own)
             ++g_S.remoteReads;
             return true;
         }
@@ -927,6 +927,16 @@ bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
         }
     } else if (port == 0) {
         return false; // this PC's own menus
+    } else if (port == 1) { // player 2 (this PC's own pad), seen all along without its buttons
+        input::GamePad live;
+        input::ReadLivePad(0, live);
+        if (std::memcmp(&live, &g_S.ownPad, sizeof(live)) != 0) {
+            g_S.ownPad = live;
+            ++g_S.ownPacket;
+        }
+        pad = {};
+        packet = g_S.ownPacket;
+        return true;
     }
     pad = {};
     packet = 0;
@@ -1086,7 +1096,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             if (IsSelectScreen(screen) && !g_S.host)
                 g_S.joinAt = g_S.frame + 75; // player 2 joins (as its Start would), once the screen is in
             if (screen == game::MenuKey("select_arena") && g_S.host && g_S.room.arena == 1)
-                g_S.arenaAt = g_S.frame + 20; // the arena: Random's row, taken
+                g_S.arenaAt = g_S.frame + 75; // the arena: a random open row, taken once the screen is in
         }
     }
     const uint32_t screen = g_S.screen, since = g_S.frame - g_S.screenSince;
