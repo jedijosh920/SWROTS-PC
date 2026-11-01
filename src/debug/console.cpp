@@ -1092,7 +1092,7 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         command != "findrefs" && command != "despawn" && command != "characters" && command != "scale" &&
         command != "screenshot" && command != "coop" &&
         command != "devmap" && command != "hvv" && command != "versus" && command != "mission" && command != "kill" && command != "synctest" && command != "nettest" &&
-        command != "online" && command != "duelrec" && command != "duelsnap")
+        command != "online" && command != "duelrec" && command != "duelsnap" && command != "duelplay")
         return false;
     Print(LineKind::Output, "> %s", line.c_str());
     if (command == "duelist") {
@@ -1124,6 +1124,11 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
     } else if (command == "duelsnap") { // duelsnap save | load [full|fields|pos] | test <a> <b> | mode <m>
         auto word = [&](size_t i) { return i < words.size() ? words[i] : std::string(); };
         Print(LineKind::Output, "  %s", net::DuelSnapCommand(word(1), word(2), word(3)).c_str());
+    } else if (command == "duelplay") { // duelplay <name> <from> <frames> [shots every] [fighters 1|2|3]
+        auto num = [&](size_t i) { return i < words.size() ? uint32_t(std::max(0, std::atoi(words[i].c_str()))) : 0u; };
+        Print(LineKind::Output, "  %s",
+            words.size() >= 4 ? net::StartDuelPlay(words[1], num(2), num(3), num(4), num(5)).c_str()
+                              : "usage: duelplay <name> <from frame> <frames> [screenshot every n] [fighters 1|2|3]");
     } else if (command == "saber") {
         Saber(words);
     } else if (command == "spawn") {

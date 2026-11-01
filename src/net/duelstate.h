@@ -23,4 +23,9 @@ std::string DuelRecorderStatus();
 // load <b> frames later.
 std::string DuelSnapCommand(const std::string& verb, const std::string& arg1, const std::string& arg2);
 
+// Plays a recording's fighters into the live duel: from its frame `from`, `frames` frames, each frame the gameplay
+// fields of the fighters in `mask` (1: player 1, 2: player 2, 3: both) written into the live ones; a screenshot
+// (play-<frame>.png) every `shotsEvery` frames (0: none). The live duel's own inputs still play.
+std::string StartDuelPlay(const std::string& name, uint32_t from, uint32_t frames, uint32_t shotsEvery, uint32_t mask);
+
 } // namespace swrots::net

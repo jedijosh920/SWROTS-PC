@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "core/log.h"
+#include "d3d/recorder.h"
 #include "game/characters.h"
 #include "game/coop.h"
 #include "input/controls.h"
@@ -159,6 +160,8 @@ struct Snap {
     std::vector<uint8_t> bytes[2];
 };
 Snap g_Snap;
+FILE* g_Play = nullptr;
+uint32_t g_PlayLeft = 0, g_PlayFrame = 0, g_PlayShots = 0, g_PlayMask = 3, g_PlayPad = 18;
 int g_Watch = 0;           // frames still to log after a load
 int g_TestSave = -1, g_TestLoad = -1;
 std::string g_TestMode;
@@ -267,6 +270,12 @@ std::string DuelSnapCommand(const std::string& verb, const std::string& arg1, co
         g_TestMode = "";
         return "duel snap: test armed";
     }
+    if (verb == "stop") { // stops a playback (duelplay)
+        if (g_Play)
+            std::fclose(g_Play);
+        g_Play = nullptr;
+        return "duel play: stopped";
+    }
     if (verb == "mode") {
         g_TestMode = arg1;
         return "duel snap: test mode " + arg1;
@@ -277,8 +286,46 @@ std::string DuelSnapCommand(const std::string& verb, const std::string& arg1, co
     return line;
 }
 
+namespace {
+// Playback: a recording's fighters written into the live duel, frame by frame (the guest's view in phase 2: a fighter
+// driven only by the state it is sent).
+
+void PlayFrame()
+{
+    if (!g_Play)
+        return;
+    uint8_t* p[2] = {};
+    Fighters(p[0], p[1]);
+    if (!p[0] || !p[1])
+        return; // waits for the duel
+    static std::vector<uint8_t> rec;
+    rec.resize(12 + 2 * g_PlayPad + 2 * kObjectBytes);
+    if (std::fread(rec.data(), rec.size(), 1, g_Play) != 1 || g_PlayLeft == 0) {
+        std::fclose(g_Play);
+        g_Play = nullptr;
+        LOG_INFO("Duel play: done at the recording's frame %u", g_PlayFrame);
+        return;
+    }
+    const uint8_t* fighters = rec.data() + 12 + 2 * g_PlayPad;
+    for (int i = 0; i < 2; ++i)
+        if (g_PlayMask & (1u << i))
+            Write(p[i], fighters + i * kObjectBytes, kFields, std::size(kFields));
+    if (g_PlayShots && g_PlayFrame % g_PlayShots == 0) {
+        char name[32];
+        std::snprintf(name, sizeof(name), "play-%05u", g_PlayFrame);
+        d3d::RequestScreenshot(name);
+    }
+    if (g_PlayFrame % 60 == 0)
+        LogFighter("played", 0, p[0]);
+    ++g_PlayFrame;
+    --g_PlayLeft;
+}
+
+} // namespace
+
 void DuelSnapFrame()
 {
+    PlayFrame();
     if (g_Watch > 0) {
         uint8_t* p[2] = {};
         Fighters(p[0], p[1]);
@@ -296,6 +343,30 @@ void DuelSnapFrame()
     } else if (g_TestSave <= 0 && g_TestLoad > 0 && --g_TestLoad == 0) {
         LOG_INFO("%s", Load(g_TestMode).c_str());
     }
+}
+
+std::string StartDuelPlay(const std::string& name, uint32_t from, uint32_t frames, uint32_t shotsEvery, uint32_t mask)
+{
+    if (g_Play)
+        std::fclose(g_Play);
+    g_Play = _wfopen((ExeDir() + L"\\netplay\\duel-" + std::wstring(name.begin(), name.end()) + L".bin").c_str(), L"rb");
+    if (!g_Play)
+        return "duel play: no such recording";
+    uint32_t header[3] = {};
+    std::fread(header, sizeof(header), 1, g_Play);
+    if (header[0] != 0x52445753 || header[2] != kObjectBytes) {
+        std::fclose(g_Play);
+        g_Play = nullptr;
+        return "duel play: not a duel recording";
+    }
+    const long long record = 12 + 2 * g_PlayPad + 2 * kObjectBytes;
+    _fseeki64(g_Play, 12 + record * from, SEEK_SET);
+    g_PlayFrame = from;
+    g_PlayLeft = frames;
+    g_PlayShots = shotsEvery;
+    g_PlayMask = mask ? mask : 3;
+    LOG_INFO("Duel play: '%s' from frame %u, %u frames, fighters %u", name.c_str(), from, frames, g_PlayMask);
+    return "duel play: started";
 }
 
 void DuelRecorderFrame()
