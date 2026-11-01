@@ -480,6 +480,38 @@ the remote fighter is played from **its inputs** (it then animates by itself) wi
 position, health and Force, and the action written only where they part (a hit landed on one PC only). Both need
 the action state machine's layout: next step.
 
+### Phase 1, the action state machine (2026-11-01, `seqplay`)
+
+A fighter's moves are its behaviour's sequences (GBehavior `CharState` at `[character+0x434]`, vtable 0x58EFB8,
+docs/research/characters.md "Optional sequences"). Read from `0x49D2A0` (a sequence's start) and a recording of
+the behaviour's first 0x140 bytes every frame:
+
+| CharState | What |
+|---|---|
+| `+0x04` | the script class: `+8` the number of sequences, `+0xC` their records (each with its name at `+0xC`) |
+| `+0x2C` | the behaviour's tick |
+| `+0x30` | **the running sequence** (a record of that list), `+0x38` the previous one |
+| `+0x50` | the sequence's speed (1.0, 1.2...) |
+| `+0x68` | **ticks since the sequence started** (0 at a start; steps 2 to 7 with a hitch, like the fighter's tick) |
+| `+0x78` | sequences started (counts up at every start) |
+| `+0x80` | the running step's index |
+| `+0xAC`..`+0xB4` | the running steps (pointers) |
+
+A sequence is named the same on both PCs by its **index in its class's list** (the same game data on both). The
+duel's intro already starts one by its record: ICharacter `0x150E30` (thiscall: record, start time in seconds,
+0, 0, speed), which also takes a **start time**, for a correction that comes late.
+
+Test (`seqplay.bat`): a scripted duel recorded with screenshots, then played into a new duel, player 1's fields
+written every frame and each sequence the recording started **started on the live fighter** at the same frame
+(`StartSeqRaw`). 38 sequences in 620 frames (attacks, saber throw and catch, Force push and stun, a knockdown and
+getting up), none refused. The screenshots side by side: Obi-Wan **now plays the recording's moves** (the
+knockdown, the getting up, the saber throw), at the recording's place. The other fighter, live and driven by the
+computer, of course differs.
+
+So a fighter's state, as the host would send it: the fields (about 200 bytes, pointers left out), the running
+sequence's index, its start count and its ticks. The guest starts a sequence when the host's start count moves
+(late by the delay: started at the host's ticks), and writes the fields. Phase 2 can start.
+
 ### Phases
 
 1. **Duel state capture/apply** on one PC: the state's size (a few KiB expected), and whether writing it into a
