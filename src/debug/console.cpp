@@ -1197,9 +1197,12 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         // developer map or a custom map
         std::string map;
         int rounds = 0;
+        bool human = false; // "human": player 2 on the second pad (an online match's guest) instead of the computer
         std::vector<std::string> classes;
         for (size_t i = 1; i < words.size(); ++i) {
-            if (words[i] == "map" && i + 1 < words.size())
+            if (words[i] == "human")
+                human = true;
+            else if (words[i] == "map" && i + 1 < words.size())
                 map = words[++i];
             else if (words[i] == "rounds" && i + 1 < words.size())
                 rounds = std::atoi(words[++i].c_str());
@@ -1223,7 +1226,7 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
             return true;
         }
         Print(LineKind::Output, "  starting a duel...");
-        game::StartDuel(first, second, map, rounds, game::ProfileSessionArguments());
+        game::StartDuel(first, second, map, rounds, game::ProfileSessionArguments(), human);
     } else if (command == "kill") {
         // kill: the player's character is defeated at once, as by a killing blow (to see what a defeat does: a
         // mission's Game Over, a mode's comeback)

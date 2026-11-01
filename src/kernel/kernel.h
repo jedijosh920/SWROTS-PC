@@ -65,6 +65,9 @@ void SetDiscFileOverride(const std::string& rest, const std::wstring& host);
 // it restarts: it may change them (e.g. the level). Several can be set (each once), run in order.
 using LaunchFilter = void (*)(std::string& arguments);
 void SetLaunchFilter(LaunchFilter filter);
+// Online play's look at the same launches, after the filter (it may change them too, and may wait first: the guest
+// waits for the host's).
+void SetLaunchObserver(LaunchFilter observer);
 // Development aid: restarts the game in this process every `seconds` (SWROTS_REBOOT_EVERY), as a level
 // change does, to test what a restart leaves behind.
 void StartRebootTest(unsigned seconds);

@@ -145,7 +145,7 @@ void ReadSeq(const uint8_t* character, SeqInfo& out)
 
 // Starts the sequence of this index of the character's class (as the duel's intro starts one: 0x150E30, thiscall
 // (record, start time, 0, 0, speed)); false when it refuses.
-bool StartSeqRaw(uint8_t* character, int32_t index)
+bool StartSeqRaw(uint8_t* character, int32_t index, float atSeconds = 0.0f)
 {
     __try {
         const uint8_t* state = *reinterpret_cast<uint8_t* const*>(character + kCharState);
@@ -154,7 +154,7 @@ bool StartSeqRaw(uint8_t* character, int32_t index)
             return false;
         uint8_t* record = (*reinterpret_cast<uint8_t* const* const*>(info + 0xC))[index];
         return reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint8_t*, float, int, int, float)>(0x00150E30)(
-            character, nullptr, record, 0.0f, 0, 0, 1.0f);
+            character, nullptr, record, atSeconds, 0, 0, 1.0f);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
@@ -259,7 +259,7 @@ int g_Watch = 0;           // frames still to log after a load
 int g_TestSave = -1, g_TestLoad = -1;
 std::string g_TestMode;
 
-uint32_t Fields(const Range* ranges, size_t count)
+constexpr uint32_t Fields(const Range* ranges, size_t count)
 {
     uint32_t n = 0;
     for (size_t i = 0; i < count; ++i)
@@ -470,6 +470,105 @@ void PlayFrame()
 }
 
 } // namespace
+
+// --- Client/server netplay (phase 2): a fighter's state sent by the host, applied by the guest -------------------------
+
+static_assert(sizeof(FighterState) == 12 + kFighterFieldBytes, "FighterState is packed");
+
+bool DuelFighters(uint8_t*& p1, uint8_t*& p2)
+{
+    p1 = game::GamePlayerSlot(0);
+    p2 = game::GamePlayerSlot(1);
+    return p1 && p2 && p1 != p2;
+}
+
+namespace {
+
+bool CopyFields(uint8_t* to, const uint8_t* from, bool toObject)
+{
+    __try {
+        uint32_t at = 0;
+        for (const Range& r : kFields) {
+            if (toObject)
+                std::memcpy(to + r.offset, from + at, r.bytes);
+            else
+                std::memcpy(to + at, from + r.offset, r.bytes);
+            at += r.bytes;
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+struct Applied {
+    uint8_t* fighter = nullptr;
+    uint32_t starts = 0;     // the host's start count last followed
+    int32_t seq = -1;
+    uint32_t refusedUntil = 0;
+    uint32_t frame = 0;
+};
+Applied g_Applied[2];
+uint32_t g_ApplyFrame = 0;
+uint32_t g_ApplyStarts = 0, g_ApplyRefused = 0;
+
+} // namespace
+
+bool CaptureFighter(const uint8_t* fighter, FighterState& out)
+{
+    static_assert(Fields(kFields, std::size(kFields)) == kFighterFieldBytes, "kFighterFieldBytes is the fields' size");
+    out = FighterState();
+    if (!fighter || !CopyFields(out.fields, fighter, false))
+        return false;
+    SeqInfo seq;
+    ReadSeq(fighter, seq);
+    out.seq = int16_t(seq.index);
+    std::memcpy(&out.starts, seq.state + 0x78, 4);
+    std::memcpy(&out.ticks, seq.state + 0x68, 4);
+    out.valid = 1;
+    return true;
+}
+
+void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t leadTicks)
+{
+    if (!fighter || !s.valid || slot < 0 || slot > 1)
+        return;
+    Applied& a = g_Applied[slot];
+    ++g_ApplyFrame;
+    if (a.fighter != fighter) { // a new round (the fighters are made again): follow from here
+        a = Applied();
+        a.fighter = fighter;
+        a.starts = s.starts - 1;
+    }
+    CopyFields(fighter, s.fields, true);
+    if (s.seq < 0)
+        return;
+    SeqInfo live;
+    ReadSeq(fighter, live);
+    const bool started = s.starts != a.starts;   // the host started a sequence since
+    const bool parted = live.index != s.seq;     // or this game went its own way
+    if (!started && (!parted || g_ApplyFrame < a.refusedUntil))
+        return;
+    const float at = float(s.ticks + leadTicks) / 60.0f; // the game's 60 ticks a second ([0x645EA0])
+    const bool ok = StartSeqRaw(fighter, s.seq, at);
+    a.starts = s.starts;
+    a.seq = s.seq;
+    if (ok) {
+        ++g_ApplyStarts;
+    } else {
+        ++g_ApplyRefused;
+        a.refusedUntil = g_ApplyFrame + 6; // not every frame
+        if (g_ApplyRefused <= 20 || g_ApplyRefused % 100 == 0)
+            LOG_INFO("Online: P%d's sequence %d refused (%u refusals)", slot + 1, s.seq, g_ApplyRefused);
+    }
+}
+
+std::string ApplyStats()
+{
+    char line[96];
+    std::snprintf(line, sizeof(line), "%u sequence(s) followed, %u refused", g_ApplyStarts, g_ApplyRefused);
+    return line;
+}
 
 void DuelSnapFrame()
 {

@@ -423,11 +423,11 @@ void SetDevMapLayout(const DevMapLayout& layout)
 }
 
 void StartDuel(const std::string& first, const std::string& second, const std::string& map, int rounds,
-    const std::string& more)
+    const std::string& more, bool secondHuman)
 {
     kernel::LaunchGame(std::string(kDuelArgument) + " " + kDevMapArgument + " versus:1" +
         (map.empty() ? "" : " custommap:" + map) + " v_versusMode:1 v_c1:" + first + " v_c2:" + second +
-        " v_p1:0 v_p2:-1 v_roundcount:" + std::to_string(rounds > 0 ? rounds : 3) + more);
+        " v_p1:0 v_p2:" + (secondHuman ? "1" : "-1") + " v_roundcount:" + std::to_string(rounds > 0 ? rounds : 3) + more);
 }
 
 void StartDevMap(const std::string& more)
