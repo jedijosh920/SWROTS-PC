@@ -287,6 +287,9 @@ uint64_t BuildHash()
 
 // The game's files by their names and sizes (and the small ones whole: the settings files); the mods' by their
 // contents. Computed once (a few seconds at most), on the network thread.
+// The game's files and the mods, as both PCs must have them: GameData by name and size (its small files whole), the
+// mods whole (not their notes: .txt, .md). Each file's own hash goes to netplay\\content.txt, to compare two PCs'
+// when one refuses the other.
 uint64_t ContentHash()
 {
     static uint64_t cached = 0;
@@ -294,6 +297,7 @@ uint64_t ContentHash()
         return cached;
     const std::wstring exe = ExeDirectory();
     uint64_t h = 0xCBF29CE484222325ull;
+    std::string manifest;
     for (const wchar_t* folder : { L"\\GameData", L"\\mods" }) {
         const bool mods = folder[1] == L'm';
         std::vector<std::wstring> files;
@@ -302,17 +306,28 @@ uint64_t ContentHash()
             std::wstring lower = f;
             for (wchar_t& c : lower)
                 c = wchar_t(towlower(c));
+            if (mods && (lower.size() > 4 && (lower.compare(lower.size() - 4, 4, L".txt") == 0 ||
+                                                 lower.compare(lower.size() - 3, 3, L".md") == 0)))
+                continue;
+            uint64_t one = 0xCBF29CE484222325ull;
+            WIN32_FILE_ATTRIBUTE_DATA a = {};
+            GetFileAttributesExW((exe + folder + f).c_str(), GetFileExInfoStandard, &a);
+            const uint64_t size = uint64_t(a.nFileSizeHigh) << 32 | a.nFileSizeLow;
+            if (mods || size <= 64 * 1024)
+                one = HashFileQuick(exe + folder + f, one);
+            else
+                one = Fnv(&size, 8, one);
             h = Fnv(lower.data(), lower.size() * sizeof(wchar_t), h);
-            if (mods) {
-                h = HashFileQuick(exe + folder + f, h);
-            } else {
-                WIN32_FILE_ATTRIBUTE_DATA a = {};
-                GetFileAttributesExW((exe + folder + f).c_str(), GetFileExInfoStandard, &a);
-                const uint64_t size = uint64_t(a.nFileSizeHigh) << 32 | a.nFileSizeLow;
-                h = size <= 64 * 1024 ? HashFileQuick(exe + folder + f, h) : Fnv(&size, 8, h);
-            }
+            h = Fnv(&one, 8, h);
+            char line[64];
+            std::snprintf(line, sizeof(line), " %llu %016llX\n", (unsigned long long)size, (unsigned long long)one);
+            for (wchar_t c : std::wstring(folder + 1) + lower)
+                manifest += c < 128 ? char(c) : '?';
+            manifest += line;
         }
     }
+    CreateDirectoryW((exe + L"\\netplay").c_str(), nullptr);
+    WriteWholeFile(exe + L"\\netplay\\content.txt", reinterpret_cast<const uint8_t*>(manifest.data()), manifest.size());
     cached = h;
     return h;
 }
@@ -861,7 +876,7 @@ void HandleLocked(const uint8_t* data, size_t size, const Endpoint& from)
                 return;
             }
             if (m.content != g_S.content) {
-                reject("the host's game files or mods differ from yours");
+                reject("the host's game files or mods differ from yours (compare netplay\\content.txt on both PCs)");
                 return;
             }
             if (!g_S.peer.Valid()) {
