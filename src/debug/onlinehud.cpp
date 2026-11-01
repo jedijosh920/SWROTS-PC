@@ -104,7 +104,9 @@ constexpr ImU32 kAlly = IM_COL32(110, 175, 255, 255);
 
 void OtherPlayer(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u)
 {
-    uint8_t* other = s.host ? game::GamePlayer2() : game::PlayerObject();
+    uint8_t* other = s.host ? game::GamePlayer2() : game::GamePlayerSlot(0);
+    if (!other && !s.host)
+        other = game::PlayerObject();
     if (!other || other[kCharacterDead])
         return;
     const float health = *reinterpret_cast<const float*>(other + kCharacterHealth);
@@ -134,7 +136,7 @@ void OtherPlayer(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float 
 // players pick, nor once a level is on.
 void GuestWaiting(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u)
 {
-    if (s.host || game::PlayerObject())
+    if (s.host || game::PlayerObject() || game::GamePlayerSlot(0)) // a level is on (a Versus duel's player is a slot)
         return;
     const uint32_t screen = game::LastShellScreen();
     if (screen == 0x8DC51DC9u || screen == game::MenuKey("select_jedi") || screen == game::MenuKey("select_arena"))
