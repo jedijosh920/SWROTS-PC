@@ -615,10 +615,13 @@ bool GoToVersusSelect()
             profile[0x32] = 0;
             profile[0x33] = 0;
         }
-        // player 1 is the first pad (the select screen gives the events of [[0x7F33F0]+0x414]'s pad to player 1, the
-        // others' to player 2: 0x2D54A0): the host's on both games
-        if (uint8_t* shellState = *reinterpret_cast<uint8_t**>(uintptr_t(0x007F33F0)))
+        // the shell gives its screens the events of two pads only, player 1's ([[0x7F33F0]+0x414]) and player 2's
+        // (+0x418; 0x2A82D0): the host's pad and the guest's, on both games (the select screen then gives player 1's
+        // to player 1, the other's to player 2: 0x2D54A0)
+        if (uint8_t* shellState = *reinterpret_cast<uint8_t**>(uintptr_t(0x007F33F0))) {
             *reinterpret_cast<int*>(shellState + 0x414) = 0;
+            *reinterpret_cast<int*>(shellState + 0x418) = 1;
+        }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
     return GoToShellScreen("select_jedi");

@@ -138,15 +138,16 @@ void VersusNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float 
     if (!game::GamePlayerSlot(0) || !game::GamePlayerSlot(1))
         return;
     const std::string p1 = s.host ? s.localName : s.remoteName, p2 = s.host ? s.remoteName : s.localName;
-    const float h = 20 * u, y = vp->Pos.y + vp->Size.y * 0.79f;
+    // in the space above each bar (player 1's from 17% of the width, player 2's up to 83.6%)
+    const float h = 27 * u, y = vp->Pos.y + vp->Size.y * 0.822f;
     const auto name = [&](float x, const std::string& text, float align) {
         const std::string t = Upper(text);
         const ImVec2 at(x - GameFontWidthOf(GameFont::Menu, h, t) * align, y);
         if (!GameFontTextOf(GameFont::Menu, g_Draw, at, h, kWhite, t))
             Text(x, y, h, kWhite, text, align);
     };
-    name(vp->Pos.x + vp->Size.x * 0.175f, p1, 0.0f);
-    name(vp->Pos.x + vp->Size.x * 0.835f, p2, 1.0f);
+    name(vp->Pos.x + vp->Size.x * 0.170f, p1, 0.0f);
+    name(vp->Pos.x + vp->Size.x * 0.836f, p2, 1.0f);
 }
 
 } // namespace
