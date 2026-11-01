@@ -47,9 +47,12 @@ struct FighterState {
 // The Versus duel's two fighters (the game's player slots); false when there is no duel now.
 bool DuelFighters(uint8_t*& p1, uint8_t*& p2);
 bool CaptureFighter(const uint8_t* fighter, FighterState& out);
-// Writes a state into a live fighter of this game (slot 0 player 1, 1 player 2): its fields, and its sequence started
-// when the host started one (or when this game's has parted from it), `leadTicks` ahead of the host's ticks.
-void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t leadTicks);
+// Writes a state into a live fighter of this game (slot 0 player 1, 1 player 2). The other player's fighter (played here
+// from the host's pad, a little late): its fields, its health through the game's own health change, its sequence
+// started again where this game's went another way (`leadTicks` ahead of the host's ticks). This PC's own fighter
+// (`own`, played here at once from this PC's pad): its health and Force, its place only when far off, its sequence
+// only when it stays parted.
+void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t leadTicks, bool own);
 std::string ApplyStats();
 
 } // namespace swrots::net

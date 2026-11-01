@@ -17,6 +17,7 @@
 
 #include "core/log.h"
 #include "core/settings.h"
+#include "game/coop.h"
 #include "game/hvv.h"
 #include "input/controls.h"
 #include "kernel/clock.h"
@@ -149,6 +150,7 @@ struct PadMsg {
     Header h;
     uint32_t seq;
     input::GamePad pad;
+    uint8_t inDuel;   // the sender's game is in a duel (the host waits for the guest's at a duel's start)
 };
 // Client/server: the host's game starts a level (or the menus): the guest's follows.
 struct LaunchMsg {
@@ -480,6 +482,10 @@ struct Session {
     StateMsg latestState = {};
     bool haveState = false;
     bool guestInDuel = false;
+    input::GamePad ownPad = {};
+    uint32_t ownPacket = 0;
+    uint32_t remoteReads = 0, remoteChanges = 0;
+    bool remoteInDuel = false, duelStartWaited = false;
 };
 
 Session g_S;
@@ -556,6 +562,8 @@ void RestoreLocked()
     input::SetPadSource(nullptr);
     input::SetOnlinePorts(false);
     kernel::SetLaunchObserver(nullptr);
+    if (g_S.server && !g_S.host)
+        game::SetDamageFilter(nullptr);
     kernel::SetDeterministicBoot(false);
     kernel::SetDeterministicAddresses(false);
     kernel::SetSessionDrives(std::wstring(), std::wstring());
@@ -767,16 +775,43 @@ bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
     std::lock_guard<std::mutex> lock(g_S.lock);
     if (!g_S.armed)
         return false;
-    if (port == 0 && (g_S.host || !g_S.guestInDuel))
-        return false;
-    if (port == 1 && g_S.host) {
-        pad = g_S.remotePad;
-        packet = g_S.remotePacket;
-        return true;
+    if (g_S.host) { // player 1 this PC's own devices, player 2 the guest's pad
+        if (port == 0)
+            return false;
+        if (port == 1) {
+            pad = g_S.remotePad;
+            packet = g_S.remotePacket;
+            ++g_S.remoteReads;
+            return true;
+        }
+    } else if (g_S.guestInDuel) { // the duel played here too: player 1 from the host's pad, player 2 this PC's
+        if (port == 0) {
+            pad = g_S.remotePad;
+            packet = g_S.remotePacket;
+            return true;
+        }
+        if (port == 1) {
+            input::ReadLivePad(0, pad);
+            if (std::memcmp(&pad, &g_S.ownPad, sizeof(pad)) != 0) {
+                g_S.ownPad = pad;
+                ++g_S.ownPacket;
+            }
+            packet = g_S.ownPacket;
+            return true;
+        }
+    } else if (port == 0) {
+        return false; // out of a duel: this PC's own menus (to leave)
     }
     pad = {};
     packet = 0;
     return true;
+}
+
+// The guest's fighters in a duel: no health change of their own (the host's come through ApplyFighter).
+std::atomic<uint8_t*> g_GuestFighters[2] = {};
+float GuestDamage(uint8_t* character, float change)
+{
+    return character && (character == g_GuestFighters[0] || character == g_GuestFighters[1]) ? 0.0f : change;
 }
 
 // The game starts a level (or the menus) on its own (XLaunchNewImage). The host's goes to the guest, whose game
@@ -795,6 +830,8 @@ void LaunchObserved(std::string& arguments)
         for (int i = 0; i < 5; ++i)
             SendLocked(m);
         g_S.haveState = false;
+        g_S.duelStartWaited = false; // the next duel starts when the guest's game is in it too
+        g_S.remoteInDuel = false;
         LOG_INFO("Online: the host starts '%s' (launch %u)", arguments.c_str(), m.id);
         return;
     }
@@ -827,9 +864,14 @@ void OnServerMsgLocked(Msg type, const uint8_t* data, size_t size)
             if (m.seq <= g_S.padSeqIn)
                 return;
             g_S.padSeqIn = m.seq;
+            g_S.remoteInDuel = m.inDuel != 0;
+            if (g_S.remoteInDuel)
+                g_S.inputs.notify_all();
             if (std::memcmp(&m.pad, &g_S.remotePad, sizeof(m.pad)) != 0) {
                 g_S.remotePad = m.pad;
                 ++g_S.remotePacket;
+                if (++g_S.remoteChanges == 1)
+                    LOG_INFO("Online: the other player's pad moved (buttons %04X)", m.pad.buttons);
             }
         }
         break;
@@ -872,6 +914,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     pm.h = MakeHeader(Msg::Pad, g_S.token);
     pm.seq = ++g_S.padSeqOut;
     input::ReadLivePad(0, pm.pad);
+    pm.inDuel = g_S.guestInDuel ? 1 : 0;
     SendLocked(pm);
 
     if (!g_S.host && g_S.pendingLaunchSet) { // the host's game went on to a level (or the menus): this one follows
@@ -890,6 +933,9 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     }
     const bool host = g_S.host;
     const int pingMs = g_S.pingMs;
+    if (host && g_S.frame % 600 == 0)
+        LOG_INFO("Online: the guest's pad: %u change(s) received, read %u time(s) as player 2", g_S.remoteChanges,
+            g_S.remoteReads);
     StateMsg state = g_S.latestState;
     const bool haveState = g_S.haveState;
     const uint32_t frame = g_S.frame;
@@ -900,6 +946,17 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     if (host) {
         if (!duel)
             return;
+        { // a duel's start: the host's game waits for the guest's to be in it too (its intro at the same time)
+            std::unique_lock<std::mutex> relock(g_S.lock);
+            if (!g_S.duelStartWaited) {
+                g_S.duelStartWaited = true;
+                const auto start = Clock::now();
+                while (g_S.armed && !g_S.remoteInDuel && Clock::now() - start < std::chrono::seconds(20))
+                    g_S.inputs.wait_for(relock, std::chrono::milliseconds(20));
+                LOG_INFO("Online: the duel starts (waited %d ms for the guest's game)",
+                    int(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count()));
+            }
+        }
         StateMsg m = {};
         bool ok = true;
         for (int i = 0; i < 2; ++i)
@@ -920,11 +977,14 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         std::lock_guard<std::mutex> relock(g_S.lock);
         g_S.guestInDuel = duel;
     }
+    g_GuestFighters[0] = duel ? fighters[0] : nullptr;
+    g_GuestFighters[1] = duel ? fighters[1] : nullptr;
+    game::SetDamageFilter(duel ? &GuestDamage : nullptr);
     if (!duel || !haveState)
         return;
     const uint32_t lead = pingMs > 0 ? uint32_t(pingMs * 60 / 2000) : 0; // half the round trip, in game ticks
     for (int i = 0; i < 2; ++i)
-        ApplyFighter(i, fighters[i], state.fighters[i], lead);
+        ApplyFighter(i, fighters[i], state.fighters[i], lead, i == 1);
     if (frame % 600 == 0)
         LOG_INFO("Online: guest frame %u, host state %u applied (%s), ping %d ms", frame, state.seq,
             ApplyStats().c_str(), pingMs);
@@ -1475,6 +1535,8 @@ void ResetSessionLocked(bool host)
     g_S.stateSeqOut = g_S.stateSeqIn = g_S.statesIn = 0;
     g_S.haveState = false;
     g_S.guestInDuel = false;
+    g_S.ownPad = {};
+    g_S.ownPacket = g_S.remoteReads = g_S.remoteChanges = 0;
     g_S.started = g_S.lastHeard = Clock::now();
     LARGE_INTEGER counter;
     QueryPerformanceCounter(&counter);

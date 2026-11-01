@@ -61,5 +61,8 @@ void SetDamageObserver(DamageObserver observer);
 // A health change before it is made, which it may change (a mode's damage scale): the change to make. Null removes it.
 using DamageFilter = float (*)(uint8_t* character, float change);
 void SetDamageFilter(DamageFilter filter);
+// A health change made as the game makes one (its death when it reaches 0), without the filter or the observer
+// (online play: the guest's fighters take the host's changes only).
+void ChangeHealthDirect(uint8_t* character, float change);
 
 } // namespace swrots::game

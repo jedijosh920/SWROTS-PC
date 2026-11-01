@@ -1530,6 +1530,12 @@ void SetDamageObserver(DamageObserver observer)
     g_DamageObserver = observer;
 }
 
+void ChangeHealthDirect(uint8_t* character, float change)
+{
+    if (character && g_OriginalChangeHealth)
+        g_OriginalChangeHealth(character, nullptr, change, 0, 0);
+}
+
 void SetDamageFilter(DamageFilter filter)
 {
     g_DamageFilter = filter;

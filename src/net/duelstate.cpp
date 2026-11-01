@@ -484,15 +484,33 @@ bool DuelFighters(uint8_t*& p1, uint8_t*& p2)
 
 namespace {
 
-bool CopyFields(uint8_t* to, const uint8_t* from, bool toObject)
+// Which of a state's fields go into a fighter of this game (ApplyFighter).
+enum class Into { Capture, Remote, Own, OwnPlaced };
+
+bool Skipped(uint16_t offset, Into into)
+{
+    if (into == Into::Capture)
+        return false;
+    // health and dead go through the game's own health change (its death, its round's end); health's copy with them
+    if (offset == 0x12C || offset == 0x3B0)
+        return true;
+    if (into == Into::Remote)
+        return false;
+    // this PC's own fighter, played here at once: only what the host decides alone (Force), and its place when far off
+    const bool placed = offset == 0x150 || offset == 0x160 || offset == 0x170 || offset == 0x180 || offset == 0x1B0 ||
+        offset == 0x410 || offset == 0x630 || offset == 0x750;
+    return !(offset == 0xA40 || (into == Into::OwnPlaced && placed));
+}
+
+bool CopyFields(uint8_t* to, const uint8_t* from, Into into)
 {
     __try {
         uint32_t at = 0;
         for (const Range& r : kFields) {
-            if (toObject)
-                std::memcpy(to + r.offset, from + at, r.bytes);
-            else
+            if (into == Into::Capture)
                 std::memcpy(to + at, from + r.offset, r.bytes);
+            else if (!Skipped(r.offset, into))
+                std::memcpy(to + r.offset, from + at, r.bytes);
             at += r.bytes;
         }
         return true;
@@ -501,16 +519,41 @@ bool CopyFields(uint8_t* to, const uint8_t* from, bool toObject)
     }
 }
 
+// A field of a state (its packed fields) by its offset in the fighter.
+template <typename T> T Packed(const FighterState& s, uint16_t offset)
+{
+    uint32_t at = 0;
+    for (const Range& r : kFields) {
+        if (offset >= r.offset && offset + sizeof(T) <= uint32_t(r.offset + r.bytes)) {
+            T v;
+            std::memcpy(&v, s.fields + at + (offset - r.offset), sizeof(T));
+            return v;
+        }
+        at += r.bytes;
+    }
+    return T();
+}
+
+bool ReadFloat(const uint8_t* object, uint32_t offset, float& out)
+{
+    __try {
+        std::memcpy(&out, object + offset, 4);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 struct Applied {
     uint8_t* fighter = nullptr;
-    uint32_t starts = 0;     // the host's start count last followed
-    int32_t seq = -1;
+    uint32_t starts = 0;     // the host's start count last seen
+    uint32_t parted = 0;     // frames this game's sequence has differed from the host's
     uint32_t refusedUntil = 0;
-    uint32_t frame = 0;
 };
 Applied g_Applied[2];
 uint32_t g_ApplyFrame = 0;
-uint32_t g_ApplyStarts = 0, g_ApplyRefused = 0;
+uint32_t g_ApplyStarts = 0, g_ApplyRefused = 0, g_ApplyPlaced = 0;
+constexpr float kOwnPlaceError = 120.0f; // this PC's own fighter is put at the host's place beyond that (game units)
 
 } // namespace
 
@@ -518,7 +561,7 @@ bool CaptureFighter(const uint8_t* fighter, FighterState& out)
 {
     static_assert(Fields(kFields, std::size(kFields)) == kFighterFieldBytes, "kFighterFieldBytes is the fields' size");
     out = FighterState();
-    if (!fighter || !CopyFields(out.fields, fighter, false))
+    if (!fighter || !CopyFields(out.fields, fighter, Into::Capture))
         return false;
     SeqInfo seq;
     ReadSeq(fighter, seq);
@@ -529,32 +572,54 @@ bool CaptureFighter(const uint8_t* fighter, FighterState& out)
     return true;
 }
 
-void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t leadTicks)
+void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t leadTicks, bool own)
 {
     if (!fighter || !s.valid || slot < 0 || slot > 1)
         return;
     Applied& a = g_Applied[slot];
-    ++g_ApplyFrame;
+    if (slot == 0)
+        ++g_ApplyFrame;
     if (a.fighter != fighter) { // a new round (the fighters are made again): follow from here
         a = Applied();
         a.fighter = fighter;
-        a.starts = s.starts - 1;
+        a.starts = s.starts;
     }
-    CopyFields(fighter, s.fields, true);
+    // Its place: the host's (the other player's fighter), or this PC's own fighter's own unless it is far off.
+    Into into = own ? Into::Own : Into::Remote;
+    if (own) {
+        float x = 0, z = 0;
+        if (ReadFloat(fighter, 0x180, x) && ReadFloat(fighter, 0x188, z)) {
+            const float dx = x - Packed<float>(s, 0x180), dz = z - Packed<float>(s, 0x188);
+            if (dx * dx + dz * dz > kOwnPlaceError * kOwnPlaceError) {
+                into = Into::OwnPlaced;
+                ++g_ApplyPlaced;
+            }
+        }
+    }
+    CopyFields(fighter, s.fields, into);
+    // Health: the host's changes, made by the game's own health change (its hits, its death, the round's end).
+    float health = 0;
+    if (ReadFloat(fighter, 0x130, health)) {
+        const float change = Packed<float>(s, 0x130) - health;
+        if (change > 0.5f || change < -0.5f)
+            game::ChangeHealthDirect(fighter, change);
+    }
     if (s.seq < 0)
         return;
     SeqInfo live;
     ReadSeq(fighter, live);
-    const bool started = s.starts != a.starts;   // the host started a sequence since
-    const bool parted = live.index != s.seq;     // or this game went its own way
-    if (!started && (!parted || g_ApplyFrame < a.refusedUntil))
+    const bool started = s.starts != a.starts; // the host started a sequence since
+    a.starts = s.starts;
+    a.parted = live.index != s.seq ? a.parted + 1 : 0;
+    // The other player's fighter plays here from the host's pad too: started again only where it went its own way.
+    // This PC's own fighter plays at once from this PC's pad: only when it stays parted from the host's.
+    const bool start = own ? a.parted > 20 : ((started && a.parted) || a.parted > 6);
+    if (!start || g_ApplyFrame < a.refusedUntil)
         return;
     const float at = float(s.ticks + leadTicks) / 60.0f; // the game's 60 ticks a second ([0x645EA0])
-    const bool ok = StartSeqRaw(fighter, s.seq, at);
-    a.starts = s.starts;
-    a.seq = s.seq;
-    if (ok) {
+    if (StartSeqRaw(fighter, s.seq, at)) {
         ++g_ApplyStarts;
+        a.parted = 0;
     } else {
         ++g_ApplyRefused;
         a.refusedUntil = g_ApplyFrame + 6; // not every frame
@@ -565,8 +630,9 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
 
 std::string ApplyStats()
 {
-    char line[96];
-    std::snprintf(line, sizeof(line), "%u sequence(s) followed, %u refused", g_ApplyStarts, g_ApplyRefused);
+    char line[128];
+    std::snprintf(line, sizeof(line), "%u sequence(s) started again, %u refused, own fighter placed %u time(s)",
+        g_ApplyStarts, g_ApplyRefused, g_ApplyPlaced);
     return line;
 }
 
