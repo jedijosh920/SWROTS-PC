@@ -512,6 +512,29 @@ So a fighter's state, as the host would send it: the fields (about 200 bytes, po
 sequence's index, its start count and its ticks. The guest starts a sequence when the host's start count moves
 (late by the delay: started at the host's ticks), and writes the fields. Phase 2 can start.
 
+### Phase 2, client/server matches (2026-11-01, `server-test.bat`)
+
+`[Online] Mode=server` (the default; `lockstep` keeps the lockstep matches; the host's mode goes to the guest in its
+Welcome, protocol 3):
+
+- The connection, the content check, the host's profile and the start without mods are as before, but **without the
+  deterministic scheduler or fixed addresses**: each game runs at its own pace.
+- **Pads** (`Pad`, both ways, every frame): the host's player 2 is the guest's pad as it last came; the host's
+  player 1 its own devices. The guest's game takes no input in a duel (it only shows the host's); out of one, its
+  player 1 has its own devices (its menus, to leave).
+- **Launches** (`Launch`): every level start of the host's game (the game's own, `XLaunchNewImage`, and the port's,
+  `kernel::LaunchGame`) goes to the guest, whose game starts the same; a start of the guest's own game waits for the
+  host's and takes it instead (`kernel::SetLaunchObserver`).
+- **The duel's state** (`State`, 508 bytes, every host frame in a duel): both fighters' `FighterState` (the fields,
+  the running sequence's index, its start count and ticks). The guest writes the fields into its fighters and starts
+  a sequence when the host's start count moves or its own has parted (`ApplyFighter`), half a round trip ahead.
+
+One PC, two copies (`server-test.bat`: the host starts `versus IObiwan IAnakin rounds 3 human`, both players the test
+input): the guest follows the host's launch into the duel, receives every state (about 57 a second), follows 863
+sequences in 65 s with none refused, no crash; health bars and positions match the host's. Not yet: the guest's own
+fighter is shown as the host has it (its inputs take a round trip), the guest does not see the host's select screens
+(it waits), and a whole match's end (back to the menus) is still to be seen.
+
 ### Phases
 
 1. **Duel state capture/apply** on one PC: the state's size (a few KiB expected), and whether writing it into a
