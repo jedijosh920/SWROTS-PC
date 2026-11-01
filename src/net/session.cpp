@@ -491,7 +491,7 @@ struct Session {
     uint32_t stateSeqOut = 0, stateSeqIn = 0, statesIn = 0;
     StateMsg latestState = {};
     bool haveState = false;
-    bool guestInDuel = false;
+    bool guestInDuel = false;           // this game is in a duel (both players play it: BothPlayLocked)
     input::GamePad ownPad = {};
     uint32_t ownPacket = 0;
     uint32_t remoteReads = 0, remoteChanges = 0;
@@ -1154,6 +1154,10 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     uint8_t* fighters[2] = {};
     const bool duel = DuelFighters(fighters[0], fighters[1]);
     if (host) {
+        {
+            std::lock_guard<std::mutex> relock(g_S.lock);
+            g_S.guestInDuel = duel; // (this game's duel: its player 2 is the guest's pad)
+        }
         if (!duel)
             return;
         { // a duel's start: the host's game waits for the guest's to be in it too (its intro at the same time)
