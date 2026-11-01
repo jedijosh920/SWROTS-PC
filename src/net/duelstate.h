@@ -14,6 +14,8 @@ void DuelRecorderFrame();
 // Records `frames` frames from the next one on (0 stops), as netplay\duel-<name>.bin.
 void StartDuelRecorder(const std::string& name, uint32_t frames);
 std::string DuelRecorderStatus();
+// The recorder's screenshots (rec-<frame>.png): every `every` frames from `from` to `to` (0: none).
+void SetDuelRecorderShots(uint32_t from, uint32_t to, uint32_t every);
 
 // Capture/apply of a duel's state (phase 1's second step): does the game keep a fighter's state written back to it?
 // `save` captures both fighters now; `load` writes the capture back into the live fighters, either whole objects

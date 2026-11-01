@@ -27,6 +27,8 @@ namespace {
 
 constexpr uint32_t kObjectBytes = 0x1800;
 FILE* g_Out = nullptr;
+FILE* g_SeqOut = nullptr;       // each fighter's behaviour (CharState): its sequence and the state's first bytes
+uint32_t g_ShotFrom = 0, g_ShotTo = 0, g_ShotEvery = 0; // the recorder's screenshots (rec-<frame>.png)
 FILE* g_DataOut = nullptr;      // the game's .data, changed dwords every kDataEvery frames (the round's state)
 std::vector<uint32_t> g_DataPrev;
 constexpr uint32_t kDataBegin = 0x00612BE0, kDataEnd = 0x00962BF8, kDataEvery = 10;
@@ -64,6 +66,9 @@ void Close(const char* why)
     if (g_DataOut)
         std::fclose(g_DataOut);
     g_DataOut = nullptr;
+    if (g_SeqOut)
+        std::fclose(g_SeqOut);
+    g_SeqOut = nullptr;
     g_DataPrev.clear();
     LOG_INFO("Duel recorder: '%s' closed after %u frames (%s)", g_Name.c_str(), g_Frame, why);
 }
@@ -91,6 +96,70 @@ void Fighters(uint8_t*& p1, uint8_t*& p2)
     }
 }
 
+
+// A fighter's behaviour (GBehavior CharState, [character+0x434], vtable 0x58EFB8): +0x30 the running sequence (a
+// record of its script class's list, [[state+4]+0xC], [state+4]+8 records, the name at +0xC), +0x38 the previous one,
+// +0x78 counts the sequences started (0x49D2A0).
+constexpr uint32_t kCharState = 0x434, kStateBytes = 0x140, kSeqNameBytes = 32;
+constexpr uint32_t kCharStateVtable = 0x0058EFB8;
+
+struct SeqInfo {
+    int32_t index = -1;            // the running sequence's index in its class's list
+    char name[kSeqNameBytes] = {};
+    uint8_t state[kStateBytes] = {};
+};
+
+bool ReadSeqRaw(const uint8_t* character, SeqInfo& out)
+{
+    __try {
+        const uint8_t* state = *reinterpret_cast<uint8_t* const*>(character + kCharState);
+        if (!state || *reinterpret_cast<const uint32_t*>(state) != kCharStateVtable)
+            return false;
+        std::memcpy(out.state, state, kStateBytes);
+        const uint8_t* running = *reinterpret_cast<uint8_t* const*>(state + 0x30);
+        const uint8_t* info = *reinterpret_cast<uint8_t* const*>(state + 4);
+        const int count = *reinterpret_cast<const int*>(info + 8);
+        uint8_t* const* list = *reinterpret_cast<uint8_t* const* const*>(info + 0xC);
+        for (int i = 0; i < count; ++i)
+            if (list[i] == running) {
+                out.index = i;
+                break;
+            }
+        if (running) {
+            const char* name = *reinterpret_cast<const char* const*>(running + 0xC);
+            for (uint32_t i = 0; name && i + 1 < kSeqNameBytes && name[i]; ++i)
+                out.name[i] = name[i];
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+void ReadSeq(const uint8_t* character, SeqInfo& out)
+{
+    out = SeqInfo();
+    if (character && !ReadSeqRaw(character, out))
+        out = SeqInfo();
+}
+
+// Starts the sequence of this index of the character's class (as the duel's intro starts one: 0x150E30, thiscall
+// (record, start time, 0, 0, speed)); false when it refuses.
+bool StartSeqRaw(uint8_t* character, int32_t index)
+{
+    __try {
+        const uint8_t* state = *reinterpret_cast<uint8_t* const*>(character + kCharState);
+        const uint8_t* info = *reinterpret_cast<uint8_t* const*>(state + 4);
+        if (index < 0 || index >= *reinterpret_cast<const int*>(info + 8))
+            return false;
+        uint8_t* record = (*reinterpret_cast<uint8_t* const* const*>(info + 0xC))[index];
+        return reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint8_t*, float, int, int, float)>(0x00150E30)(
+            character, nullptr, record, 0.0f, 0, 0, 1.0f);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 } // namespace
 
 void StartDuelRecorder(const std::string& name, uint32_t frames)
@@ -114,10 +183,24 @@ void StartDuelRecorder(const std::string& name, uint32_t frames)
         const uint32_t dataHeader[2] = { 0x44445753, 1 };
         std::fwrite(dataHeader, sizeof(dataHeader), 1, g_DataOut);
     }
+    // "SWDS": per frame, for each fighter, i32 sequence index, char name[32], the behaviour's first 0x140 bytes
+    g_SeqOut = _wfopen((ExeDir() + L"\\netplay\\duel-" + std::wstring(name.begin(), name.end()) + L".seq.bin").c_str(),
+        L"wb");
+    if (g_SeqOut) {
+        const uint32_t seqHeader[3] = { 0x53445753, 1, sizeof(SeqInfo) };
+        std::fwrite(seqHeader, sizeof(seqHeader), 1, g_SeqOut);
+    }
     g_Name = name;
     g_Left = frames;
     g_Frame = 0;
     LOG_INFO("Duel recorder: recording %u frames as %ls", frames, path.c_str());
+}
+
+void SetDuelRecorderShots(uint32_t from, uint32_t to, uint32_t every)
+{
+    g_ShotFrom = from;
+    g_ShotTo = to;
+    g_ShotEvery = every;
 }
 
 std::string DuelRecorderStatus()
@@ -168,6 +251,9 @@ struct Snap {
 };
 Snap g_Snap;
 FILE* g_Play = nullptr;
+FILE* g_PlaySeq = nullptr;        // the recording's sequences: started on the live fighters as they started
+uint32_t g_PlaySeqStarts[2] = {}, g_PlaySeqOk = 0, g_PlaySeqRefused = 0;
+bool g_PlaySeqFirst = true;
 uint32_t g_PlayLeft = 0, g_PlayFrame = 0, g_PlayShots = 0, g_PlayMask = 3, g_PlayPad = 18;
 int g_Watch = 0;           // frames still to log after a load
 int g_TestSave = -1, g_TestLoad = -1;
@@ -231,6 +317,10 @@ void LogFighter(const char* what, int i, const uint8_t* o)
         At<float>(o, 0x1B4), At<float>(o, 0x1B8), At<float>(o, 0x130), At<float>(o, 0xA40), At<uint32_t>(o, 0x310),
         At<uint32_t>(o, 0x314), At<uint32_t>(o, 0x3E4), At<uint32_t>(o, 0x3F8), At<uint32_t>(o, 0x920),
         StateName(o).c_str());
+    SeqInfo seq;
+    ReadSeq(o, seq);
+    LOG_INFO("Duel snap: %s P%d sequence '%s' (%d), started %u", what, i + 1, seq.name, seq.index,
+        *reinterpret_cast<const uint32_t*>(seq.state + 0x78));
 }
 
 std::string Save()
@@ -331,13 +421,41 @@ void PlayFrame()
     if (std::fread(rec.data(), rec.size(), 1, g_Play) != 1 || g_PlayLeft == 0) {
         std::fclose(g_Play);
         g_Play = nullptr;
-        LOG_INFO("Duel play: done at the recording's frame %u", g_PlayFrame);
+        if (g_PlaySeq)
+            std::fclose(g_PlaySeq);
+        g_PlaySeq = nullptr;
+        LOG_INFO("Duel play: done at the recording's frame %u (sequences started %u, refused %u)", g_PlayFrame,
+            g_PlaySeqOk, g_PlaySeqRefused);
         return;
     }
     const uint8_t* fighters = rec.data() + 12 + 2 * g_PlayPad;
     for (int i = 0; i < 2; ++i)
         if (g_PlayMask & (1u << i))
             Write(p[i], fighters + i * kObjectBytes, kFields, std::size(kFields));
+    if (g_PlaySeq) {
+        SeqInfo seq[2];
+        if (std::fread(seq, sizeof(seq), 1, g_PlaySeq) == 1) {
+            for (int i = 0; i < 2; ++i) {
+                if (!(g_PlayMask & (1u << i)) || seq[i].index < 0)
+                    continue;
+                uint32_t starts;
+                std::memcpy(&starts, seq[i].state + 0x78, 4);
+                if (!g_PlaySeqFirst && starts == g_PlaySeqStarts[i])
+                    continue;
+                g_PlaySeqStarts[i] = starts;
+                SeqInfo live;
+                ReadSeq(p[i], live);
+                if (g_PlaySeqFirst && live.index == seq[i].index)
+                    continue;
+                const bool ok = StartSeqRaw(p[i], seq[i].index);
+                ok ? ++g_PlaySeqOk : ++g_PlaySeqRefused;
+                if (g_PlaySeqOk + g_PlaySeqRefused <= 300)
+                    LOG_INFO("Duel play: frame %u P%d starts '%s' (%d)%s, was '%s'", g_PlayFrame, i + 1, seq[i].name,
+                        seq[i].index, ok ? "" : ": refused", live.name);
+            }
+            g_PlaySeqFirst = false;
+        }
+    }
     if (g_PlayShots && g_PlayFrame % g_PlayShots == 0) {
         char name[32];
         std::snprintf(name, sizeof(name), "play-%05u", g_PlayFrame);
@@ -391,11 +509,28 @@ std::string StartDuelPlay(const std::string& name, uint32_t from, uint32_t frame
     }
     const long long record = 12 + 2 * g_PlayPad + 2 * kObjectBytes;
     _fseeki64(g_Play, 12 + record * from, SEEK_SET);
+    if (g_PlaySeq)
+        std::fclose(g_PlaySeq);
+    g_PlaySeq = _wfopen((ExeDir() + L"\\netplay\\duel-" + std::wstring(name.begin(), name.end()) + L".seq.bin").c_str(),
+        L"rb");
+    if (g_PlaySeq) {
+        uint32_t seqHeader[3] = {};
+        if (std::fread(seqHeader, sizeof(seqHeader), 1, g_PlaySeq) != 1 || seqHeader[0] != 0x53445753 ||
+            seqHeader[2] != sizeof(SeqInfo)) {
+            std::fclose(g_PlaySeq);
+            g_PlaySeq = nullptr;
+        } else {
+            _fseeki64(g_PlaySeq, 12 + 2LL * sizeof(SeqInfo) * from, SEEK_SET);
+        }
+    }
+    g_PlaySeqFirst = true;
+    g_PlaySeqOk = g_PlaySeqRefused = 0;
     g_PlayFrame = from;
     g_PlayLeft = frames;
     g_PlayShots = shotsEvery;
     g_PlayMask = mask ? mask : 3;
-    LOG_INFO("Duel play: '%s' from frame %u, %u frames, fighters %u", name.c_str(), from, frames, g_PlayMask);
+    LOG_INFO("Duel play: '%s' from frame %u, %u frames, fighters %u, %s", name.c_str(), from, frames, g_PlayMask,
+        g_PlaySeq ? "with its sequences" : "without sequences");
     return "duel play: started";
 }
 
@@ -420,6 +555,17 @@ void DuelRecorderFrame()
     std::fwrite(pads, sizeof(pads), 1, g_Out);
     std::fwrite(a.data(), kObjectBytes, 1, g_Out);
     std::fwrite(b.data(), kObjectBytes, 1, g_Out);
+    if (g_SeqOut) {
+        SeqInfo seq[2];
+        ReadSeq(p1, seq[0]);
+        ReadSeq(p2, seq[1]);
+        std::fwrite(seq, sizeof(seq), 1, g_SeqOut);
+    }
+    if (g_ShotEvery && g_Frame >= g_ShotFrom && g_Frame <= g_ShotTo && (g_Frame - g_ShotFrom) % g_ShotEvery == 0) {
+        char shot[32];
+        std::snprintf(shot, sizeof(shot), "rec-%05u", g_Frame);
+        d3d::RequestScreenshot(shot);
+    }
     if (g_DataOut && g_Frame % kDataEvery == 0) {
         const auto* live = reinterpret_cast<const uint32_t*>(uintptr_t(kDataBegin));
         const size_t n = (kDataEnd - kDataBegin) / 4;
@@ -443,6 +589,8 @@ void DuelRecorderFrame()
         std::fflush(g_Out);
         if (g_DataOut)
             std::fflush(g_DataOut);
+        if (g_SeqOut)
+            std::fflush(g_SeqOut);
     }
     if (--g_Left == 0)
         Close("done");

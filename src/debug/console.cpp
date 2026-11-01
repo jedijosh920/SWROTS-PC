@@ -1116,6 +1116,9 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
     } else if (command == "online") {
         Online(words);
     } else if (command == "duelrec") { // duelrec <name> <frames> | duelrec off: the duel's state (net/duelstate.h)
+        if (words.size() >= 6) // duelrec <name> <frames> <shots from> <to> <every>
+            net::SetDuelRecorderShots(uint32_t(std::atoi(words[3].c_str())), uint32_t(std::atoi(words[4].c_str())),
+                uint32_t(std::atoi(words[5].c_str())));
         if (words.size() >= 3)
             net::StartDuelRecorder(words[1], uint32_t(std::max(0, std::atoi(words[2].c_str()))));
         else if (words.size() == 2)
