@@ -965,10 +965,16 @@ bool ArenaCursorToRandom()
     if (!g_ArenaList || g_LastScreen != MenuKey("select_arena"))
         return false;
     __try {
-        const int random = *reinterpret_cast<int*>(g_ArenaList + 0x58);
-        if (random < 0)
+        // one of the open arenas (each entry 16 bytes, +0xC its unlocked byte), at random
+        const int count = *reinterpret_cast<int*>(g_ArenaList + 0x60);
+        const uint8_t* entries = *reinterpret_cast<uint8_t**>(g_ArenaList + 0x64);
+        int open[64], n = 0;
+        for (int i = 0; i < count && n < 64; ++i)
+            if (entries[i * 16 + 0xC])
+                open[n++] = i;
+        if (!n)
             return false;
-        *reinterpret_cast<int*>(g_ArenaList + 0x20) = random;
+        *reinterpret_cast<int*>(g_ArenaList + 0x20) = open[GetTickCount() % unsigned(n)];
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;

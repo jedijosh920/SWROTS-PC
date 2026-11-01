@@ -878,7 +878,7 @@ bool BothPlayLocked()
 void InjectLocked(int port, input::GamePad& pad)
 {
     const uint32_t f = g_S.frame;
-    if (port == 1 && f >= g_S.joinAt && f < g_S.joinAt + 6)
+    if (port == 1 && f >= g_S.joinAt && f < g_S.joinAt + 9)
         pad.buttons |= 0x0010; // Start
     if (port == 0 && f >= g_S.arenaAt && f < g_S.arenaAt + 6)
         pad.analog[0] = 0xFF;  // A
@@ -899,10 +899,9 @@ bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
             packet = ++g_S.ownPacket;
             return true;
         }
-        if (port == 1 && both) {
+        if (port == 1 && both) { // (player 2's join comes in the guest's pad: as a Start of its own)
             pad = g_S.remotePad;
-            InjectLocked(1, pad);
-            packet = g_S.remotePacket + (g_S.frame >= g_S.joinAt && g_S.frame < g_S.joinAt + 6 ? 1000000 : 0);
+            packet = g_S.remotePacket;
             ++g_S.remoteReads;
             return true;
         }
@@ -1065,6 +1064,11 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     pm.h = MakeHeader(Msg::Pad, g_S.token);
     pm.seq = ++g_S.padSeqOut;
     input::ReadLivePad(0, pm.pad);
+    if (!g_S.host && g_S.frame >= g_S.joinAt && g_S.frame < g_S.joinAt + 9) {
+        pm.pad.buttons |= 0x0010; // player 2's join on the Versus select: a Start of the guest's, for both games
+        if (g_S.frame == g_S.joinAt)
+            LOG_INFO("Online: player 2 joins the select");
+    }
     pm.inDuel = g_S.guestInDuel ? 1 : 0;
     pm.screen = g_S.screen;
     SendLocked(pm);
@@ -1078,7 +1082,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         if (screen != g_S.screen) {
             g_S.screen = screen;
             g_S.screenSince = g_S.frame;
-            if (IsSelectScreen(screen))
+            if (IsSelectScreen(screen) && !g_S.host)
                 g_S.joinAt = g_S.frame + 75; // player 2 joins (as its Start would), once the screen is in
             if (screen == game::MenuKey("select_arena") && g_S.host && g_S.room.arena == 1)
                 g_S.arenaAt = g_S.frame + 20; // the arena: Random's row, taken
