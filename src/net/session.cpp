@@ -783,6 +783,7 @@ bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
 // follows it; the guest's own waits for the host's and takes it instead.
 void LaunchObserved(std::string& arguments)
 {
+    // Never with the session's lock held by this thread (the port's own starts are made outside it).
     std::unique_lock<std::mutex> lock(g_S.lock);
     if (!g_S.armed || !g_S.server)
         return;
@@ -1058,7 +1059,6 @@ void BeginBootLocked()
     input::SetOnlinePorts(true);
     if (g_S.server) { // client/server: each game at its own pace; the host's is the match
         input::SetPadSource(&PadFromServer);
-        kernel::SetLaunchObserver(&LaunchObserved);
         g_S.bootPending = true;
         g_S.phase = OnlinePhase::Starting;
         SetMessage("starting the match");
@@ -1067,6 +1067,8 @@ void BeginBootLocked()
             kernel::RestartFromDashboard();
         else
             kernel::LaunchGame(args);
+        // Only now: the observer takes the session's lock, which this start holds (a std::mutex taken twice throws).
+        kernel::SetLaunchObserver(&LaunchObserved);
         return;
     }
     input::SetPadSource(&PadFromSession);
