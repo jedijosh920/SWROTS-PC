@@ -55,9 +55,11 @@ constexpr int kSilenceMs = 20000;       // the other PC is gone after that long 
 constexpr int kConnectMs = 20000;       // the guest gives up calling after that long
 
 enum class Msg : uint8_t {
-    Hello = 1, Welcome, Reject, Chunk, ChunkAck, Ready, Start, Started, Input, Ping, Pong, Bye,
+    Hello = 1, Welcome, Reject, Chunk, ChunkAck, Ready, Start, Started, Input, Ping, Pong, Bye, Pages,
 };
 
+constexpr uint32_t kPage = 1024;      // a desync's report: the data checked, hashed by 1 KiB pages
+constexpr uint32_t kPagesPerMsg = 256;
 #pragma pack(push, 1)
 struct Header {
     uint32_t magic;
@@ -65,6 +67,16 @@ struct Header {
     uint8_t type;
     uint8_t pad;
     uint32_t token; // the session's, chosen by the host (0 in the guest's first Hello)
+};
+// A desync's report: the hashes of the data a PC checked at a frame, page by page, so that each PC logs which pages
+// (which addresses of the game's data) differ.
+struct PagesMsg {
+    Header h;
+    uint32_t frame;
+    uint64_t trace;     // the scheduler's course hash at that frame
+    uint16_t first;     // the first page in this message
+    uint16_t count;
+    uint32_t hashes[kPagesPerMsg];
 };
 struct HelloMsg {
     Header h;
@@ -138,6 +150,22 @@ uint64_t HashBlock(const void* data, size_t size, uint64_t h)
     for (size_t i = 0; i < size / 8; ++i)
         h = (h ^ p[i]) * 0x9E3779B97F4A7C15ull + (h >> 29);
     return h;
+}
+
+// The game's data checked between the PCs, less what the port writes there for this PC alone (not the match's
+// course): the button prompts' tip table (game/prompts.cpp: the keyboard's caps on a PC playing with the keyboard).
+uint64_t HashGameData(const uint8_t* data, size_t size, uint64_t h)
+{
+    static const struct { uint32_t address, size; } kLocal[] = { { 0x007F0608, 18 * 16 } };
+    size_t at = 0;
+    for (const auto& r : kLocal) {
+        const size_t begin = r.address - 0x00612BE0, end = begin + r.size;
+        if (begin < at || end > size)
+            continue;
+        h = HashBlock(data + at, (begin - at) & ~size_t(7), h);
+        at = (end + 7) & ~size_t(7);
+    }
+    return HashBlock(data + at, size - at, h);
 }
 
 std::wstring ExeDirectory()
@@ -372,6 +400,9 @@ struct Session {
     Check lastLocal = {}, lastRemote = {};
     bool desync = false;
     uint32_t desyncFrame = 0;
+    Clock::time_point endAt = {};      // a desync's end: after the reports were swapped
+    std::string endWhy;
+    std::vector<bool> pageLogged;      // the pages already reported as different
     // The game's data at the last check (for a desync's report: written next to the executable).
     struct Checked {
         std::vector<uint8_t> data;
@@ -531,6 +562,57 @@ void SendInputsLocked()
     SendLocked(m, offsetof(InputMsg, pads) + count * sizeof(input::GamePad));
 }
 
+uint32_t PageHash(const uint8_t* p, size_t n)
+{
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < n; ++i)
+        h = (h ^ p[i]) * 16777619u;
+    return h;
+}
+
+void SendPagesLocked(const Session::Checked& k)
+{
+    const uint32_t pages = uint32_t((k.data.size() + kPage - 1) / kPage);
+    for (int round = 0; round < 2; ++round) // twice: a lost datagram loses a part of the report
+        for (uint32_t first = 0; first < pages; first += kPagesPerMsg) {
+            PagesMsg m = {};
+            m.h = MakeHeader(Msg::Pages, g_S.token);
+            m.frame = k.frame;
+            m.trace = k.trace;
+            m.first = uint16_t(first);
+            m.count = uint16_t(std::min(kPagesPerMsg, pages - first));
+            for (uint32_t i = 0; i < m.count; ++i) {
+                const size_t at = size_t(first + i) * kPage;
+                m.hashes[i] = PageHash(k.data.data() + at, std::min<size_t>(kPage, k.data.size() - at));
+            }
+            SendLocked(m);
+        }
+}
+
+// The other PC's report: the pages of the game's data that differ from this PC's at that frame, logged.
+void OnPagesLocked(const PagesMsg& m)
+{
+    const Session::Checked& k = g_S.checked[(m.frame / HashEvery()) % std::size(g_S.checked)];
+    if (k.frame != m.frame || k.data.empty())
+        return;
+    const uint32_t pages = uint32_t((k.data.size() + kPage - 1) / kPage);
+    if (g_S.pageLogged.size() != pages) {
+        g_S.pageLogged.assign(pages, false);
+        LOG_INFO("Online: desync report from the other PC (frame %u): scheduler trace %016llX here, %016llX there",
+            m.frame, k.trace, m.trace);
+    }
+    for (uint32_t i = 0; i < m.count && m.first + i < pages; ++i) {
+        const uint32_t page = m.first + i;
+        const size_t at = size_t(page) * kPage;
+        if (g_S.pageLogged[page] ||
+            PageHash(k.data.data() + at, std::min<size_t>(kPage, k.data.size() - at)) == m.hashes[i])
+            continue;
+        g_S.pageLogged[page] = true;
+        LOG_INFO("Online: desync: the game's data differs in %08X-%08X", uint32_t(0x00612BE0 + at),
+            uint32_t(0x00612BE0 + at + kPage - 1));
+    }
+}
+
 void CompareChecksLocked()
 {
     const Session::Check& r = g_S.lastRemote;
@@ -557,8 +639,12 @@ void CompareChecksLocked()
                 LOG_INFO("Online: the game's data at frame %u written to %ls (scheduler trace %016llX)", r.frame,
                     path.c_str(), k.trace);
             }
-            // the two games no longer play the same match: it ends on both (each back to its title)
-            EndLocked("the two games no longer match (desync at frame " + std::to_string(r.frame) + ")", true);
+            // the two games no longer play the same match: it ends on both (each back to its title), once both
+            // reports were swapped
+            if (k.frame == r.frame && !k.data.empty())
+                SendPagesLocked(k);
+            g_S.endWhy = "the two games no longer match (desync at frame " + std::to_string(r.frame) + ")";
+            g_S.endAt = Clock::now() + std::chrono::milliseconds(2500);
         }
         return;
     }
@@ -921,6 +1007,10 @@ void HandleLocked(const uint8_t* data, size_t size, const Endpoint& from)
             g_S.pingMs = g_S.pingMs < 0 ? rtt : (g_S.pingMs * 7 + rtt) / 8;
         }
         break;
+    case Msg::Pages:
+        if (size >= offsetof(PagesMsg, hashes))
+            OnPagesLocked(*reinterpret_cast<const PagesMsg*>(data));
+        break;
     case Msg::Bye:
         if (size >= sizeof(RejectMsg)) {
             RejectMsg r;
@@ -938,6 +1028,11 @@ void HandleLocked(const uint8_t* data, size_t size, const Endpoint& from)
 void TickLocked()
 {
     const auto now = Clock::now();
+    if (g_S.endAt != Clock::time_point{} && now >= g_S.endAt) {
+        g_S.endAt = {};
+        EndLocked(g_S.endWhy, true);
+        return;
+    }
     const auto since = [&](Clock::time_point t) { return std::chrono::duration_cast<std::chrono::milliseconds>(now - t).count(); };
     if (g_S.phase == OnlinePhase::Opening || g_S.phase == OnlinePhase::Waiting || g_S.phase == OnlinePhase::Off ||
         g_S.phase == OnlinePhase::Ended)
@@ -1100,6 +1195,8 @@ void ResetSessionLocked(bool host)
     std::memset(g_S.checks, 0, sizeof(g_S.checks));
     g_S.lastLocal = g_S.lastRemote = {};
     g_S.desync = false;
+    g_S.endAt = {};
+    g_S.pageLogged.clear();
     g_S.started = g_S.lastHeard = Clock::now();
     LARGE_INTEGER counter;
     QueryPerformanceCounter(&counter);
@@ -1306,7 +1403,7 @@ void OnlineFrame()
             k.frame = next;
             k.trace = h;
         }
-        h = HashBlock(data, dataSize, h);
+        h = HashGameData(data, dataSize, h);
         g_S.checks[(next / HashEvery()) % std::size(g_S.checks)] = { next, h };
         g_S.lastLocal = { next, h };
         if (next % 600 == 0)
