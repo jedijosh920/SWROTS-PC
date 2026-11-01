@@ -18,6 +18,7 @@
 #include "kernel/reboot.h"
 #include "kernel/clock.h"
 #include "kernel/sched.h"
+#include "net/duelstate.h"
 #include "net/rollback.h"
 #include "net/session.h"
 #include "xapi/xapi.h"
@@ -675,6 +676,7 @@ static DWORD __stdcall SwapFrame(const void* frameStack, DWORD flags)
     if (shown)
         NoteFrameTime();
     CollectResources(g_State.swapCount);
+    net::DuelRecorderFrame(); // client/server study: the duel's state, recorded
     net::OnlineFrame(); // an online match: the next frame's inputs (waited for) and its pace
     const DWORD result = net::FrameBoundary(frameStack, g_State.swapCount);
     g_ScrubStack = net::RollbackActive() || kernel::SchedActive() ? 1 : 0;

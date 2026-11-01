@@ -29,6 +29,7 @@
 #include "kernel/kernel.h"
 #include "net/rollback.h"
 #include "game/menus.h"
+#include "net/duelstate.h"
 #include "net/session.h"
 
 namespace swrots::debug {
@@ -1091,7 +1092,7 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         command != "findrefs" && command != "despawn" && command != "characters" && command != "scale" &&
         command != "screenshot" && command != "coop" &&
         command != "devmap" && command != "hvv" && command != "versus" && command != "mission" && command != "kill" && command != "synctest" && command != "nettest" &&
-        command != "online")
+        command != "online" && command != "duelrec")
         return false;
     Print(LineKind::Output, "> %s", line.c_str());
     if (command == "duelist") {
@@ -1114,6 +1115,12 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         NetTest(words);
     } else if (command == "online") {
         Online(words);
+    } else if (command == "duelrec") { // duelrec <name> <frames> | duelrec off: the duel's state (net/duelstate.h)
+        if (words.size() >= 3)
+            net::StartDuelRecorder(words[1], uint32_t(std::max(0, std::atoi(words[2].c_str()))));
+        else if (words.size() == 2)
+            net::StartDuelRecorder("", 0);
+        Print(LineKind::Output, "  %s", net::DuelRecorderStatus().c_str());
     } else if (command == "saber") {
         Saber(words);
     } else if (command == "spawn") {
