@@ -487,7 +487,7 @@ struct Session {
     uint32_t remotePacket = 0;
     uint32_t launchIdOut = 0, launchIdIn = 0;
     std::string pendingLaunch;         // the guest: the host's launch to follow
-    bool pendingLaunchSet = false, followingLaunch = false;
+    bool pendingLaunchSet = false, followingLaunch = false, followStarted = false;
     uint32_t stateSeqOut = 0, stateSeqIn = 0, statesIn = 0;
     StateMsg latestState = {};
     bool haveState = false;
@@ -909,6 +909,10 @@ bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
     } else if (both) {
         if (port == 0) {
             pad = g_S.remotePad;
+            if (g_S.screen == game::MenuKey("select_arena")) { // the arena is the host's to take (its game starts
+                pad.analog[0] = 0;                              // the duel; this one follows that)
+                pad.buttons &= ~0x0010;
+            }
             packet = g_S.remotePacket;
             return true;
         }
@@ -972,6 +976,10 @@ void LaunchObserved(std::string& arguments)
     }
     if (g_S.followingLaunch) { // the guest's start of the host's launch itself
         g_S.followingLaunch = false;
+        return;
+    }
+    if (g_S.followStarted) { // the host's launch is being started already (this game's own comes too late)
+        LOG_INFO("Online: the guest's game would start '%s'; the host's start is on its way", arguments.c_str());
         return;
     }
     // The guest: the host's launch (it may have come already).
@@ -1105,6 +1113,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         g_S.haveState = false;
         g_S.guestInDuel = false;
         g_S.followingLaunch = true;
+        g_S.followStarted = true;
         lock.unlock();
         LOG_INFO("Online: following the host's launch '%s'", args.c_str());
         if (args.empty())
@@ -1719,7 +1728,7 @@ void ResetSessionLocked(bool host)
     g_S.remotePacket = 0;
     g_S.launchIdOut = g_S.launchIdIn = 0;
     g_S.pendingLaunch.clear();
-    g_S.pendingLaunchSet = g_S.followingLaunch = false;
+    g_S.pendingLaunchSet = g_S.followingLaunch = g_S.followStarted = false;
     g_S.stateSeqOut = g_S.stateSeqIn = g_S.statesIn = 0;
     g_S.haveState = false;
     g_S.guestInDuel = false;
@@ -1903,6 +1912,7 @@ bool OnlineActive()
 void OnlineReboot()
 {
     std::lock_guard<std::mutex> lock(g_S.lock);
+    g_S.followStarted = false; // the host's launch is in
     if (!g_S.bootPending)
         return; // a level change in a match: the frames go on
     g_S.bootPending = false;

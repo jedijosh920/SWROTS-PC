@@ -138,7 +138,7 @@ void VersusNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float 
     if (!game::GamePlayerSlot(0) || !game::GamePlayerSlot(1))
         return;
     const std::string p1 = s.host ? s.localName : s.remoteName, p2 = s.host ? s.remoteName : s.localName;
-    const float h = 15 * u, y = vp->Pos.y + vp->Size.y * 0.795f;
+    const float h = 20 * u, y = vp->Pos.y + vp->Size.y * 0.79f;
     Text(vp->Pos.x + vp->Size.x * 0.175f, y, h, kWhite, p1, 0.0f);
     Text(vp->Pos.x + vp->Size.x * 0.835f, y, h, kWhite, p2, 1.0f);
 }

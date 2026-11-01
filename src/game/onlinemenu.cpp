@@ -357,6 +357,11 @@ bool RowDisabled(int row)
 // Rows shown dimmed: the disabled ones, but not the rows that only tell.
 bool RowDimmed(int row)
 {
+    if (row == kRounds || row == kArena || row == kRematch) { // the guest sees the host's settings, not dimmed
+        const net::OnlineStatusInfo s = net::OnlineStatus();
+        if (!s.host && !Idle(s))
+            return false;
+    }
     return RowDisabled(row) && row != kStatus && row != kPlayer1 && row != kPlayer2 && row != kMode;
 }
 
@@ -610,6 +615,10 @@ bool GoToVersusSelect()
             profile[0x32] = 0;
             profile[0x33] = 0;
         }
+        // player 1 is the first pad (the select screen gives the events of [[0x7F33F0]+0x414]'s pad to player 1, the
+        // others' to player 2: 0x2D54A0): the host's on both games
+        if (uint8_t* shellState = *reinterpret_cast<uint8_t**>(uintptr_t(0x007F33F0)))
+            *reinterpret_cast<int*>(shellState + 0x414) = 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
     return GoToShellScreen("select_jedi");
