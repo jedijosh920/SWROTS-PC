@@ -257,8 +257,11 @@ std::string MapPicture(const CustomMap& map, const char* name)
     return ModFileExists(file + ".stx") ? file : std::string();
 }
 
+uint8_t* g_ArenaList = nullptr; // the arena list last built (the arena screen's, while it is up)
+
 void __fastcall ArenaBuildHook(uint8_t* list, void*)
 {
+    g_ArenaList = list;
     reinterpret_cast<ArenaFn>(uintptr_t(kArenaBuild))(list, nullptr);
     const std::vector<const CustomMap*> maps = CustomMapsFor(MapMode::Versus);
     g_FirstCustomRow = -1;
@@ -957,9 +960,25 @@ uint32_t LastShellScreen()
     return g_LastScreen;
 }
 
+bool ArenaCursorToRandom()
+{
+    if (!g_ArenaList || g_LastScreen != MenuKey("select_arena"))
+        return false;
+    __try {
+        const int random = *reinterpret_cast<int*>(g_ArenaList + 0x58);
+        if (random < 0)
+            return false;
+        *reinterpret_cast<int*>(g_ArenaList + 0x20) = random;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 void InstallHvvMenu()
 {
     g_LastScreen = 0;
+    g_ArenaList = nullptr;
     InstallScreens();
     // made again at every start (ResetStubsForBoot), as the jumps into every new image
     uint8_t* transition = Trampoline(kTransition, kTransitionBytes, sizeof kTransitionBytes);

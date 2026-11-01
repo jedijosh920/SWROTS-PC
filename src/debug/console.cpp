@@ -29,6 +29,7 @@
 #include "kernel/kernel.h"
 #include "net/rollback.h"
 #include "game/menus.h"
+#include "game/onlinemenu.h"
 #include "net/duelstate.h"
 #include "net/session.h"
 
@@ -1050,6 +1051,9 @@ void Online(const std::vector<std::string>& words)
         net::OnlineJoin(code);
     } else if (_stricmp(what.c_str(), "leave") == 0) {
         net::OnlineLeave();
+    } else if (_stricmp(what.c_str(), "start") == 0) { // the room's Start (tests)
+        Print(LineKind::Output, game::OnlineStartVersus() ? "  to the Versus select" : "  not in the front end");
+        return;
     } else if (_stricmp(what.c_str(), "menu") == 0) { // the Online screen (from any front-end screen; tests)
         Print(LineKind::Output, game::GoToShellScreen("online") ? "  to the Online screen" : "  not in the front end");
         return;

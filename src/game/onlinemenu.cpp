@@ -6,17 +6,17 @@
 // Settings: a copy of Settings' (its highlight bar too), opening the port's screen "online"; Settings and Features
 // move one row down, and the neighbours are linked through it.
 //
-// The screen "online" is the Settings screen's (BuildSettingsScreen) with five rows: Host Game, Join Game (buttons),
-// Room Code, Status (value rows showing text), Leave. Join Game opens "online_code", the game's code screen
-// (codes.xbl_xml: the Settings > Codes keyboard, CodesKeyboard: A-Z, 0-9, Back, Space, Done) with a keyboard of the
-// port's own: the game's (made by 0x2D1740, vtable 0x5D61E0) whose Done (slot 29) joins with the code typed, which
-// holds 15 letters (its init, slot 0, sets the length to 14: +0x24), and which takes Ctrl+V (the clipboard's code)
-// as it draws (slot 3), or Y on any of its keys. Its text is wide characters at +0x28 (16), +0x48 the end, +0x50/+0x54/+0x58 its Back,
-// Space and Done keys' handlers (their +0x20 set while the text is empty).
-//
-// In a match the screens are played on both PCs alike (session.h): what they show and do must not depend on the PC,
-// so then they show the same texts on both, Host and Join do nothing and the clipboard is left alone; Leave ends the
-// session on both.
+// The port's screens are the Settings screen's (BuildSettingsScreen):
+// - "online": Host Game, Join Game, Online Settings, and a status line. Join Game opens "online_code", the game's
+//   code screen (codes.xbl_xml: the Settings > Codes keyboard, CodesKeyboard: A-Z, 0-9, Back, Space, Done) with a
+//   keyboard of the port's own (made by 0x2D1740, vtable 0x5D61E0) whose Done (slot 29) joins with the code typed (15
+//   letters: its init, slot 0, sets the length, +0x24) and which takes Ctrl+V or Y (the clipboard's code). Its text is
+//   wide characters at +0x28 (16), +0x48 the end, +0x50/+0x54/+0x58 its Back, Space and Done keys' handlers (their
+//   +0x20 set while the text is empty). The same keyboard types the player's name for Online Settings.
+// - "online_settings": the player's name ([Online] Name; by default the profile's).
+// - "online_room": the room (both players, from Host Game or a join on): the host's settings (game mode, rounds to
+//   win, arena, auto rematch), the two players and their connection, the room code (A copies it), Start (the host:
+//   both games to the Versus select, the guest's following) and Close Room / Leave Room.
 
 #include "game/onlinemenu.h"
 
@@ -213,69 +213,152 @@ std::string Shorten(std::string text, size_t most)
     return text;
 }
 
+// --- The rows of the three screens -------------------------------------------------------------------------------------
+// "online": Host Game, Join Game, Online Settings, and a line of status. "online_settings": the player's name.
+// "online_room" (both players, from Host Game or a join on): the host's settings, the two players, the room code,
+// Start (the host) and Leave.
+enum Screen { kOnline, kSettingsScreen, kRoom, kScreenCount };
+constexpr const char* kScreenNames[kScreenCount] = { "online", "online_settings", "online_room" };
+constexpr const char* kSettingsFileName = "interfc\\front_end\\xml\\online_settings.xml";
+constexpr const char* kRoomFileName = "interfc\\front_end\\xml\\online_room.xml";
+
+enum Row {
+    kHost, kJoin, kSettings, kStatus,
+    kName,
+    kMode, kRounds, kArena, kRematch, kPlayer1, kPlayer2, kCode, kStart, kLeave,
+    kRowCount
+};
+struct RowDef {
+    const char* name;
+    const char* text;
+    bool button;
+    Screen screen;
+};
+constexpr RowDef kRowDefs[kRowCount] = {
+    { "onlinehost", "IDS_PORT_ONLINE_HOST", true, kOnline },
+    { "onlinejoin", "IDS_PORT_ONLINE_JOIN", true, kOnline },
+    { "onlinesettings", "IDS_PORT_ONLINE_SETTINGS", true, kOnline },
+    { "onlinestatus", "IDS_PORT_ONLINE_STATUS", false, kOnline },
+    { "onlinename", "IDS_PORT_ONLINE_NAME", false, kSettingsScreen },
+    { "roommode", "IDS_PORT_ROOM_MODE", false, kRoom },
+    { "roomrounds", "IDS_PORT_ROOM_ROUNDS", false, kRoom },
+    { "roomarena", "IDS_PORT_ROOM_ARENA", false, kRoom },
+    { "roomrematch", "IDS_PORT_ROOM_REMATCH", false, kRoom },
+    { "roomp1", "IDS_PORT_ROOM_P1", false, kRoom },
+    { "roomp2", "IDS_PORT_ROOM_P2", false, kRoom },
+    { "roomcode", "IDS_PORT_ROOM_CODE", false, kRoom },
+    { "roomstart", "IDS_PORT_ROOM_START", true, kRoom },
+    { "roomleave", "IDS_PORT_ROOM_LEAVE", true, kRoom },
+};
+
+std::vector<ShellScreenRow> Rows(Screen screen)
+{
+    std::vector<ShellScreenRow> rows;
+    for (const RowDef& r : kRowDefs)
+        if (r.screen == screen)
+            rows.push_back({ r.name, r.text, r.button });
+    return rows;
+}
+
+// A value row's text id (its value, as the control's On text).
+std::string ValueId(int row)
+{
+    std::string id = std::string("IDS_PORT_V_") + kRowDefs[row].name;
+    for (char& c : id)
+        if (c >= 'a' && c <= 'z')
+            c = char(c - 'a' + 'A');
+    return id;
+}
+
+constexpr uint8_t kRoundChoices[] = { 1, 2, 3, 5 };
+
+bool Idle(const net::OnlineStatusInfo& s)
+{
+    return s.phase == net::OnlinePhase::Off || s.phase == net::OnlinePhase::Ended;
+}
+
+// The quality of the connection in words and bars (the room's player rows).
+std::string Quality(int pingMs)
+{
+    if (pingMs < 0)
+        return "";
+    const int bars = pingMs < 40 ? 4 : pingMs < 80 ? 3 : pingMs < 150 ? 2 : 1;
+    return "  " + std::string(size_t(bars), '|') + std::string(size_t(4 - bars), '.') + " " + std::to_string(pingMs) + " MS";
+}
+
 void UpdateTexts()
 {
     const net::OnlineStatusInfo s = net::OnlineStatus();
-    std::string code = "-", status;
-    if (net::OnlineActive()) { // the same on both PCs
-        SetMenuText("IDS_PORT_ONLINE_HOST", L"Host Game");
-        SetMenuText("IDS_PORT_ONLINE_V_CODE", L"-");
-        SetMenuText("IDS_PORT_ONLINE_V_STATUS", L"IN A MATCH");
-        return;
-    }
+    // online: the status line
+    std::string status;
     switch (s.phase) {
     case net::OnlinePhase::Off: status = g_Note.empty() ? "NOT CONNECTED" : g_Note; break;
     case net::OnlinePhase::Opening: status = "OPENING A ROOM..."; break;
-    case net::OnlinePhase::Waiting: status = "WAITING FOR A FRIEND"; break;
+    case net::OnlinePhase::Waiting: status = "IN YOUR ROOM"; break;
     case net::OnlinePhase::Connecting: status = "CALLING THE HOST..."; break;
-    case net::OnlinePhase::Preparing: status = s.host ? "SENDING THE PROFILE..." : "GETTING THE PROFILE..."; break;
-    case net::OnlinePhase::Starting: status = "STARTING..."; break;
-    case net::OnlinePhase::Playing: status = "IN A MATCH"; break;
-    case net::OnlinePhase::Ended: status = g_Note.empty() ? "ENDED: " + s.message : g_Note; break;
+    case net::OnlinePhase::Preparing: case net::OnlinePhase::Starting: status = "JOINING..."; break;
+    case net::OnlinePhase::Playing: status = "IN A ROOM"; break;
+    case net::OnlinePhase::Ended: status = g_Note.empty() ? Shorten(s.message, 40) : g_Note; break;
     }
-    if (s.host && !s.roomCode.empty() && s.phase != net::OnlinePhase::Ended)
+    SetMenuText(ValueId(kStatus).c_str(), Wide(Shorten(status, 40)));
+    SetMenuText(ValueId(kName).c_str(), Wide(net::OnlinePlayerName()));
+    // the room
+    SetMenuText(ValueId(kMode).c_str(), L"VERSUS");
+    SetMenuText(ValueId(kRounds).c_str(), Wide(std::to_string(s.room.rounds)));
+    SetMenuText(ValueId(kArena).c_str(), s.room.arena == 1 ? L"RANDOM" : L"CHOOSE");
+    SetMenuText(ValueId(kRematch).c_str(), s.room.rematch ? L"ON" : L"OFF");
+    const std::string me = Shorten(s.localName.empty() ? net::OnlinePlayerName() : s.localName, 15);
+    const std::string other = Shorten(s.remoteName, 15);
+    std::string p1, p2;
+    if (s.host) {
+        p1 = me;
+        p2 = s.guestHere ? other + Quality(s.pingMs) : "WAITING...";
+    } else {
+        p1 = other.empty() ? "..." : other + Quality(s.pingMs);
+        p2 = me;
+    }
+    SetMenuText(ValueId(kPlayer1).c_str(), Wide(p1));
+    SetMenuText(ValueId(kPlayer2).c_str(), Wide(p2));
+    std::string code = "-";
+    if (s.host && !s.roomCode.empty() && !Idle(s))
         code = s.roomCode;
     else if (!s.host && !g_Typed.empty())
         code = g_Typed;
-    // the host's code goes to the clipboard as soon as there is one
     if (s.host && s.phase == net::OnlinePhase::Waiting && !s.roomCode.empty() && g_Copied != s.roomCode &&
-        CopyToClipboard(s.roomCode)) {
+        CopyToClipboard(s.roomCode)) { // the host's code goes to the clipboard as soon as there is one
         g_Copied = s.roomCode;
         LOG_INFO("Online menu: room code %s copied to the clipboard", s.roomCode.c_str());
     }
     if (g_CopiedAt && GetTickCount64() - g_CopiedAt < 2000)
         code = "CODE COPIED";
-    const bool hosting = s.host && s.phase != net::OnlinePhase::Off && s.phase != net::OnlinePhase::Ended;
-    SetMenuText("IDS_PORT_ONLINE_HOST", hosting ? L"Cancel Host" : L"Host Game");
-    SetMenuText("IDS_PORT_ONLINE_V_CODE", Wide(code));
-    SetMenuText("IDS_PORT_ONLINE_V_STATUS", Wide(Shorten(status, 40)));
+    SetMenuText(ValueId(kCode).c_str(), Wide(code));
+    SetMenuText("IDS_PORT_ROOM_LEAVE", s.host ? L"Close Room" : L"Leave Room");
 }
 
-// --- The online screen's rows ----------------------------------------------------------------------------------------
-std::vector<ShellScreenRow> Rows()
-{
-    return { { "onlinehost", "IDS_PORT_ONLINE_HOST", true }, { "onlinejoin", "IDS_PORT_ONLINE_JOIN", true },
-        { "onlinecode", "IDS_PORT_ONLINE_CODE", false }, { "onlineleave", "IDS_PORT_ONLINE_LEAVE", true },
-        { "onlinestatus", "IDS_PORT_ONLINE_STATUS", false } };
-}
-enum Row { kHost, kJoin, kCode, kLeave, kStatus, kRowCount };
-
-// Rows that cannot be chosen now: skipped by the cursor and dimmed. Status is never one (it only tells); Room Code
-// only once there is a code to copy; Join while this PC hosts or calls; in a match (the same on both PCs) all but
-// Leave.
+// Rows that cannot be chosen now: skipped by the cursor and dimmed (rows that only tell are never chosen either).
 bool RowDisabled(int row)
 {
-    if (row == kStatus)
-        return true;
-    if (net::OnlineActive())
-        return row != kLeave;
     const net::OnlineStatusInfo s = net::OnlineStatus();
-    const bool idle = s.phase == net::OnlinePhase::Off || s.phase == net::OnlinePhase::Ended;
-    if (row == kCode)
-        return !(s.host && !idle && !s.roomCode.empty());
-    if (row == kJoin)
-        return !idle;
-    return false;
+    const bool idle = Idle(s);
+    switch (row) {
+    case kHost: case kJoin: return !idle;
+    case kSettings: return false;
+    case kStatus: return true;
+    case kName: return !idle;
+    case kMode: return true; // Versus only for now
+    case kRounds: case kArena: case kRematch: return !s.host || idle;
+    case kPlayer1: case kPlayer2: return true;
+    case kCode: return !(s.host && !idle && !s.roomCode.empty());
+    case kStart: return !(s.host && s.matchOn && s.phase == net::OnlinePhase::Playing);
+    case kLeave: return false;
+    default: return false;
+    }
+}
+
+// Rows shown dimmed: the disabled ones, but not the rows that only tell.
+bool RowDimmed(int row)
+{
+    return RowDisabled(row) && row != kStatus && row != kPlayer1 && row != kPlayer2 && row != kMode;
 }
 
 constexpr uint32_t kMakeOnOff = 0x002D9690;   // SettingsScreenOnOffControl
@@ -299,31 +382,35 @@ int RowOf(uint8_t* handler)
     if (!item)
         return -1;
     const uint32_t key = *reinterpret_cast<const uint32_t*>(item + 4);
-    const std::vector<ShellScreenRow> rows = Rows();
-    for (size_t i = 0; i < rows.size(); ++i)
-        if (key == MenuKey(rows[i].name.c_str()))
-            return int(i);
+    for (int i = 0; i < kRowCount; ++i)
+        if (key == MenuKey(kRowDefs[i].name))
+            return i;
     return -1;
 }
 
 // The cursor's way through the rows that can be chosen: each row's up and down neighbours (the item's +0x18 and
-// +0x1C, the keys of their names) set as it draws, past the disabled ones.
+// +0x1C, the keys of their names) set as it draws, past the disabled ones (on its own screen).
 void LinkRow(uint8_t* handler, int row)
 {
     uint32_t* item = *reinterpret_cast<uint32_t**>(handler + 8);
     if (!item)
         return;
-    const std::vector<ShellScreenRow> rows = Rows();
-    const auto next = [&](int from, int step) {
-        for (int i = 1; i <= kRowCount; ++i) {
-            const int r = ((from + step * i) % kRowCount + kRowCount) % kRowCount;
+    std::vector<int> mine;
+    for (int i = 0; i < kRowCount; ++i)
+        if (kRowDefs[i].screen == kRowDefs[row].screen)
+            mine.push_back(i);
+    const int n = int(mine.size());
+    const int at = int(std::find(mine.begin(), mine.end(), row) - mine.begin());
+    const auto next = [&](int step) {
+        for (int i = 1; i <= n; ++i) {
+            const int r = mine[size_t(((at + step * i) % n + n) % n)];
             if (!RowDisabled(r))
                 return r;
         }
-        return from;
+        return row;
     };
-    item[0x18 / 4] = MenuKey(rows[size_t(next(row, -1))].name.c_str());
-    item[0x1C / 4] = MenuKey(rows[size_t(next(row, 1))].name.c_str());
+    item[0x18 / 4] = MenuKey(kRowDefs[next(-1)].name);
+    item[0x1C / 4] = MenuKey(kRowDefs[next(1)].name);
 }
 
 // A draw with the item dimmed (its colour, item +0x94 RGBA, as the main menu dims its own: alpha 0x69).
@@ -350,92 +437,177 @@ uint8_t* CurrentProfile()
                     : nullptr;
 }
 
+// While a screen of ours is up: the session's state takes this PC to the right one (a room once in one, the Online
+// screen once it is over).
+ULONGLONG g_LastRedirect = 0;
+void KeepOnRightScreen(int row)
+{
+    const net::OnlineStatusInfo s = net::OnlineStatus();
+    const Screen screen = kRowDefs[row].screen;
+    const bool inRoom = !Idle(s);
+    if (GetTickCount64() - g_LastRedirect < 1000)
+        return;
+    if (screen == kOnline && inRoom) {
+        g_LastRedirect = GetTickCount64();
+        GoToShellScreen(kScreenNames[kRoom]);
+    } else if (screen == kRoom && !inRoom) {
+        g_LastRedirect = GetTickCount64();
+        GoToShellScreen(kScreenNames[kOnline]);
+    }
+}
+
 // A value row shows its text as the control's On text (the control shows On for the profile's subtitles setting,
 // +0x2A, which it is given for the draw).
 char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
 {
     const int row = RowOf(handler);
-    const char* text = row == kCode ? "IDS_PORT_ONLINE_V_CODE" : row == kStatus ? "IDS_PORT_ONLINE_V_STATUS" : nullptr;
-    if (!text)
+    if (row < 0 || kRowDefs[row].button)
         return g_OnOffDraw(handler, nullptr, value);
-    if (row == kCode)
-        UpdateTexts(); // once a frame
+    if (row == kStatus || row == kName || row == kMode) // once a frame on each screen
+        UpdateTexts();
+    if (row == kStatus || row == kMode)
+        KeepOnRightScreen(row);
     LinkRow(handler, row);
     handler[0x23C] = 1;
     uint8_t* profile = CurrentProfile();
     const uint8_t saved = profile ? profile[0x2A] : 0;
     if (profile)
         profile[0x2A] = 1;
-    SetOnOffTexts(text, text);
-    const char result = DrawDimmed(handler, RowDisabled(row) && row != kStatus,
-        [&] { return g_OnOffDraw(handler, nullptr, value); });
+    const std::string text = ValueId(row);
+    SetOnOffTexts(text.c_str(), text.c_str());
+    const char result = DrawDimmed(handler, RowDimmed(row), [&] { return g_OnOffDraw(handler, nullptr, value); });
     SetOnOffTexts(nullptr, nullptr);
     if (profile)
         profile[0x2A] = saved;
     return result;
 }
 
+void OpenKeyboard(bool forName);
+
+// B: back as the game's screens go, except in a room once the match is on (Leave is the way out).
+char Back(uint8_t* handler, int event, int value)
+{
+    const int row = RowOf(handler);
+    if (row >= 0 && kRowDefs[row].screen == kRoom) {
+        const net::OnlineStatusInfo s = net::OnlineStatus();
+        if (s.matchOn)
+            return 1;
+        if (!Idle(s)) { // the host's room before a guest, or a guest still calling: leave it
+            net::OnlineLeave();
+            g_Note.clear();
+        }
+        GoToShellScreen(kScreenNames[kOnline]);
+        return 1;
+    }
+    if (row >= 0 && kRowDefs[row].screen == kSettingsScreen) {
+        GoToShellScreen(kScreenNames[kOnline]);
+        return 1;
+    }
+    return reinterpret_cast<ItemEventFn>(uintptr_t(kItemEvent))(handler, nullptr, event, value);
+}
+
 char __fastcall ValueEvent(uint8_t* handler, void*, int event, int value)
 {
     if (event == kB)
-        return reinterpret_cast<ItemEventFn>(uintptr_t(kItemEvent))(handler, nullptr, event, value);
-    if (event == kLeft || event == kRight || event == kChosen) {
-        // A on the room code: Copy Code (to the clipboard; the row says CODE COPIED for 2 s)
-        if (RowOf(handler) == kCode && event == kChosen && !RowDisabled(kCode)) {
-            const net::OnlineStatusInfo s = net::OnlineStatus();
-            if (CopyToClipboard(s.roomCode)) {
-                g_Copied = s.roomCode;
-                g_CopiedAt = GetTickCount64();
-                g_OnOffEvent(handler, nullptr, event, value); // its sound
-            }
+        return Back(handler, event, value);
+    if (event != kLeft && event != kRight && event != kChosen)
+        return g_OnOffEvent(handler, nullptr, event, value);
+    const int row = RowOf(handler);
+    if (row < 0 || RowDisabled(row))
+        return 1;
+    const net::OnlineStatusInfo s = net::OnlineStatus();
+    if (row == kCode && event == kChosen) { // Copy Code (the row says CODE COPIED for 2 s)
+        if (CopyToClipboard(s.roomCode)) {
+            g_Copied = s.roomCode;
+            g_CopiedAt = GetTickCount64();
+            g_OnOffEvent(handler, nullptr, event, value); // its sound
         }
-        return 1; // the value is not the player's to change
+        return 1;
     }
-    return g_OnOffEvent(handler, nullptr, event, value);
+    if (row == kName && event == kChosen) {
+        OpenKeyboard(true);
+        return 1;
+    }
+    net::OnlineRoomSettings room = s.room;
+    const int step = event == kLeft ? -1 : 1;
+    if (row == kRounds) {
+        int at = 0;
+        for (int i = 0; i < int(std::size(kRoundChoices)); ++i)
+            if (kRoundChoices[i] == room.rounds)
+                at = i;
+        at = (at + step + int(std::size(kRoundChoices))) % int(std::size(kRoundChoices));
+        room.rounds = kRoundChoices[at];
+    } else if (row == kArena) {
+        room.arena = room.arena ? 0 : 1;
+    } else if (row == kRematch) {
+        room.rematch = room.rematch ? 0 : 1;
+    } else {
+        return 1;
+    }
+    net::SetOnlineRoom(room);
+    UpdateTexts();
+    g_OnOffEvent(handler, nullptr, event, value); // its sound
+    return 1;
+}
+
+// Start: both games to the Versus fighters' select (the Versus row's own way: the profile's mode bytes +0x32 and +0x33
+// cleared, 0x2CBEC0); the guest's follows the host's screen.
+bool GoToVersusSelect()
+{
+    __try {
+        if (uint8_t* profile = CurrentProfile()) {
+            profile[0x32] = 0;
+            profile[0x33] = 0;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return GoToShellScreen("select_jedi");
 }
 
 char __fastcall ButtonEvent(uint8_t* handler, void*, int event, int value)
 {
     const int row = RowOf(handler);
     if (event == kB)
-        return reinterpret_cast<ItemEventFn>(uintptr_t(kItemEvent))(handler, nullptr, event, value);
+        return Back(handler, event, value);
     if (row < 0 || event != kChosen)
         return g_ButtonEvent(handler, nullptr, event, value);
     if (RowDisabled(row))
         return 1;
-    if (row == kLeave) {
-        g_Note.clear();
-        net::OnlineLeave(); // in a match: on both PCs alike (both get the same press)
-        LOG_INFO("Online menu: Leave");
-        return 1;
-    }
-    if (net::OnlineActive())
-        return 1;
     const net::OnlineStatusInfo s = net::OnlineStatus();
-    const bool idle = s.phase == net::OnlinePhase::Off || s.phase == net::OnlinePhase::Ended;
-    if (row == kHost) {
-        if (idle) {
-            g_Note.clear();
-            g_Copied.clear();
-            g_Typed.clear();
-            LOG_INFO("Online menu: Host Game");
-            if (!net::OnlineHost())
-                g_Note = Shorten(net::OnlineStatus().message, 40);
-        } else if (s.host) { // Cancel Host
-            g_Note.clear();
-            g_CopiedAt = 0;
-            net::OnlineLeave();
-            LOG_INFO("Online menu: Cancel Host");
-        }
+    switch (row) {
+    case kHost:
+        g_Note.clear();
+        g_Copied.clear();
+        g_Typed.clear();
+        LOG_INFO("Online menu: Host Game");
+        if (!net::OnlineHost())
+            g_Note = Shorten(net::OnlineStatus().message, 40);
+        else
+            GoToShellScreen(kScreenNames[kRoom]);
         UpdateTexts();
         return 1;
-    }
-    if (row == kJoin && idle) {
+    case kJoin:
         LOG_INFO("Online menu: Join Game");
-        GoToShellScreen(kCodeScreen);
+        OpenKeyboard(false);
+        return 1;
+    case kSettings:
+        GoToShellScreen(kScreenNames[kSettingsScreen]);
+        return 1;
+    case kStart:
+        LOG_INFO("Online menu: Start (Versus)");
+        GoToVersusSelect();
+        return 1;
+    case kLeave:
+        g_Note.clear();
+        g_CopiedAt = 0;
+        LOG_INFO("Online menu: %s", s.host ? "Close Room" : "Leave Room");
+        net::OnlineLeave(); // in a match the game goes back to its main menu
+        if (!s.matchOn)
+            GoToShellScreen(kScreenNames[kOnline]);
+        return 1;
+    default:
         return 1;
     }
-    return 1;
 }
 
 DrawFn g_ButtonDraw = nullptr;
@@ -445,52 +617,10 @@ char __fastcall ButtonDraw(uint8_t* handler, void*, uint32_t value)
     const int row = RowOf(handler);
     if (row < 0)
         return g_ButtonDraw(handler, nullptr, value);
+    if (row == kHost)
+        UpdateTexts();
     LinkRow(handler, row);
-    return DrawDimmed(handler, RowDisabled(row), [&] { return g_ButtonDraw(handler, nullptr, value); });
-}
-
-// --- The main menu in a match ----------------------------------------------------------------------------------------
-// In a match only Versus is played for now: Single Player, Settings and Features, and Multi Player's Cooperative,
-// Heroes vs Villains and Battlefront are dimmed and refuse A (the game's error sound), on both PCs alike (OnlineActive
-// is the same on both). The rows: MainMenuButton (vtable 0x5D5410: draw slot 3 0x2CC550, events slot 4 0x2CC7E0)
-// and MainMenuSwitchScreenButton (0x5D5580: draw 0x2CC060; its events are Heroes vs Villains' hook, which asks
-// OnlineRefusesMainMenuEvent).
-constexpr uint32_t kMainButtonVtable = 0x005D5410, kMainButtonDraw = 0x002CC550, kMainButtonEvent = 0x002CC7E0;
-constexpr uint32_t kSwitchVtable = 0x005D5580, kSwitchDraw = 0x002CC060;
-
-bool MainMenuRowDisabled(const uint8_t* handler)
-{
-    if (!net::OnlineActive())
-        return false;
-    const uint8_t* item = *reinterpret_cast<uint8_t* const*>(handler + 8);
-    if (!item)
-        return false;
-    const uint32_t key = *reinterpret_cast<const uint32_t*>(item + 4);
-    for (const char* name : { "singleplayer", "settings", "features", "cooperative", "hvv", "battlefront" })
-        if (key == MenuKey(name))
-            return true;
-    return false;
-}
-
-char __fastcall MainButtonDraw(uint8_t* handler, void*, uint32_t value)
-{
-    return DrawDimmed(handler, MainMenuRowDisabled(handler), [&] {
-        return reinterpret_cast<DrawFn>(uintptr_t(kMainButtonDraw))(handler, nullptr, value);
-    });
-}
-
-char __fastcall SwitchDraw(uint8_t* handler, void*, uint32_t value)
-{
-    return DrawDimmed(handler, MainMenuRowDisabled(handler), [&] {
-        return reinterpret_cast<DrawFn>(uintptr_t(kSwitchDraw))(handler, nullptr, value);
-    });
-}
-
-char __fastcall MainButtonEvent(uint8_t* handler, void*, int event, int value)
-{
-    if (OnlineRefusesMainMenuEvent(handler, event))
-        return 1;
-    return reinterpret_cast<ItemEventFn>(uintptr_t(kMainButtonEvent))(handler, nullptr, event, value);
+    return DrawDimmed(handler, RowDimmed(row), [&] { return g_ButtonDraw(handler, nullptr, value); });
 }
 
 uint8_t* MakeValue()
@@ -524,6 +654,7 @@ constexpr int kTextAt = 0x28, kTextEnd = 0x48, kMaxLength = 0x24, kBackKey = 0x5
 constexpr int kCodeLength = 15; // the text holds 16 characters, its end mark one
 uint32_t g_KeyboardVtable[kVtableSlots];
 bool g_PasteDown = false;
+bool g_KeyboardForName = false; // the keyboard types the player's name (Online Settings), not a room code
 
 void Sound(uint8_t* keyboard, int id)
 {
@@ -551,7 +682,7 @@ void SetKeyboardText(uint8_t* keyboard, const std::string& text)
             break;
         if (c >= 'a' && c <= 'z')
             c = char(c - 'a' + 'A');
-        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
+        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || (c == ' ' && g_KeyboardForName))
             buffer[n++] = wchar_t(c);
     }
     buffer[n] = 0;
@@ -568,12 +699,17 @@ void __fastcall KeyboardInit(uint8_t* keyboard, void*)
     reinterpret_cast<void(__fastcall*)(uint8_t*, void*)>(uintptr_t(kCodesKeyboardInit))(keyboard, nullptr);
     *reinterpret_cast<int*>(keyboard + kMaxLength) = kCodeLength;
     g_PasteDown = true; // a Ctrl+V held from before the screen does not count
+    if (g_KeyboardForName) {
+        const std::string name = net::OnlinePlayerName();
+        SetKeyboardText(keyboard, name == "NONAME" ? std::string() : name);
+    }
 }
 
 // Ctrl+V: the clipboard's code (its letters and digits) as the text.
 void __fastcall KeyboardDraw(uint8_t* keyboard, void*, uint32_t value)
 {
-    const bool down = GameWindowActive() && (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('V') & 0x8000);
+    const bool down = !g_KeyboardForName && GameWindowActive() && (GetAsyncKeyState(VK_CONTROL) & 0x8000) &&
+        (GetAsyncKeyState('V') & 0x8000);
     if (down && !g_PasteDown)
         Paste(keyboard);
     g_PasteDown = down;
@@ -589,7 +725,7 @@ constexpr int kEventSlot = 4;
 
 bool Paste(uint8_t* keyboard)
 {
-    if (net::OnlineActive())
+    if (g_KeyboardForName || !Idle(net::OnlineStatus()))
         return false;
     const std::string text = ClipboardText();
     net::Endpoint a, b;
@@ -621,7 +757,14 @@ constexpr ItemEventFn kKeyHooks[] = { &KeyEvent<0>, &KeyEvent<1>, &KeyEvent<2>, 
 // Done: joins with the code typed (back to the online screen), or refuses it.
 void __fastcall KeyboardDone(uint8_t* keyboard, void*)
 {
-    if (net::OnlineActive())
+    if (g_KeyboardForName) { // Online Settings: the name
+        net::SetOnlinePlayerName(KeyboardText(keyboard));
+        reinterpret_cast<void(__fastcall*)(uint8_t*, void*)>(uintptr_t(kKeyboardClear))(keyboard, nullptr);
+        UpdateTexts();
+        GoToShellScreen(kScreenNames[kSettingsScreen]);
+        return;
+    }
+    if (!Idle(net::OnlineStatus()))
         return;
     const std::string code = KeyboardText(keyboard);
     net::Endpoint a, b;
@@ -637,7 +780,14 @@ void __fastcall KeyboardDone(uint8_t* keyboard, void*)
         g_Note = Shorten(net::OnlineStatus().message, 40);
     reinterpret_cast<void(__fastcall*)(uint8_t*, void*)>(uintptr_t(kKeyboardClear))(keyboard, nullptr);
     UpdateTexts();
-    GoToShellScreen(kScreen);
+    GoToShellScreen(kScreenNames[g_Note.empty() ? kRoom : kOnline]);
+}
+
+void OpenKeyboard(bool forName)
+{
+    g_KeyboardForName = forName;
+    SetMenuText("IDS_PORT_ONLINE_ENTER_CODE", forName ? L"Enter your Name" : L"Enter the Room Code");
+    GoToShellScreen(kCodeScreen);
 }
 
 uint8_t* MakeKeyboard()
@@ -737,7 +887,13 @@ bool BuildCodeScreen(std::vector<uint8_t>& data)
 bool GenerateScreens(const std::string& lowerName, std::vector<uint8_t>& data)
 {
     if (lowerName == kScreenFile)
-        return BuildSettingsScreen(data, kScreen, Rows(), "IDS_PORT_ONLINE_TITLE", "OnlineValue", "OnlineButton");
+        return BuildSettingsScreen(data, kScreen, Rows(kOnline), "IDS_PORT_ONLINE_TITLE", "OnlineValue", "OnlineButton");
+    if (lowerName == kSettingsFileName)
+        return BuildSettingsScreen(data, kScreenNames[kSettingsScreen], Rows(kSettingsScreen), "IDS_PORT_ONLINE_SETTINGS",
+            "OnlineValue", "OnlineButton");
+    if (lowerName == kRoomFileName)
+        return BuildSettingsScreen(data, kScreenNames[kRoom], Rows(kRoom), "IDS_PORT_ROOM_TITLE", "OnlineValue",
+            "OnlineButton");
     if (lowerName == kCodeFile)
         return BuildCodeScreen(data);
     return false;
@@ -750,13 +906,31 @@ bool SlotIs(uint32_t vtable, int slot, uint32_t function)
 
 } // namespace
 
-bool OnlineRefusesMainMenuEvent(uint8_t* handler, int event)
+bool OnlineRefusesMainMenuEvent(uint8_t*, int)
 {
-    if ((event != kChosen && event != kRight) || !MainMenuRowDisabled(handler))
-        return false;
-    reinterpret_cast<void(__fastcall*)(uint8_t*, void*, int)>(
-        (*reinterpret_cast<void* const* const*>(handler))[11])(handler, nullptr, 0x10); // the error sound
-    return true;
+    return false; // the main menu stays whole (online play has its own screens)
+}
+
+bool OnlineStartVersus()
+{
+    return GoToVersusSelect();
+}
+
+bool OnlineFollowsScreen(uint32_t key)
+{
+    return key == MenuKey(kScreenNames[kRoom]) || key == MenuKey("select_jedi") || key == 0x8DC51DC9u ||
+        key == MenuKey("select_arena");
+}
+
+bool OnlineGoToScreen(uint32_t key)
+{
+    if (key == MenuKey(kScreenNames[kRoom]))
+        return GoToShellScreen(kScreenNames[kRoom]);
+    if (key == MenuKey("select_jedi") || key == 0x8DC51DC9u)
+        return GoToVersusSelect();
+    if (key == MenuKey("select_arena"))
+        return GoToShellScreen("select_arena");
+    return false;
 }
 
 void PatchMainMenuOnline(std::vector<uint8_t>& data)
@@ -777,17 +951,6 @@ void InstallOnlineMenu()
         !SlotIs(kKeyVtables[2], kEventSlot, kKeyEvents[2]) || !SlotIs(kKeyVtables[3], kEventSlot, kKeyEvents[3])) {
         LOG_WARN("Online menu: the code keyboard is not as expected; no Online entry");
         return;
-    }
-    if (SlotIs(kMainButtonVtable, 3, kMainButtonDraw) && SlotIs(kMainButtonVtable, 4, kMainButtonEvent) &&
-        SlotIs(kSwitchVtable, 3, kSwitchDraw)) {
-        const uint32_t draw = uint32_t(reinterpret_cast<uintptr_t>(&MainButtonDraw));
-        const uint32_t event = uint32_t(reinterpret_cast<uintptr_t>(&MainButtonEvent));
-        const uint32_t switchDraw = uint32_t(reinterpret_cast<uintptr_t>(&SwitchDraw));
-        PatchBytes(kMainButtonVtable + 3 * 4, &draw, 4);
-        PatchBytes(kMainButtonVtable + 4 * 4, &event, 4);
-        PatchBytes(kSwitchVtable + 3 * 4, &switchDraw, 4);
-    } else {
-        LOG_WARN("Online menu: the main menu's buttons are not as expected; all their rows stay open in a match");
     }
     if (SlotIs(kIntroVtable, 0, kIntroInit)) {
         const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(&IntroInit));
@@ -821,9 +984,19 @@ void InstallOnlineMenu()
     SetMenuText("IDS_PORT_ONLINE_TITLE", L"Online");
     SetMenuText("IDS_PORT_ONLINE_HOST", L"Host Game");
     SetMenuText("IDS_PORT_ONLINE_JOIN", L"Join Game");
-    SetMenuText("IDS_PORT_ONLINE_CODE", L"Room Code");
+    SetMenuText("IDS_PORT_ONLINE_SETTINGS", L"Online Settings");
     SetMenuText("IDS_PORT_ONLINE_STATUS", L"Status");
-    SetMenuText("IDS_PORT_ONLINE_LEAVE", L"Leave");
+    SetMenuText("IDS_PORT_ONLINE_NAME", L"Name");
+    SetMenuText("IDS_PORT_ROOM_TITLE", L"Room");
+    SetMenuText("IDS_PORT_ROOM_MODE", L"Game Mode");
+    SetMenuText("IDS_PORT_ROOM_ROUNDS", L"Rounds to Win");
+    SetMenuText("IDS_PORT_ROOM_ARENA", L"Arena");
+    SetMenuText("IDS_PORT_ROOM_REMATCH", L"Auto Rematch");
+    SetMenuText("IDS_PORT_ROOM_P1", L"Player 1");
+    SetMenuText("IDS_PORT_ROOM_P2", L"Player 2");
+    SetMenuText("IDS_PORT_ROOM_CODE", L"Room Code");
+    SetMenuText("IDS_PORT_ROOM_START", L"Start");
+    SetMenuText("IDS_PORT_ROOM_LEAVE", L"Close Room");
     SetMenuText("IDS_PORT_ONLINE_PASTE", L"Paste");
     SetMenuText("IDS_PORT_ONLINE_ENTER_CODE", L"Enter the Room Code");
     g_PasteDown = false;
@@ -832,6 +1005,8 @@ void InstallOnlineMenu()
     AddShellHandler("OnlineButton", &MakeButton);
     AddShellHandler("OnlineKeyboard", &MakeKeyboard);
     AddShellScreen(kScreenFile);
+    AddShellScreen(kSettingsFileName);
+    AddShellScreen(kRoomFileName);
     AddShellScreen(kCodeFile);
     RegisterResourceGenerator(&GenerateScreens);
 }

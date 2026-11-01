@@ -17,8 +17,12 @@
 
 #include "core/log.h"
 #include "core/settings.h"
+#include "game/characters.h"
 #include "game/coop.h"
 #include "game/hvv.h"
+#include "game/hvvmenu.h"
+#include "game/menus.h"
+#include "game/onlinemenu.h"
 #include "input/controls.h"
 #include "kernel/clock.h"
 #include "kernel/kernel.h"
@@ -76,7 +80,7 @@ constexpr int kConnectMs = 20000;       // the guest gives up calling after that
 
 enum class Msg : uint8_t {
     Hello = 1, Welcome, Reject, Chunk, ChunkAck, Ready, Start, Started, Input, Ping, Pong, Bye, Pages,
-    Pad, Launch, State, // client/server
+    Pad, Launch, State, Room, // client/server
 };
 
 constexpr uint32_t kPage = 1024;      // a desync's report: the data checked, hashed by 1 KiB pages
@@ -151,6 +155,12 @@ struct PadMsg {
     uint32_t seq;
     input::GamePad pad;
     uint8_t inDuel;   // the sender's game is in a duel (the host waits for the guest's at a duel's start)
+    uint32_t screen;  // the front-end screen the sender's game shows (the guest's follows the host's), 0 none
+};
+// Client/server: the host's room (its settings), a few times a second.
+struct RoomMsg {
+    Header h;
+    OnlineRoomSettings room;
 };
 // Client/server: the host's game starts a level (or the menus): the guest's follows.
 struct LaunchMsg {
@@ -486,6 +496,14 @@ struct Session {
     uint32_t ownPacket = 0;
     uint32_t remoteReads = 0, remoteChanges = 0;
     bool remoteInDuel = false, duelStartWaited = false;
+    OnlineRoomSettings room;            // the host's (the guest: as it last came)
+    uint32_t remoteScreen = 0;          // the other's front-end screen (the guest follows the host's)
+    uint32_t screen = 0, screenSince = 0; // this game's, and the frame it came
+    bool toRoom = false;                // to the room's screen once the front end is up
+    uint32_t followTried = 0;
+    std::string ownMenuArgs;            // this PC's own start at its main menu (its profile), for the session's end
+    uint32_t joinAt = ~0u, arenaAt = ~0u; // the frames the port's own presses start (InjectLocked)
+    bool lost = false;                  // the session ended by a lost connection (the popup says so)
 };
 
 Session g_S;
@@ -523,27 +541,75 @@ std::string PlayerName(const char* text, size_t size, const char* fallback)
 
 // This PC's player name: [Online] Name, else the Windows user name (letters without accents kept as they are,
 // others dropped), at most 20 characters.
+// The name of the profile last saved on this PC (the newest UDATA\<title>\<save>\jedi: a u32, then its name in
+// wide characters), or "".
+std::string ProfileName()
+{
+    const std::wstring root = kernel::SaveDrivePath() + L"\\UDATA\\4c410017\\";
+    WIN32_FIND_DATAW f;
+    HANDLE find = FindFirstFileW((root + L"*").c_str(), &f);
+    if (find == INVALID_HANDLE_VALUE)
+        return {};
+    FILETIME newest = {};
+    std::wstring best;
+    do {
+        if (!(f.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || f.cFileName[0] == L'.')
+            continue;
+        WIN32_FILE_ATTRIBUTE_DATA a;
+        const std::wstring file = root + f.cFileName + L"\\jedi";
+        if (GetFileAttributesExW(file.c_str(), GetFileExInfoStandard, &a) && CompareFileTime(&a.ftLastWriteTime, &newest) > 0) {
+            newest = a.ftLastWriteTime;
+            best = file;
+        }
+    } while (FindNextFileW(find, &f));
+    FindClose(find);
+    std::vector<uint8_t> data;
+    if (best.empty() || !ReadWholeFile(best, data, 4096) || data.size() < 8)
+        return {};
+    std::string name;
+    for (size_t i = 4; i + 1 < data.size() && name.size() < 15; i += 2) {
+        const wchar_t w = wchar_t(data[i] | data[i + 1] << 8);
+        if (!w)
+            break;
+        if (w >= 32 && w < 127)
+            name += char(w);
+    }
+    return name;
+}
+
+// A name as the menus show it: letters, digits and spaces, upper case, at most 15.
+std::string CleanName(const std::wstring& text)
+{
+    std::string name;
+    for (wchar_t w : text) {
+        static const wchar_t* const kFrom = L"\u00e0\u00e2\u00e4\u00e9\u00e8\u00ea\u00eb\u00ee\u00ef\u00f4\u00f6\u00f9\u00fb\u00fc\u00e7\u00c0\u00c9\u00c8\u00ca\u00c7";
+        static const char kTo[] = "aaaeeeeiioouuucAEEEC";
+        if (const wchar_t* at = wcschr(kFrom, w); at && w)
+            w = wchar_t(kTo[at - kFrom]);
+        if (w >= 'a' && w <= 'z')
+            w = wchar_t(w - 'a' + 'A');
+        if ((w >= 'A' && w <= 'Z') || (w >= '0' && w <= '9') || (w == ' ' && !name.empty()))
+            name += char(w);
+        if (name.size() >= 15)
+            break;
+    }
+    while (!name.empty() && name.back() == ' ')
+        name.pop_back();
+    return name;
+}
+
+// The player's name online: [Online] Name (Online Settings), else the profile's, else "NONAME". Never the PC's user.
 std::string LocalPlayerName()
 {
     wchar_t text[64] = {};
     const std::wstring ini = ExeDirectory() + L"\\settings.ini";
     GetPrivateProfileStringW(L"Online", L"Name", L"", text, 64, ini.c_str());
-    if (!text[0]) {
-        DWORD size = 64;
-        if (!GetUserNameW(text, &size))
-            text[0] = 0;
+    std::string name = CleanName(text);
+    if (name.empty()) {
+        const std::string profile = ProfileName();
+        name = CleanName(std::wstring(profile.begin(), profile.end()));
     }
-    std::string name;
-    for (const wchar_t* c = text; *c && name.size() < 20; ++c) {
-        wchar_t w = *c;
-        static const wchar_t* const kFrom = L"\u00e0\u00e2\u00e4\u00e9\u00e8\u00ea\u00eb\u00ee\u00ef\u00f4\u00f6\u00f9\u00fb\u00fc\u00e7\u00c0\u00c9\u00c8\u00ca\u00c7";
-        static const char kTo[] = "aaaeeeeiioouuucAEEEC";
-        if (const wchar_t* at = wcschr(kFrom, w); at && w)
-            w = wchar_t(kTo[at - kFrom]);
-        if (w >= 32 && w < 127)
-            name += char(w);
-    }
-    return name.empty() ? "PLAYER" : name;
+    return name.empty() ? "NONAME" : name;
 }
 
 void SetMessage(const std::string& text)
@@ -588,14 +654,18 @@ void EndLocked(const std::string& why, bool tellOther)
     }
     g_S.phase = OnlinePhase::Ended;
     SetMessage(why);
+    g_S.lost = !tellOther;
     g_S.armed = false;
     g_S.bootPending = false;
     RestoreLocked();
     g_ThreadStop = true;
     g_S.inputs.notify_all();
-    if (matchOn) { // the game back to its title, as a PC alone
-        LOG_INFO("Online: the match is over; back to the title");
-        kernel::RestartFromDashboard();
+    if (matchOn) { // the game back to its main menu, as a PC alone (its own profile)
+        LOG_INFO("Online: the match is over; back to the main menu");
+        if (g_S.ownMenuArgs.empty())
+            kernel::RestartFromDashboard();
+        else
+            kernel::LaunchGame(g_S.ownMenuArgs);
     }
 }
 
@@ -770,21 +840,55 @@ bool PadFromSession(int port, input::GamePad& pad, uint32_t& packet)
 // The host: player 1 is this PC's own (its devices), player 2 the guest's pad as it last came. The guest: its game
 // only shows the host's duel (no input in it); out of a duel its player 1 has this PC's devices (its own menus, to
 // leave).
+// Where both players play this game's player 1 and 2 (the select screens, a duel): the host's player 2 is the
+// guest's pad, the guest's player 1 the host's and its player 2 its own. Elsewhere each PC's player 1 is its own
+// devices and player 2 nothing (the guest's pad does not move the host's menus).
+constexpr uint32_t kVersusSelectKey = 0x8DC51DC9u; // the fighters' select as the Versus row opens it
+
+bool IsSelectScreen(uint32_t screen)
+{
+    return screen == kVersusSelectKey || screen == game::MenuKey("select_jedi");
+}
+
+bool BothPlayLocked()
+{
+    const uint32_t screen = g_S.screen;
+    return g_S.guestInDuel || IsSelectScreen(screen) || screen == game::MenuKey("select_arena");
+}
+
+// Presses of the port's own: player 2 joins the fighters' select (Start), player 1 takes the arena (A).
+void InjectLocked(int port, input::GamePad& pad)
+{
+    const uint32_t f = g_S.frame;
+    if (port == 1 && f >= g_S.joinAt && f < g_S.joinAt + 6)
+        pad.buttons |= 0x0010; // Start
+    if (port == 0 && f >= g_S.arenaAt && f < g_S.arenaAt + 6)
+        pad.analog[0] = 0xFF;  // A
+}
+
 bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
 {
     std::lock_guard<std::mutex> lock(g_S.lock);
     if (!g_S.armed)
         return false;
-    if (g_S.host) { // player 1 this PC's own devices, player 2 the guest's pad
-        if (port == 0)
-            return false;
-        if (port == 1) {
+    const bool both = BothPlayLocked();
+    if (g_S.host) {
+        if (port == 0) {
+            if (g_S.frame < g_S.arenaAt || g_S.frame >= g_S.arenaAt + 6)
+                return false; // this PC's own devices
+            input::ReadLivePad(0, pad);
+            InjectLocked(0, pad);
+            packet = ++g_S.ownPacket;
+            return true;
+        }
+        if (port == 1 && both) {
             pad = g_S.remotePad;
-            packet = g_S.remotePacket;
+            InjectLocked(1, pad);
+            packet = g_S.remotePacket + (g_S.frame >= g_S.joinAt && g_S.frame < g_S.joinAt + 6 ? 1000000 : 0);
             ++g_S.remoteReads;
             return true;
         }
-    } else if (g_S.guestInDuel) { // the duel played here too: player 1 from the host's pad, player 2 this PC's
+    } else if (both) {
         if (port == 0) {
             pad = g_S.remotePad;
             packet = g_S.remotePacket;
@@ -792,6 +896,7 @@ bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
         }
         if (port == 1) {
             input::ReadLivePad(0, pad);
+            InjectLocked(1, pad);
             if (std::memcmp(&pad, &g_S.ownPad, sizeof(pad)) != 0) {
                 g_S.ownPad = pad;
                 ++g_S.ownPacket;
@@ -800,7 +905,7 @@ bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
             return true;
         }
     } else if (port == 0) {
-        return false; // out of a duel: this PC's own menus (to leave)
+        return false; // this PC's own menus
     }
     pad = {};
     packet = 0;
@@ -823,6 +928,16 @@ void LaunchObserved(std::string& arguments)
     if (!g_S.armed || !g_S.server)
         return;
     if (g_S.host) {
+        // the room's rounds to win
+        const size_t at = arguments.find("v_roundcount:");
+        if (at != std::string::npos) {
+            const size_t end = arguments.find(' ', at);
+            arguments.replace(at, (end == std::string::npos ? arguments.size() : end) - at,
+                "v_roundcount:" + std::to_string(g_S.room.rounds));
+        }
+        // back to the menus after a match: to the room, unless it plays again at once
+        if (arguments.find("v_roundsp1:") != std::string::npos && !g_S.room.rematch)
+            g_S.toRoom = true;
         LaunchMsg m = {};
         m.h = MakeHeader(Msg::Launch, g_S.token);
         m.id = ++g_S.launchIdOut;
@@ -865,6 +980,7 @@ void OnServerMsgLocked(Msg type, const uint8_t* data, size_t size)
                 return;
             g_S.padSeqIn = m.seq;
             g_S.remoteInDuel = m.inDuel != 0;
+            g_S.remoteScreen = m.screen;
             if (g_S.remoteInDuel)
                 g_S.inputs.notify_all();
             if (std::memcmp(&m.pad, &g_S.remotePad, sizeof(m.pad)) != 0) {
@@ -887,6 +1003,13 @@ void OnServerMsgLocked(Msg type, const uint8_t* data, size_t size)
             g_S.pendingLaunchSet = true;
             g_S.haveState = false;
             g_S.inputs.notify_all();
+        }
+        break;
+    case Msg::Room:
+        if (!g_S.host && size >= sizeof(RoomMsg)) {
+            RoomMsg m;
+            std::memcpy(&m, data, sizeof(m));
+            g_S.room = m.room;
         }
         break;
     case Msg::State:
@@ -915,8 +1038,42 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     pm.seq = ++g_S.padSeqOut;
     input::ReadLivePad(0, pm.pad);
     pm.inDuel = g_S.guestInDuel ? 1 : 0;
+    pm.screen = g_S.screen;
     SendLocked(pm);
 
+    // The front-end screen (none in a level), the port's presses, the room, the guest following the host's screens.
+    {
+        uint8_t* p1 = nullptr;
+        uint8_t* p2 = nullptr;
+        const bool level = DuelFighters(p1, p2) || game::PlayerObject();
+        const uint32_t screen = level ? 0 : game::LastShellScreen();
+        if (screen != g_S.screen) {
+            g_S.screen = screen;
+            g_S.screenSince = g_S.frame;
+            if (IsSelectScreen(screen))
+                g_S.joinAt = g_S.frame + 20; // player 2 joins (as its Start would)
+            if (screen == game::MenuKey("select_arena") && g_S.host && g_S.room.arena == 1)
+                g_S.arenaAt = g_S.frame + 20; // the arena: Random's row, taken
+        }
+    }
+    const uint32_t screen = g_S.screen, since = g_S.frame - g_S.screenSince;
+    if (g_S.host && g_S.frame + 2 == g_S.arenaAt && !game::ArenaCursorToRandom())
+        g_S.arenaAt = ~0u; // no Random row: the host picks
+    if (g_S.host && g_S.toRoom && screen && since > 45) {
+        g_S.toRoom = false;
+        lock.unlock();
+        LOG_INFO("Online: to the room");
+        game::GoToShellScreen("online_room");
+        return;
+    }
+    if (!g_S.host && screen && g_S.remoteScreen && g_S.remoteScreen != screen && since > 20 &&
+        g_S.frame - g_S.followTried > 30 && game::OnlineFollowsScreen(g_S.remoteScreen)) {
+        g_S.followTried = g_S.frame;
+        const uint32_t to = g_S.remoteScreen;
+        lock.unlock();
+        game::OnlineGoToScreen(to);
+        return;
+    }
     if (!g_S.host && g_S.pendingLaunchSet) { // the host's game went on to a level (or the menus): this one follows
         const std::string args = g_S.pendingLaunch;
         g_S.pendingLaunchSet = false;
@@ -1310,8 +1467,8 @@ void HandleLocked(const uint8_t* data, size_t size, const Endpoint& from)
         }
     }
     // Both ways.
-    if (type == Msg::Pad || type == Msg::Launch || type == Msg::State) {
-        if (g_S.server && (g_S.armed || g_S.bootPending))
+    if (type == Msg::Pad || type == Msg::Launch || type == Msg::State || type == Msg::Room) {
+        if (g_S.server && (g_S.armed || g_S.bootPending || type == Msg::Room))
             OnServerMsgLocked(type, data, size);
         return;
     }
@@ -1408,6 +1565,12 @@ void TickLocked()
     if (g_S.host && g_S.ready && !g_S.startSeen) {
         Header s = MakeHeader(Msg::Start, g_S.token);
         SendLocked(s);
+    }
+    if (g_S.host && g_S.server && g_S.peer.Valid()) {
+        RoomMsg r = {};
+        r.h = MakeHeader(Msg::Room, g_S.token);
+        r.room = g_S.room;
+        SendLocked(r);
     }
     if (g_S.peer.Valid()) {
         PingMsg p = {};
@@ -1537,6 +1700,10 @@ void ResetSessionLocked(bool host)
     g_S.guestInDuel = false;
     g_S.ownPad = {};
     g_S.ownPacket = g_S.remoteReads = g_S.remoteChanges = 0;
+    g_S.remoteInDuel = g_S.duelStartWaited = false;
+    g_S.remoteScreen = g_S.screen = g_S.screenSince = g_S.followTried = 0;
+    g_S.toRoom = g_S.lost = false;
+    g_S.joinAt = g_S.arenaAt = ~0u;
     g_S.started = g_S.lastHeard = Clock::now();
     LARGE_INTEGER counter;
     QueryPerformanceCounter(&counter);
@@ -1547,6 +1714,11 @@ void ResetSessionLocked(bool host)
 bool Prepare(bool host, std::string& error)
 {
     StopThread();
+    // This PC's own main menu (its profile), for the session's end; made first (it saves the profile).
+    const std::string session = game::ProfileSessionArguments();
+    const std::string ownMenu = session.empty() ? std::string() :
+        "map: v_shellBetweenLevels:0 v_versusMode:0 v_bonusMissionMode:0 v_challengeMissionMode:0 v_checkpointIndex:-1" +
+        session;
     {
         std::lock_guard<std::mutex> lock(g_S.lock);
         if (g_S.phase != OnlinePhase::Off && g_S.phase != OnlinePhase::Ended) {
@@ -1560,6 +1732,7 @@ bool Prepare(bool host, std::string& error)
     }
     std::lock_guard<std::mutex> lock(g_S.lock);
     ResetSessionLocked(host);
+    g_S.ownMenuArgs = ownMenu;
     g_S.localName = LocalPlayerName();
     g_S.remoteName.clear();
     g_S.inputDelay = 3;
@@ -1657,6 +1830,10 @@ OnlineStatusInfo OnlineStatus()
     i.desync = g_S.desync;
     i.localName = g_S.localName;
     i.remoteName = g_S.remoteName;
+    i.matchOn = g_S.armed || g_S.bootPending;
+    i.guestHere = g_S.host && g_S.peer.Valid();
+    i.lost = g_S.lost;
+    i.room = g_S.room;
     return i;
 }
 
@@ -1669,6 +1846,27 @@ std::string OnlineStatusLine()
         names[int(i.phase)], i.host ? "host" : "guest", i.roomCode.empty() ? "" : ", code ", i.roomCode.c_str(),
         i.frame, i.inputDelay, i.pingMs, i.stalls, i.desync ? ", DESYNC" : "", i.message.c_str());
     return line;
+}
+
+std::string OnlinePlayerName()
+{
+    return LocalPlayerName();
+}
+
+void SetOnlinePlayerName(const std::string& name)
+{
+    const std::string clean = CleanName(std::wstring(name.begin(), name.end()));
+    const std::wstring ini = ExeDirectory() + L"\\settings.ini";
+    WritePrivateProfileStringW(L"Online", L"Name", std::wstring(clean.begin(), clean.end()).c_str(), ini.c_str());
+    LOG_INFO("Online: the player's name is now '%s'", LocalPlayerName().c_str());
+}
+
+void SetOnlineRoom(const OnlineRoomSettings& room)
+{
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    if (!g_S.host && g_S.phase != OnlinePhase::Off && g_S.phase != OnlinePhase::Ended)
+        return; // the host's to set
+    g_S.room = room;
 }
 
 bool OnlineActive()
@@ -1692,6 +1890,7 @@ void OnlineReboot()
     g_S.paceClock = 0; // set at the first frame
     g_S.phase = OnlinePhase::Playing;
     g_S.lastHeard = Clock::now();
+    g_S.toRoom = g_S.server && g_S.host; // the match's first screen: the room (the guest's follows)
     SetMessage(std::string("the match starts: player ") + (g_S.host ? "1 (host)" : "2 (guest)") + ", input delay " +
         std::to_string(g_S.inputDelay) + " frames");
 }

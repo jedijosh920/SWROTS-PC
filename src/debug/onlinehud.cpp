@@ -28,7 +28,7 @@ constexpr ImU32 kDim = IM_COL32(200, 200, 210, 200);
 constexpr ImU32 kGold = IM_COL32(255, 196, 90, 255);
 constexpr ImU32 kRed = IM_COL32(255, 85, 70, 255);
 constexpr ImU32 kPanel = IM_COL32(10, 12, 18, 175);
-constexpr ULONGLONG kEndShownMs = 10000;
+constexpr ULONGLONG kEndShownMs = 7000;
 
 ImDrawList* g_Draw = nullptr;
 
@@ -131,19 +131,28 @@ void OtherPlayer(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float 
     Text(at.x, top - th - 3 * u, th, faded(kWhite), s.remoteName, 0.5f);
 }
 
-// The guest, while the host picks the match in the menus (the guest's controller plays player 2, which the menus do
-// not listen to): a waiting screen over them; not on the Versus fighters' and arenas' select screens, where both
-// players pick, nor once a level is on.
-void GuestWaiting(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u)
+// A Versus duel: each player's name over their health bar (the game's own bars, at the bottom: player 1's on the
+// left, player 2's on the right), in the game's font.
+void VersusNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u)
 {
-    if (s.host || game::PlayerObject() || game::GamePlayerSlot(0)) // a level is on (a Versus duel's player is a slot)
+    if (!game::GamePlayerSlot(0) || !game::GamePlayerSlot(1))
         return;
-    const uint32_t screen = game::LastShellScreen();
-    if (screen == 0x8DC51DC9u || screen == game::MenuKey("select_jedi") || screen == game::MenuKey("select_arena"))
-        return;
-    g_Draw->AddRectFilled(vp->Pos, ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y), IM_COL32(4, 6, 12, 215));
-    const std::string who = s.remoteName.empty() ? std::string("The host") : s.remoteName;
-    Banner(vp, u, 0.42f, kGold, "Waiting for the host", who + " is choosing the match");
+    const std::string p1 = s.host ? s.localName : s.remoteName, p2 = s.host ? s.remoteName : s.localName;
+    const float h = 15 * u, y = vp->Pos.y + vp->Size.y * 0.795f;
+    Text(vp->Pos.x + vp->Size.x * 0.175f, y, h, kWhite, p1, 0.0f);
+    Text(vp->Pos.x + vp->Size.x * 0.835f, y, h, kWhite, p2, 1.0f);
+}
+
+// The end of a session this player did not choose (the connection, the other player left): a box over the main menu.
+void LostBox(const ImGuiViewport* vp, float u, const std::string& why)
+{
+    const float cx = vp->Pos.x + vp->Size.x / 2, cy = vp->Pos.y + vp->Size.y * 0.5f;
+    const float w = 520 * u, h = 120 * u;
+    g_Draw->AddRectFilled(ImVec2(cx - w / 2, cy - h / 2), ImVec2(cx + w / 2, cy + h / 2), IM_COL32(8, 12, 24, 235), 8 * u);
+    g_Draw->AddRect(ImVec2(cx - w / 2, cy - h / 2), ImVec2(cx + w / 2, cy + h / 2), IM_COL32(120, 160, 230, 200), 8 * u, 0,
+        2 * u);
+    Text(cx, cy - 40 * u, 28 * u, kGold, "Connection lost", 0.5f);
+    Text(cx, cy + 4 * u, 17 * u, kWhite, why, 0.5f);
 }
 
 } // namespace
@@ -177,13 +186,12 @@ void DrawOnlineHud()
         Banner(vp, u, 0.12f, kGold, "Online", "Starting the match...");
         break;
     case net::OnlinePhase::Playing: {
-        std::string line = (s.host ? "Online  P1 " : "Online  P2 ") + s.localName;
         if (s.pingMs >= 0)
-            line += "  " + std::to_string(s.pingMs) + " ms";
-        Text(vp->Pos.x + vp->Size.x - 16 * u, vp->Pos.y + 10 * u, 14 * u, kDim, line, 1.0f);
-        if (!s.remoteName.empty())
+            Text(vp->Pos.x + vp->Size.x - 16 * u, vp->Pos.y + 10 * u, 14 * u, kDim, std::to_string(s.pingMs) + " ms", 1.0f);
+        if (game::BootIsVersusDuel())
+            VersusNames(s, vp, u);
+        else if (!s.remoteName.empty())
             OtherPlayer(s, vp, u);
-        GuestWaiting(s, vp, u);
         if (s.desync)
             Banner(vp, u, 0.12f, kRed, "Desync", "The two games no longer match: leave and start again");
         break;
@@ -191,8 +199,8 @@ void DrawOnlineHud()
     default:
         break;
     }
-    if (endedAt && GetTickCount64() - endedAt < kEndShownMs && s.phase == net::OnlinePhase::Ended)
-        Banner(vp, u, 0.12f, kRed, "Online session over", endedWhy);
+    if (endedAt && GetTickCount64() - endedAt < kEndShownMs && s.phase == net::OnlinePhase::Ended && s.lost)
+        LostBox(vp, u, endedWhy.find("left") != std::string::npos ? "The other player left the room" : endedWhy);
 }
 
 } // namespace swrots::debug

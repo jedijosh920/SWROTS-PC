@@ -28,6 +28,16 @@ enum class OnlinePhase {
     Ended,        // over (the message says why); back to the game's title
 };
 
+// The host's room: what the match will be (the guest sees it as the host sets it).
+#pragma pack(push, 1)
+struct OnlineRoomSettings {
+    uint8_t mode = 0;     // 0 Versus (the only one for now)
+    uint8_t rounds = 3;   // rounds to win: 1, 2, 3 or 5
+    uint8_t arena = 0;    // 0 chosen on the arena screen, 1 random
+    uint8_t rematch = 0;  // after a match: 0 back to the room, 1 the fighters' select again
+};
+#pragma pack(pop)
+
 struct OnlineStatusInfo {
     OnlinePhase phase = OnlinePhase::Off;
     bool host = false;
@@ -38,8 +48,18 @@ struct OnlineStatusInfo {
     int pingMs = -1;
     uint32_t stalls = 0;    // frames that waited for the other PC
     bool desync = false;    // the two games parted
-    std::string localName, remoteName; // the players' names ([Online] Name, else the Windows user name)
+    std::string localName, remoteName; // the players' names ([Online] Name, else the profile's, else NONAME)
+    bool matchOn = false;   // both games started for the match (the room, the select screens, the duels)
+    bool guestHere = false; // the host has its guest (from its call on)
+    bool lost = false;      // it ended without this player leaving (the connection, the other player)
+    OnlineRoomSettings room;
 };
+
+// The player's name online, and its change (Online Settings: [Online] Name in settings.ini).
+std::string OnlinePlayerName();
+void SetOnlinePlayerName(const std::string& name);
+// The host's room settings (sent to the guest).
+void SetOnlineRoom(const OnlineRoomSettings& room);
 
 // The host opens a room. False when it could not (the message says why).
 bool OnlineHost();

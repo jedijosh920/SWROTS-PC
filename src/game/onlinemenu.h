@@ -13,8 +13,13 @@ void InstallOnlineMenu();
 // The main menu's resource with the Online row (from the main menu's resource patch, hvvmenu.cpp).
 void PatchMainMenuOnline(std::vector<uint8_t>& data);
 
-// In a match, the main menu's rows not played online yet (all but Multi Player > Versus and Online) refuse A and
-// Right: true when this event of this row's handler is refused (its error sound played).
+// Kept for the main menu's hook (hvvmenu.cpp): no row is refused any more (false).
 bool OnlineRefusesMainMenuEvent(uint8_t* handler, int event);
+// Online play's guest follows the host's front-end screens: whether it follows this one (the room, the Versus
+// selects), and the change to it (the Versus select as the Versus row opens it).
+bool OnlineFollowsScreen(uint32_t key);
+bool OnlineGoToScreen(uint32_t key);
+// The room's Start: the Versus fighters' select (tests: the console's online start).
+bool OnlineStartVersus();
 
 } // namespace swrots::game

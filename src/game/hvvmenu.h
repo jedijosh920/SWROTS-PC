@@ -13,5 +13,7 @@ void InstallHvvMenu();
 
 // The key (MenuKey) of the screen the front end last switched to since the game started, or 0.
 uint32_t LastShellScreen();
+// The arena screen's cursor on its Random row (online play's room: a random arena); false off that screen.
+bool ArenaCursorToRandom();
 
 } // namespace swrots::game
