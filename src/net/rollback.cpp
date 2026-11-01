@@ -885,15 +885,16 @@ bool RollbackActive() { return g_Mode == Mode::Running; }
 
 bool g_TestBootPending = false; // the test restarted the level: the session survives that reboot
 
-void StartSyncTest(uint32_t distance, uint32_t every, bool deterministic)
+void StartSyncTest(uint32_t distance, uint32_t every, bool deterministic, bool restart)
 {
     Stop("a new one starts");
-    if (deterministic) { // as a match plays: the level restarted with the scheduler and fixed addresses
+    if (deterministic) { // as a match plays: the level (re)started with the scheduler and fixed addresses
         if (!kernel::SetDeterministicAddresses(true))
             LOG_WARN("SyncTest: no deterministic addresses on this PC");
         kernel::SetDeterministicBoot(true);
         g_TestBootPending = true;
-        kernel::RestartMission();
+        if (restart)
+            kernel::RestartMission();
     }
     g_Test = Test::None;
     g_Distance = std::clamp<uint32_t>(distance, 1, 30);

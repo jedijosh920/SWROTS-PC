@@ -1011,12 +1011,13 @@ void SyncTest(const std::vector<std::string>& words)
     }
     const int distance = std::atoi(words[1].c_str());
     const int every = words.size() >= 3 ? std::atoi(words[2].c_str()) : 1;
-    const bool det = words.size() >= 4 && _stricmp(words[3].c_str(), "det") == 0;
+    const bool det = words.size() >= 4 && _strnicmp(words[3].c_str(), "det", 3) == 0;
+    const bool next = words.size() >= 5 && _stricmp(words[4].c_str(), "next") == 0; // the next start, not a restart
     if (distance < 1 || distance > 30 || every < 1) {
         Print(LineKind::Output, "  synctest <distance 1-30> [<every 1+>] [det]");
         return;
     }
-    net::StartSyncTest(uint32_t(distance), uint32_t(every), det);
+    net::StartSyncTest(uint32_t(distance), uint32_t(every), det, !next);
     Print(LineKind::Output, "  SyncTest from the next frame: back %d frames every %d frame(s)", distance, every);
 }
 
