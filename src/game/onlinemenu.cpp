@@ -332,7 +332,6 @@ void UpdateTexts()
     if (g_CopiedAt && GetTickCount64() - g_CopiedAt < 2000)
         code = "CODE COPIED";
     SetMenuText(ValueId(kCode).c_str(), Wide(code));
-    SetMenuText("IDS_PORT_ROOM_LEAVE", s.host ? L"Close Room" : L"Leave Room");
 }
 
 // Rows that cannot be chosen now: skipped by the cursor and dimmed (rows that only tell are never chosen either).
@@ -367,6 +366,7 @@ constexpr uint32_t kMakeButton = 0x002D93F0;  // SettingsScreenButton
 constexpr uint32_t kButtonVtable = 0x005D6E10;
 constexpr uint32_t kItemEvent = 0x002C62D0;    // an item's events (B goes back)
 constexpr uint32_t kProfiles = 0x007E8F24;
+constexpr uint32_t kShellObject = 0x007F637C;
 constexpr uint32_t kCurrentProfile = 0x0024CC50;
 constexpr int kVtableSlots = 32;
 constexpr int kChosen = 0x23, kLeft = 0x1F, kRight = 0x20, kB = 0x26;
@@ -456,6 +456,53 @@ void KeepOnRightScreen(int row)
     }
 }
 
+// --- The game's own popup ----------------------------------------------------------------------------------------------
+// The shell's popups are items of a screen (the Settings screen's, which the port's screens copy, has one named
+// DefaultPopup: a title, a message, A to close). As the Codes keyboard shows its own (0x2D0930): the popup found by
+// name on the screen up (0x2F5A00, thiscall on the shell [0x7F637C] (name, screen 0: the current, 0)), its title
+// (0x2E8B80) and message (0x2E99E0) as the string table gives them ([[0x645F7C]+0x38]+0x94, vtable slot 1: (out, id,
+// 0)), then shown (its slot 22, +0x58, with the handler that owns it).
+constexpr uint32_t kFindPopup = 0x002F5A00, kPopupTitle = 0x002E8B80, kPopupMessage = 0x002E99E0;
+constexpr uint32_t kEngine = 0x00645F7C, kTextToStringFn = 0x00222FA0;
+bool g_LostPopup = false; // the session ended without this player leaving: the popup at the Online screen
+
+const void* GameText(const char* id)
+{
+    uint32_t text = 0;
+    reinterpret_cast<void*(__cdecl*)(uint32_t*, const char*)>(uintptr_t(kTextToStringFn))(&text, id);
+    uint8_t* engine = *reinterpret_cast<uint8_t**>(uintptr_t(kEngine));
+    uint8_t* gui = *reinterpret_cast<uint8_t**>(engine + 0x38);
+    uint8_t* table = *reinterpret_cast<uint8_t**>(gui + 0x94);
+    void* out = nullptr;
+    using LookupFn = void**(__fastcall*)(uint8_t*, void*, void**, uint32_t*, int);
+    void** got = reinterpret_cast<LookupFn>((*reinterpret_cast<void* const* const*>(table))[1])(table, nullptr, &out,
+        &text, 0);
+    return got ? *got : nullptr;
+}
+
+bool ShowPopup(uint8_t* owner, const char* titleId, const char* messageId)
+{
+    __try {
+        uint8_t* shell = *reinterpret_cast<uint8_t**>(uintptr_t(kShellObject));
+        if (!shell)
+            return false;
+        uint8_t* popup = reinterpret_cast<uint8_t*(__fastcall*)(uint8_t*, void*, const char*, void*, int)>(
+            uintptr_t(kFindPopup))(shell, nullptr, "DefaultPopup", nullptr, 0);
+        if (!popup)
+            return false;
+        reinterpret_cast<void(__fastcall*)(uint8_t*, void*, const void*)>(uintptr_t(kPopupTitle))(popup, nullptr,
+            GameText(titleId));
+        reinterpret_cast<void(__fastcall*)(uint8_t*, void*, const void*)>(uintptr_t(kPopupMessage))(popup, nullptr,
+            GameText(messageId));
+        reinterpret_cast<void(__fastcall*)(uint8_t*, void*, uint8_t*)>(
+            (*reinterpret_cast<void* const* const*>(popup))[0x58 / 4])(popup, nullptr, owner);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        LOG_WARN("Online menu: the popup could not be shown");
+        return false;
+    }
+}
+
 // A value row shows its text as the control's On text (the control shows On for the profile's subtitles setting,
 // +0x2A, which it is given for the draw).
 char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
@@ -467,6 +514,10 @@ char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
         UpdateTexts();
     if (row == kStatus || row == kMode)
         KeepOnRightScreen(row);
+    if (row == kStatus && g_LostPopup) {
+        g_LostPopup = false;
+        ShowPopup(handler, "IDS_PORT_LOST_TITLE", "IDS_PORT_LOST_TEXT");
+    }
     LinkRow(handler, row);
     handler[0x23C] = 1;
     uint8_t* profile = CurrentProfile();
@@ -600,7 +651,7 @@ char __fastcall ButtonEvent(uint8_t* handler, void*, int event, int value)
     case kLeave:
         g_Note.clear();
         g_CopiedAt = 0;
-        LOG_INFO("Online menu: %s", s.host ? "Close Room" : "Leave Room");
+        LOG_INFO("Online menu: Leave Room");
         net::OnlineLeave(); // in a match the game goes back to its main menu
         if (!s.matchOn)
             GoToShellScreen(kScreenNames[kOnline]);
@@ -911,6 +962,15 @@ bool OnlineRefusesMainMenuEvent(uint8_t*, int)
     return false; // the main menu stays whole (online play has its own screens)
 }
 
+void OnlineShowLost(const std::string& why)
+{
+    const bool left = why.find("left") != std::string::npos;
+    SetMenuText("IDS_PORT_LOST_TEXT", left ? L"The other player left the room." :
+        L"The connection to the other player was lost.");
+    g_LostPopup = true;
+    GoToShellScreen(kScreenNames[kOnline]);
+}
+
 bool OnlineStartVersus()
 {
     return GoToVersusSelect();
@@ -996,7 +1056,9 @@ void InstallOnlineMenu()
     SetMenuText("IDS_PORT_ROOM_P2", L"Player 2");
     SetMenuText("IDS_PORT_ROOM_CODE", L"Room Code");
     SetMenuText("IDS_PORT_ROOM_START", L"Start");
-    SetMenuText("IDS_PORT_ROOM_LEAVE", L"Close Room");
+    SetMenuText("IDS_PORT_ROOM_LEAVE", L"Leave Room");
+    SetMenuText("IDS_PORT_LOST_TITLE", L"Connection Lost");
+    SetMenuText("IDS_PORT_LOST_TEXT", L"The connection to the other player was lost.");
     SetMenuText("IDS_PORT_ONLINE_PASTE", L"Paste");
     SetMenuText("IDS_PORT_ONLINE_ENTER_CODE", L"Enter the Room Code");
     g_PasteDown = false;

@@ -500,6 +500,9 @@ struct Session {
     uint32_t remoteScreen = 0;          // the other's front-end screen (the guest follows the host's)
     uint32_t screen = 0, screenSince = 0; // this game's, and the frame it came
     bool toRoom = false;                // to the room's screen once the front end is up
+    uint32_t toRoomAt = 0;              // the frame it was asked
+    bool lostPopup = false;             // after the session's end: the game's popup at the Online screen
+    Clock::time_point endedAt = {};
     uint32_t followTried = 0;
     std::string ownMenuArgs;            // this PC's own start at its main menu (its profile), for the session's end
     uint32_t joinAt = ~0u, arenaAt = ~0u; // the frames the port's own presses start (InjectLocked)
@@ -609,6 +612,8 @@ std::string LocalPlayerName()
         const std::string profile = ProfileName();
         name = CleanName(std::wstring(profile.begin(), profile.end()));
     }
+    if (name.empty())
+        LOG_INFO("Online: no name set nor profile found under %ls", kernel::SaveDrivePath().c_str());
     return name.empty() ? "NONAME" : name;
 }
 
@@ -655,6 +660,8 @@ void EndLocked(const std::string& why, bool tellOther)
     g_S.phase = OnlinePhase::Ended;
     SetMessage(why);
     g_S.lost = !tellOther;
+    g_S.lostPopup = !tellOther && matchOn;
+    g_S.endedAt = Clock::now();
     g_S.armed = false;
     g_S.bootPending = false;
     RestoreLocked();
@@ -936,8 +943,10 @@ void LaunchObserved(std::string& arguments)
                 "v_roundcount:" + std::to_string(g_S.room.rounds));
         }
         // back to the menus after a match: to the room, unless it plays again at once
-        if (arguments.find("v_roundsp1:") != std::string::npos && !g_S.room.rematch)
+        if (arguments.find("v_roundsp1:") != std::string::npos && !g_S.room.rematch) {
             g_S.toRoom = true;
+            g_S.toRoomAt = g_S.frame;
+        }
         LaunchMsg m = {};
         m.h = MakeHeader(Msg::Launch, g_S.token);
         m.id = ++g_S.launchIdOut;
@@ -1057,16 +1066,21 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         }
     }
     const uint32_t screen = g_S.screen, since = g_S.frame - g_S.screenSince;
+    uint8_t* q1 = nullptr;
+    uint8_t* q2 = nullptr;
+    const bool inShell = !DuelFighters(q1, q2) && !game::PlayerObject();
     if (g_S.host && g_S.frame + 2 == g_S.arenaAt && !game::ArenaCursorToRandom())
         g_S.arenaAt = ~0u; // no Random row: the host picks
-    if (g_S.host && g_S.toRoom && screen && since > 45) {
-        g_S.toRoom = false;
+    if (g_S.host && g_S.toRoom && inShell && g_S.frame - g_S.toRoomAt > 90 && (g_S.frame - g_S.toRoomAt) % 30 == 0) {
         lock.unlock();
-        LOG_INFO("Online: to the room");
-        game::GoToShellScreen("online_room");
+        const bool ok = game::GoToShellScreen("online_room");
+        LOG_INFO("Online: to the room%s", ok ? "" : " (not yet)");
+        std::lock_guard<std::mutex> relock(g_S.lock);
+        if (ok)
+            g_S.toRoom = false;
         return;
     }
-    if (!g_S.host && screen && g_S.remoteScreen && g_S.remoteScreen != screen && since > 20 &&
+    if (!g_S.host && inShell && g_S.remoteScreen && g_S.remoteScreen != screen && since > 20 &&
         g_S.frame - g_S.followTried > 30 && game::OnlineFollowsScreen(g_S.remoteScreen)) {
         g_S.followTried = g_S.frame;
         const uint32_t to = g_S.remoteScreen;
@@ -1891,6 +1905,7 @@ void OnlineReboot()
     g_S.phase = OnlinePhase::Playing;
     g_S.lastHeard = Clock::now();
     g_S.toRoom = g_S.server && g_S.host; // the match's first screen: the room (the guest's follows)
+    g_S.toRoomAt = g_S.frame;
     SetMessage(std::string("the match starts: player ") + (g_S.host ? "1 (host)" : "2 (guest)") + ", input delay " +
         std::to_string(g_S.inputDelay) + " frames");
 }
@@ -1898,6 +1913,13 @@ void OnlineReboot()
 void OnlineFrame()
 {
     std::unique_lock<std::mutex> lock(g_S.lock);
+    if (g_S.lostPopup && g_S.phase == OnlinePhase::Ended && Clock::now() - g_S.endedAt > std::chrono::seconds(4)) {
+        g_S.lostPopup = false; // the game is back at its main menu: the Online screen, the game's popup over it
+        const std::string why = g_S.message;
+        lock.unlock();
+        game::OnlineShowLost(why);
+        return;
+    }
     if (g_S.packageWanted && g_S.host) { // the host's profile, saved by the game's code
         g_S.packageWanted = false;
         BuildPackageLocked();

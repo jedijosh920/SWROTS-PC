@@ -143,18 +143,6 @@ void VersusNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float 
     Text(vp->Pos.x + vp->Size.x * 0.835f, y, h, kWhite, p2, 1.0f);
 }
 
-// The end of a session this player did not choose (the connection, the other player left): a box over the main menu.
-void LostBox(const ImGuiViewport* vp, float u, const std::string& why)
-{
-    const float cx = vp->Pos.x + vp->Size.x / 2, cy = vp->Pos.y + vp->Size.y * 0.5f;
-    const float w = 520 * u, h = 120 * u;
-    g_Draw->AddRectFilled(ImVec2(cx - w / 2, cy - h / 2), ImVec2(cx + w / 2, cy + h / 2), IM_COL32(8, 12, 24, 235), 8 * u);
-    g_Draw->AddRect(ImVec2(cx - w / 2, cy - h / 2), ImVec2(cx + w / 2, cy + h / 2), IM_COL32(120, 160, 230, 200), 8 * u, 0,
-        2 * u);
-    Text(cx, cy - 40 * u, 28 * u, kGold, "Connection lost", 0.5f);
-    Text(cx, cy + 4 * u, 17 * u, kWhite, why, 0.5f);
-}
-
 } // namespace
 
 bool OnlineHudWanted()
@@ -199,8 +187,7 @@ void DrawOnlineHud()
     default:
         break;
     }
-    if (endedAt && GetTickCount64() - endedAt < kEndShownMs && s.phase == net::OnlinePhase::Ended && s.lost)
-        LostBox(vp, u, endedWhy.find("left") != std::string::npos ? "The other player left the room" : endedWhy);
+    (void)endedAt; // a lost session: the game's own popup (onlinemenu.cpp)
 }
 
 } // namespace swrots::debug
