@@ -26,6 +26,9 @@ namespace {
 
 constexpr uint32_t kObjectBytes = 0x1800;
 FILE* g_Out = nullptr;
+FILE* g_DataOut = nullptr;      // the game's .data, changed dwords every kDataEvery frames (the round's state)
+std::vector<uint32_t> g_DataPrev;
+constexpr uint32_t kDataBegin = 0x00612BE0, kDataEnd = 0x00962BF8, kDataEvery = 10;
 uint32_t g_Left = 0, g_Frame = 0;
 std::string g_Name;
 
@@ -57,6 +60,10 @@ void Close(const char* why)
         return;
     std::fclose(g_Out);
     g_Out = nullptr;
+    if (g_DataOut)
+        std::fclose(g_DataOut);
+    g_DataOut = nullptr;
+    g_DataPrev.clear();
     LOG_INFO("Duel recorder: '%s' closed after %u frames (%s)", g_Name.c_str(), g_Frame, why);
 }
 
@@ -99,6 +106,13 @@ void StartDuelRecorder(const std::string& name, uint32_t frames)
     }
     const uint32_t header[3] = { 0x52445753, 1, kObjectBytes }; // "SWDR"
     std::fwrite(header, sizeof(header), 1, g_Out);
+    // "SWDD": per record u32 frame, u32 count, then count (u32 offset from 0x612BE0, u32 value); the first has all
+    g_DataOut = _wfopen((ExeDir() + L"\\netplay\\duel-" + std::wstring(name.begin(), name.end()) + L".data.bin").c_str(),
+        L"wb");
+    if (g_DataOut) {
+        const uint32_t dataHeader[2] = { 0x44445753, 1 };
+        std::fwrite(dataHeader, sizeof(dataHeader), 1, g_DataOut);
+    }
     g_Name = name;
     g_Left = frames;
     g_Frame = 0;
@@ -305,9 +319,30 @@ void DuelRecorderFrame()
     std::fwrite(pads, sizeof(pads), 1, g_Out);
     std::fwrite(a.data(), kObjectBytes, 1, g_Out);
     std::fwrite(b.data(), kObjectBytes, 1, g_Out);
+    if (g_DataOut && g_Frame % kDataEvery == 0) {
+        const auto* live = reinterpret_cast<const uint32_t*>(uintptr_t(kDataBegin));
+        const size_t n = (kDataEnd - kDataBegin) / 4;
+        static std::vector<uint32_t> changes;
+        changes.clear();
+        const bool first = g_DataPrev.empty();
+        if (first)
+            g_DataPrev.assign(n, 0);
+        for (size_t i = 0; i < n; ++i)
+            if (first || live[i] != g_DataPrev[i]) {
+                changes.push_back(uint32_t(i * 4));
+                changes.push_back(live[i]);
+                g_DataPrev[i] = live[i];
+            }
+        const uint32_t head2[2] = { g_Frame, uint32_t(changes.size() / 2) };
+        std::fwrite(head2, sizeof(head2), 1, g_DataOut);
+        std::fwrite(changes.data(), 4, changes.size(), g_DataOut);
+    }
     ++g_Frame;
-    if (g_Frame % 300 == 0)
+    if (g_Frame % 300 == 0) {
         std::fflush(g_Out);
+        if (g_DataOut)
+            std::fflush(g_DataOut);
+    }
     if (--g_Left == 0)
         Close("done");
 }
