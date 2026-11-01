@@ -91,8 +91,12 @@ void DuelRecorderFrame()
 {
     if (!g_Out)
         return;
-    uint8_t* p1 = game::PlayerObject();
-    uint8_t* p2 = game::GamePlayer2();
+    uint8_t* p1 = game::GamePlayerSlot(0);
+    uint8_t* p2 = game::GamePlayerSlot(1);
+    if (!p1)
+        p1 = game::PlayerObject();
+    if (!p2)
+        p2 = game::GamePlayer2();
     if (!p2 && p1) { // the developer map's duel: its opponent is not the game's player 2; the other character
         static uint32_t scan = 0;
         static uint8_t* other = nullptr;

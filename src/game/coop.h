@@ -42,6 +42,8 @@ uint8_t* CoopPlayer2();
 // Player 2's character as the game plays it: co-op's, else the game's own second player (a Versus opponent, a boss
 // fight's boss, a two-player bonus mission's second character), or null.
 uint8_t* GamePlayer2();
+// The game's own player slots (0: player 1, 1: player 2): their characters, or null.
+uint8_t* GamePlayerSlot(int slot);
 
 // A character is about to be removed from the level (the port's despawn): when it is player 2's, player 2
 // lets go of it first (the camera must not keep it).

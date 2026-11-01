@@ -1544,6 +1544,14 @@ void CoopCharacterRemoving(uint8_t* character)
     g_State.respawnAt = kernel::GameTickCount64() + kRespawnDelayMs;
 }
 
+uint8_t* GamePlayerSlot(int slot)
+{
+    uint8_t* manager = Manager();
+    if (!manager || slot < 0 || slot > 1 || Field<int>(manager, kManagerPlayerCount) <= slot)
+        return nullptr;
+    return ObjectById(Field<uint32_t>(manager, kManagerPlayerIds + 4 * uint32_t(slot)));
+}
+
 uint8_t* GamePlayer2()
 {
     if (uint8_t* p2 = CoopPlayer2())
