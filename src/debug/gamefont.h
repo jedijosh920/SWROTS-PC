@@ -20,6 +20,12 @@ bool GameFontText(ImDrawList* draw, const ImVec2& at, float height, unsigned col
 float GameFontWidth(float height, const std::string& text);
 bool GameFontReady();
 
+// The game's fonts: the HUD's (font_large_white, as above) and the menus' (font_small_white).
+enum class GameFont { Hud = 0, Menu = 1 };
+bool GameFontTextOf(GameFont font, ImDrawList* draw, const ImVec2& at, float height, unsigned colour,
+    const std::string& text, bool shadow = true);
+float GameFontWidthOf(GameFont font, float height, const std::string& text);
+
 // The device's life: the sheet is a texture of the device.
 void GameFontDeviceCreated(IDirect3DDevice9* device);
 void GameFontDeviceReleasing();

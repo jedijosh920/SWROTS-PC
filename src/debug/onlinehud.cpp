@@ -139,8 +139,14 @@ void VersusNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float 
         return;
     const std::string p1 = s.host ? s.localName : s.remoteName, p2 = s.host ? s.remoteName : s.localName;
     const float h = 20 * u, y = vp->Pos.y + vp->Size.y * 0.79f;
-    Text(vp->Pos.x + vp->Size.x * 0.175f, y, h, kWhite, p1, 0.0f);
-    Text(vp->Pos.x + vp->Size.x * 0.835f, y, h, kWhite, p2, 1.0f);
+    const auto name = [&](float x, const std::string& text, float align) {
+        const std::string t = Upper(text);
+        const ImVec2 at(x - GameFontWidthOf(GameFont::Menu, h, t) * align, y);
+        if (!GameFontTextOf(GameFont::Menu, g_Draw, at, h, kWhite, t))
+            Text(x, y, h, kWhite, text, align);
+    };
+    name(vp->Pos.x + vp->Size.x * 0.175f, p1, 0.0f);
+    name(vp->Pos.x + vp->Size.x * 0.835f, p2, 1.0f);
 }
 
 } // namespace
