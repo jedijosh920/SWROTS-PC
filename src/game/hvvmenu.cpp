@@ -962,8 +962,10 @@ uint32_t LastShellScreen()
 
 bool ArenaCursorToRandom()
 {
-    if (!g_ArenaList || g_LastScreen != MenuKey("select_arena"))
+    if (!g_ArenaList || g_LastScreen != MenuKey("select_arena")) {
+        LOG_INFO("Online: no arena list to pick from (list %p, screen 0x%08X)", static_cast<void*>(g_ArenaList), g_LastScreen);
         return false;
+    }
     __try {
         // one of the open arenas (each entry 16 bytes, +0xC its unlocked byte), at random
         const int count = *reinterpret_cast<int*>(g_ArenaList + 0x60);

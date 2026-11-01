@@ -1080,6 +1080,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         const bool level = DuelFighters(p1, p2) || game::PlayerObject();
         const uint32_t screen = level ? 0 : game::LastShellScreen();
         if (screen != g_S.screen) {
+            LOG_INFO("Online: screen 0x%08X (was 0x%08X)", screen, g_S.screen);
             g_S.screen = screen;
             g_S.screenSince = g_S.frame;
             if (IsSelectScreen(screen) && !g_S.host)
@@ -1092,8 +1093,12 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     uint8_t* q1 = nullptr;
     uint8_t* q2 = nullptr;
     const bool inShell = !DuelFighters(q1, q2) && !game::PlayerObject();
-    if (g_S.host && g_S.frame + 2 == g_S.arenaAt && !game::ArenaCursorToRandom())
-        g_S.arenaAt = ~0u; // no Random row: the host picks
+    if (g_S.host && g_S.frame + 2 == g_S.arenaAt) {
+        const bool ok = game::ArenaCursorToRandom();
+        LOG_INFO("Online: a random arena %s", ok ? "picked, taken" : "could not be picked: the host picks");
+        if (!ok)
+            g_S.arenaAt = ~0u;
+    }
     if (g_S.host && g_S.toRoom && inShell && g_S.frame - g_S.toRoomAt > 90 && (g_S.frame - g_S.toRoomAt) % 30 == 0) {
         lock.unlock();
         const bool ok = game::GoToShellScreen("online_room");

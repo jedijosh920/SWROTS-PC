@@ -959,6 +959,23 @@ bool GenerateScreens(const std::string& lowerName, std::vector<uint8_t>& data)
     return false;
 }
 
+// Diagnostics while online: the Versus select's events and the pad each comes from (JediList, vtable 0x5D68B8 slot 4,
+// 0x2D54A0: thiscall (event, pad); player 1's pad is [[0x7F33F0]+0x414], the others' events go to player 2).
+constexpr uint32_t kJediListVtable = 0x005D68B8, kJediListEvent = 0x002D54A0;
+char __fastcall JediListEvent(uint8_t* list, void*, int event, int pad)
+{
+    static int logged = 0;
+    if (net::OnlineActive() && logged < 300) {
+        ++logged;
+        int p1 = -1;
+        if (uint8_t* shellState = *reinterpret_cast<uint8_t**>(uintptr_t(0x007F33F0)))
+            p1 = *reinterpret_cast<int*>(shellState + 0x414);
+        LOG_INFO("Online menu: select event 0x%X from pad %d (player 1's pad %d)", event, pad, p1);
+    }
+    return reinterpret_cast<char(__fastcall*)(uint8_t*, void*, int, int)>(uintptr_t(kJediListEvent))(list, nullptr,
+        event, pad);
+}
+
 bool SlotIs(uint32_t vtable, int slot, uint32_t function)
 {
     return *reinterpret_cast<const uint32_t*>(uintptr_t(vtable + 4 * slot)) == function;
@@ -1020,6 +1037,10 @@ void InstallOnlineMenu()
         !SlotIs(kKeyVtables[2], kEventSlot, kKeyEvents[2]) || !SlotIs(kKeyVtables[3], kEventSlot, kKeyEvents[3])) {
         LOG_WARN("Online menu: the code keyboard is not as expected; no Online entry");
         return;
+    }
+    if (SlotIs(kJediListVtable, 4, kJediListEvent)) {
+        const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(&JediListEvent));
+        PatchBytes(kJediListVtable + 4 * 4, &hook, 4);
     }
     if (SlotIs(kIntroVtable, 0, kIntroInit)) {
         const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(&IntroInit));
