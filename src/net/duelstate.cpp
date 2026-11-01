@@ -93,6 +93,19 @@ void DuelRecorderFrame()
         return;
     uint8_t* p1 = game::PlayerObject();
     uint8_t* p2 = game::GamePlayer2();
+    if (!p2 && p1) { // the developer map's duel: its opponent is not the game's player 2; the other character
+        static uint32_t scan = 0;
+        static uint8_t* other = nullptr;
+        if (++scan % 30 == 1 || !other) {
+            other = nullptr;
+            for (uint8_t* c : game::LevelCharacters())
+                if (c != p1) {
+                    other = c;
+                    break;
+                }
+        }
+        p2 = other;
+    }
     if (!p1 || !p2)
         return; // not in a duel now (loading, the round's end): only frames with both fighters
     static std::vector<uint8_t> a(kObjectBytes), b(kObjectBytes);
@@ -107,6 +120,8 @@ void DuelRecorderFrame()
     std::fwrite(a.data(), kObjectBytes, 1, g_Out);
     std::fwrite(b.data(), kObjectBytes, 1, g_Out);
     ++g_Frame;
+    if (g_Frame % 300 == 0)
+        std::fflush(g_Out);
     if (--g_Left == 0)
         Close("done");
 }
