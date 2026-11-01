@@ -298,7 +298,7 @@ void UpdateTexts()
     case net::OnlinePhase::Connecting: status = "CALLING THE HOST..."; break;
     case net::OnlinePhase::Preparing: case net::OnlinePhase::Starting: status = "JOINING..."; break;
     case net::OnlinePhase::Playing: status = "IN A ROOM"; break;
-    case net::OnlinePhase::Ended: status = g_Note.empty() ? Shorten(s.message, 40) : g_Note; break;
+    case net::OnlinePhase::Ended: status = g_Note.empty() ? (s.lost ? Shorten(s.message, 40) : "NOT CONNECTED") : g_Note; break;
     }
     SetMenuText(ValueId(kStatus).c_str(), Wide(Shorten(status, 40)));
     SetMenuText(ValueId(kName).c_str(), Wide(net::OnlinePlayerName()));

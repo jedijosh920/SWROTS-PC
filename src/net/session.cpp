@@ -567,7 +567,7 @@ std::string ProfileName()
     } while (FindNextFileW(find, &f));
     FindClose(find);
     std::vector<uint8_t> data;
-    if (best.empty() || !ReadWholeFile(best, data, 4096) || data.size() < 8)
+    if (best.empty() || !ReadWholeFile(best, data, 1 << 16) || data.size() < 8)
         return {};
     std::string name;
     for (size_t i = 4; i + 1 < data.size() && name.size() < 15; i += 2) {
@@ -602,7 +602,20 @@ std::string CleanName(const std::wstring& text)
 }
 
 // The player's name online: [Online] Name (Online Settings), else the profile's, else "NONAME". Never the PC's user.
+std::string LocalPlayerNameNow();
+// Cached: the menus ask every frame (the profile's file is read at most once a second).
 std::string LocalPlayerName()
+{
+    static std::string name;
+    static ULONGLONG at = 0;
+    if (!at || GetTickCount64() - at > 1000) {
+        name = LocalPlayerNameNow();
+        at = GetTickCount64();
+    }
+    return name;
+}
+
+std::string LocalPlayerNameNow()
 {
     wchar_t text[64] = {};
     const std::wstring ini = ExeDirectory() + L"\\settings.ini";
@@ -612,8 +625,6 @@ std::string LocalPlayerName()
         const std::string profile = ProfileName();
         name = CleanName(std::wstring(profile.begin(), profile.end()));
     }
-    if (name.empty())
-        LOG_INFO("Online: no name set nor profile found under %ls", kernel::SaveDrivePath().c_str());
     return name.empty() ? "NONAME" : name;
 }
 
@@ -1060,7 +1071,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             g_S.screen = screen;
             g_S.screenSince = g_S.frame;
             if (IsSelectScreen(screen))
-                g_S.joinAt = g_S.frame + 20; // player 2 joins (as its Start would)
+                g_S.joinAt = g_S.frame + 75; // player 2 joins (as its Start would), once the screen is in
             if (screen == game::MenuKey("select_arena") && g_S.host && g_S.room.arena == 1)
                 g_S.arenaAt = g_S.frame + 20; // the arena: Random's row, taken
         }
@@ -1516,7 +1527,7 @@ void HandleLocked(const uint8_t* data, size_t size, const Endpoint& from)
             RejectMsg r;
             std::memcpy(&r, data, sizeof(r));
             r.text[sizeof(r.text) - 1] = 0;
-            EndLocked(std::string("the other player left (") + r.text + ")", false);
+            EndLocked("the other player left", false);
         }
         break;
     default:
@@ -1555,7 +1566,7 @@ void TickLocked()
         return;
     }
     if (since(g_S.lastHeard) > kSilenceMs) {
-        EndLocked("the other player stopped answering", false);
+        EndLocked("connection lost", false);
         return;
     }
     if (g_S.host && g_S.welcomed && !g_S.ready) { // the package, the chunks not acknowledged yet
