@@ -9,7 +9,10 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <algorithm>
+#include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <vector>
 
 #include "core/log.h"
@@ -57,6 +60,29 @@ void Close(const char* why)
     LOG_INFO("Duel recorder: '%s' closed after %u frames (%s)", g_Name.c_str(), g_Frame, why);
 }
 
+void Fighters(uint8_t*& p1, uint8_t*& p2)
+{
+    p1 = game::GamePlayerSlot(0);
+    p2 = game::GamePlayerSlot(1);
+    if (!p1)
+        p1 = game::PlayerObject();
+    if (!p2)
+        p2 = game::GamePlayer2();
+    if (!p2 && p1) { // the developer map's duel: its opponent is not the game's player 2; the other character
+        static uint32_t scan = 0;
+        static uint8_t* other = nullptr;
+        if (++scan % 30 == 1 || !other) {
+            other = nullptr;
+            for (uint8_t* c : game::LevelCharacters())
+                if (c != p1) {
+                    other = c;
+                    break;
+                }
+        }
+        p2 = other;
+    }
+}
+
 } // namespace
 
 void StartDuelRecorder(const std::string& name, uint32_t frames)
@@ -87,29 +113,185 @@ std::string DuelRecorderStatus()
     return line;
 }
 
+namespace {
+
+// The gameplay fields (offset, bytes), from the recorder's per-field changes (docs/research/netplay.md).
+struct Range { uint16_t offset, bytes; };
+constexpr Range kFields[] = {
+    { 0x12C, 0x0C }, // dead, health, max health
+    { 0x150, 0x3C }, // the transform: orientation rows and the position (+0x180)
+    { 0x1B0, 0x0C }, // velocity
+    { 0x210, 0x1C },
+    { 0x280, 0x1C },
+    { 0x310, 0x08 }, // the action and its frame
+    { 0x398, 0x0C }, // the action's timers
+    { 0x3B0, 0x04 }, // health (copy)
+    { 0x3E4, 0x1C }, // state, flags
+    { 0x410, 0x0C }, // velocity (copy)
+    { 0x5A8, 0x04 },
+    { 0x5D0, 0x04 },
+    { 0x630, 0x0C }, // position (copies)
+    { 0x750, 0x0C },
+    { 0x918, 0x04 },
+    { 0x920, 0x04 },
+    { 0xA40, 0x08 }, // Force, max Force
+    { 0xA60, 0x04 },
+};
+constexpr Range kPosition[] = { { 0x150, 0x3C }, { 0x630, 0x0C }, { 0x750, 0x0C } };
+
+struct Snap {
+    bool valid = false;
+    uint8_t* object[2] = {};
+    std::vector<uint8_t> bytes[2];
+};
+Snap g_Snap;
+int g_Watch = 0;           // frames still to log after a load
+int g_TestSave = -1, g_TestLoad = -1;
+std::string g_TestMode;
+
+uint32_t Fields(const Range* ranges, size_t count)
+{
+    uint32_t n = 0;
+    for (size_t i = 0; i < count; ++i)
+        n += ranges[i].bytes;
+    return n;
+}
+
+bool Write(uint8_t* object, const uint8_t* from, const Range* ranges, size_t count)
+{
+    __try {
+        if (!ranges) {
+            std::memcpy(object, from, kObjectBytes);
+        } else {
+            for (size_t i = 0; i < count; ++i)
+                std::memcpy(object + ranges[i].offset, from + ranges[i].offset, ranges[i].bytes);
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+template <typename T> T At(const uint8_t* o, uint32_t offset)
+{
+    T v;
+    std::memcpy(&v, o + offset, sizeof(T));
+    return v;
+}
+
+void LogFighter(const char* what, int i, const uint8_t* o)
+{
+    LOG_INFO("Duel snap: %s P%d pos %.1f %.1f %.1f vel %.1f %.1f %.1f health %.0f force %.0f action 0x%x/%u "
+             "state 0x%x 0x%x 0x%x",
+        what, i + 1, At<float>(o, 0x180), At<float>(o, 0x184), At<float>(o, 0x188), At<float>(o, 0x1B0),
+        At<float>(o, 0x1B4), At<float>(o, 0x1B8), At<float>(o, 0x130), At<float>(o, 0xA40), At<uint32_t>(o, 0x310),
+        At<uint32_t>(o, 0x314), At<uint32_t>(o, 0x3E4), At<uint32_t>(o, 0x3F8), At<uint32_t>(o, 0x920));
+}
+
+std::string Save()
+{
+    uint8_t* p[2] = {};
+    Fighters(p[0], p[1]);
+    if (!p[0] || !p[1])
+        return "duel snap: no duel now";
+    for (int i = 0; i < 2; ++i) {
+        g_Snap.bytes[i].resize(kObjectBytes);
+        if (!ReadObject(p[i], g_Snap.bytes[i].data()))
+            return "duel snap: a fighter could not be read";
+        g_Snap.object[i] = p[i];
+        LogFighter("saved", i, g_Snap.bytes[i].data());
+    }
+    g_Snap.valid = true;
+    return "duel snap: saved";
+}
+
+std::string Load(const std::string& mode)
+{
+    if (!g_Snap.valid)
+        return "duel snap: nothing saved";
+    uint8_t* p[2] = {};
+    Fighters(p[0], p[1]);
+    if (!p[0] || !p[1])
+        return "duel snap: no duel now";
+    const bool same = p[0] == g_Snap.object[0] && p[1] == g_Snap.object[1];
+    const Range* ranges = kFields;
+    size_t count = std::size(kFields);
+    if (mode == "full") {
+        if (!same)
+            return "duel snap: full needs the same fighters (a new round re-creates them)";
+        ranges = nullptr;
+        count = 0;
+    } else if (mode == "pos") {
+        ranges = kPosition;
+        count = std::size(kPosition);
+    }
+    for (int i = 0; i < 2; ++i) {
+        LogFighter("before", i, p[i]);
+        if (!Write(p[i], g_Snap.bytes[i].data(), ranges, count))
+            return "duel snap: a fighter could not be written";
+    }
+    g_Watch = 8;
+    char line[160];
+    std::snprintf(line, sizeof(line), "duel snap: loaded (%s, %u bytes per fighter, %s fighters)",
+        mode.empty() ? "fields" : mode.c_str(), ranges ? Fields(ranges, count) : kObjectBytes,
+        same ? "the same" : "other");
+    LOG_INFO("%s", line);
+    return line;
+}
+
+} // namespace
+
+std::string DuelSnapCommand(const std::string& verb, const std::string& arg1, const std::string& arg2)
+{
+    if (verb == "save")
+        return Save();
+    if (verb == "load")
+        return Load(arg1);
+    if (verb == "test") {
+        g_TestSave = std::max(1, std::atoi(arg1.c_str()));
+        g_TestLoad = std::max(1, std::atoi(arg2.c_str()));
+        g_TestMode = "";
+        return "duel snap: test armed";
+    }
+    if (verb == "mode") {
+        g_TestMode = arg1;
+        return "duel snap: test mode " + arg1;
+    }
+    char line[96];
+    std::snprintf(line, sizeof(line), "duel snap: %s; fields %u bytes per fighter",
+        g_Snap.valid ? "saved" : "nothing saved", Fields(kFields, std::size(kFields)));
+    return line;
+}
+
+void DuelSnapFrame()
+{
+    if (g_Watch > 0) {
+        uint8_t* p[2] = {};
+        Fighters(p[0], p[1]);
+        char what[24];
+        std::snprintf(what, sizeof(what), "after+%d", 9 - g_Watch);
+        for (int i = 0; i < 2; ++i)
+            if (p[i])
+                LogFighter(what, i, p[i]);
+        --g_Watch;
+    }
+    if (g_TestSave > 0 && --g_TestSave == 0) {
+        LOG_INFO("%s", Save().c_str());
+        if (!g_Snap.valid)
+            g_TestSave = 30; // not in a duel yet: try again
+    } else if (g_TestSave <= 0 && g_TestLoad > 0 && --g_TestLoad == 0) {
+        LOG_INFO("%s", Load(g_TestMode).c_str());
+    }
+}
+
 void DuelRecorderFrame()
 {
+    DuelSnapFrame();
     if (!g_Out)
         return;
-    uint8_t* p1 = game::GamePlayerSlot(0);
-    uint8_t* p2 = game::GamePlayerSlot(1);
-    if (!p1)
-        p1 = game::PlayerObject();
-    if (!p2)
-        p2 = game::GamePlayer2();
-    if (!p2 && p1) { // the developer map's duel: its opponent is not the game's player 2; the other character
-        static uint32_t scan = 0;
-        static uint8_t* other = nullptr;
-        if (++scan % 30 == 1 || !other) {
-            other = nullptr;
-            for (uint8_t* c : game::LevelCharacters())
-                if (c != p1) {
-                    other = c;
-                    break;
-                }
-        }
-        p2 = other;
-    }
+    uint8_t* p1 = nullptr;
+    uint8_t* p2 = nullptr;
+    Fighters(p1, p2);
     if (!p1 || !p2)
         return; // not in a duel now (loading, the round's end): only frames with both fighters
     static std::vector<uint8_t> a(kObjectBytes), b(kObjectBytes);
