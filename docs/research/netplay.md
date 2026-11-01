@@ -389,3 +389,49 @@ A match is played without mods, whatever each PC has installed: its start of the
 cache of its own (`netplay\online\nomods`, `netplay\online\cache`; kernel::SetSessionFolders), so nothing a PC's mods
 add or a PC's earlier sessions generated is loaded. Only GameData is compared when a guest joins (its files listed with
 their hashes in `netplay\content.txt`, to find a difference). The PC's own mods come back with the end of the match.
+
+## Client/server with rollback: the study (2026-11-01)
+
+Lockstep showed the limits of two games that must stay identical: the deterministic scheduler makes the game slow
+(a laptop at ~36 fps in a duel), the slower PC sets the pace, anything a PC does on its own (button prompts, a mod)
+parts the games, and PCs of other makes may compute some instructions differently (rsqrtss, rcpss). Both players
+keep the game (no streaming).
+
+### The model
+
+- **The host is the server**: it plays the match at full speed with the deterministic scheduler off, its own inputs
+  at once, the guest's as they arrive (late by half the round trip; a few frames of rollback on the host for them is
+  an option for later). Its game is the match.
+- **The guest is a predicting client**: it plays its own copy of the match with its own inputs at once and the
+  host's predicted (the last ones repeated). Each frame the host sends the **gameplay state** of a recent frame F:
+  what decides the match, not the picture. On receipt the guest corrects its game: its state at F replaced by the
+  host's, then the frames since played again with the inputs it has (rollback), or, cheaper, the correction carried
+  to the present (the host's character drawn at the host's state, smoothed; the guest's own character predicted and
+  pulled back when it parts).
+- No determinism is needed: any difference is corrected within a round trip, and only the gameplay state has to be
+  understood. Effects, particles and sounds may differ between the PCs without harm.
+
+### What the gameplay state of a duel is (to find)
+
+| Part | Known so far |
+|---|---|
+| Each fighter: position, orientation (transform at `+0x150`), health (`+0x130`, max `+0x134`), Force (`+0xA40`, max `+0xA44`), dead (`+0x12C`) | yes |
+| Each fighter: the running move/animation and its time, velocity, airborne/ground, block/stun/knockdown states, combo counters, lock-on target (`+0x3B8`) | to find |
+| Thrown sabers, Force grip/throw/lightning in progress, projectiles | to find |
+| The duel: round, round timer, scores, the round's end and restart | to find |
+| The game's random generator | to find |
+
+Method: record a duel's character objects every frame (the debug-register watch and frame-to-frame diffs already in
+`net/watch.cpp` and `net/state.cpp`), name the fields that change with the fight, then **capture and apply**: take
+the state of frame N from one run and write it into another run's frame N, and check the game carries on coherently
+(no crash, the fighters where they should be, the moves continuing).
+
+### Phases
+
+1. **Duel state capture/apply** on one PC: the state's size (a few KiB expected), and whether writing it into a
+   running game holds. This decides the rest.
+2. **Host authoritative, guest corrected without rollback**: the host sends the duel state every frame, the guest
+   draws the host's fighter from it and keeps its own predicted. Two PCs over the Internet.
+3. **Guest rollback** where the correction alone shows (hits landing late): snapshot only the guest's fighters'
+   state and replay the frames since F (cheap: the game's other state is not restored).
+4. The other modes (co-op, HvV) with their own states.
