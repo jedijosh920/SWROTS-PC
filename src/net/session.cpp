@@ -495,6 +495,8 @@ struct Session {
     input::GamePad ownPad = {};
     uint32_t ownPacket = 0;
     bool inLevel = false;               // the match's level is up (no pause there: NoPause)
+    bool entering = false;              // from the match's start to its room: the game's restart covered (the HUD)
+    uint32_t roomSince = 0;             // the frame the room's screen came (the cover lifted a little after)
     input::GamePad hostLive = {};       // the host's own pad in the level, as its game gets it
     uint32_t remoteReads = 0, remoteChanges = 0;
     bool remoteInDuel = false, duelStartWaited = false;
@@ -658,6 +660,7 @@ void RestoreLocked()
         EditSettings() = g_S.saved;
         g_S.settingsSaved = false;
     }
+    SetOwnGameplaySettings(nullptr);
 }
 
 void EndLocked(const std::string& why, bool tellOther)
@@ -1132,6 +1135,15 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         }
     }
     const uint32_t screen = g_S.screen, since = g_S.frame - g_S.screenSince;
+    if (g_S.entering) { // the cover lifts once the room is in (or a level, or after 25 s in any case)
+        const bool room = screen == game::MenuKey("online_room");
+        if (room && !g_S.roomSince)
+            g_S.roomSince = g_S.frame;
+        if ((room && g_S.frame - g_S.roomSince > 12) || g_S.inLevel || g_S.frame > 25 * 60) {
+            g_S.entering = false;
+            LOG_INFO("Online: the room is in (frame %u)", g_S.frame);
+        }
+    }
     uint8_t* q1 = nullptr;
     uint8_t* q2 = nullptr;
     const bool inShell = !DuelFighters(q1, q2) && !game::PlayerObject();
@@ -1141,7 +1153,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         if (!ok)
             g_S.arenaAt = ~0u;
     }
-    if (g_S.host && g_S.toRoom && inShell && g_S.frame - g_S.toRoomAt > 90 && (g_S.frame - g_S.toRoomAt) % 30 == 0) {
+    if (g_S.host && g_S.toRoom && inShell && g_S.frame - g_S.toRoomAt > 20 && (g_S.frame - g_S.toRoomAt) % 15 == 0) {
         lock.unlock();
         const bool ok = game::GoToShellScreen("online_room");
         LOG_INFO("Online: to the room%s", ok ? "" : " (not yet)");
@@ -1359,6 +1371,7 @@ void BeginBootLocked()
     }
     g_S.saved = GetSettings(); // both PCs play with the host's gameplay settings and the match's pace
     g_S.settingsSaved = true;
+    SetOwnGameplaySettings(&g_S.saved);
     ApplyGameplay(g);
     g_S.fps = uint32_t(std::clamp(g.fpsLimit, 10, 120));
     kernel::SetSessionDrives(root + L"\\saves", root + L"\\utility");
@@ -1367,6 +1380,8 @@ void BeginBootLocked()
     if (g_S.server) { // client/server: each game at its own pace; the host's is the match
         input::SetPadSource(&PadFromServer);
         g_S.bootPending = true;
+        g_S.entering = true; // its restart (to its main menu, then the room) under a cover
+        g_S.roomSince = 0;
         g_S.phase = OnlinePhase::Starting;
         SetMessage("starting the match");
         LOG_INFO("Online: client/server match (%s)", g_S.host ? "the host's game is the match" : "following the host");
@@ -1789,7 +1804,8 @@ void ResetSessionLocked(bool host)
     g_S.haveState = false;
     g_S.guestInDuel = false;
     g_S.ownPad = g_S.hostLive = {};
-    g_S.inLevel = false;
+    g_S.inLevel = g_S.entering = false;
+    g_S.roomSince = 0;
     g_S.ownPacket = g_S.remoteReads = g_S.remoteChanges = 0;
     g_S.remoteInDuel = g_S.duelStartWaited = false;
     g_S.remoteScreen = g_S.screen = g_S.screenSince = g_S.followTried = 0;
@@ -1925,6 +1941,7 @@ OnlineStatusInfo OnlineStatus()
     i.guestHere = g_S.host && g_S.peer.Valid();
     i.lost = g_S.lost;
     i.room = g_S.room;
+    i.entering = g_S.entering && (g_S.phase == OnlinePhase::Starting || g_S.phase == OnlinePhase::Playing);
     return i;
 }
 

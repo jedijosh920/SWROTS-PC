@@ -53,6 +53,7 @@ struct OnlineStatusInfo {
     bool guestHere = false; // the host has its guest (from its call on)
     bool lost = false;      // it ended without this player leaving (the connection, the other player)
     OnlineRoomSettings room;
+    bool entering = false;  // the match's start until its room shows (the game's restart, its main menu: covered)
 };
 
 // The player's name online, and its change (Online Settings: [Online] Name in settings.ini).
