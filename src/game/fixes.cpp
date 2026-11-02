@@ -123,6 +123,33 @@ void __declspec(naked) EmptySequenceGuard()
     }
 }
 
+// The Versus outro (0x27B270) takes the place of the fighter it ends on, looked up as a living one (not dead, health
+// above 0) and asked for its place (0xF2280) without a check: with none living (an online guest whose game had the
+// round end otherwise than the host's) it read a null fighter's place and crashed (0x27B316). The call
+//   mov ecx, esi / call 0xF2280   (7 bytes at 0x27B30F)
+// goes to a guard that gives a place at the origin for no fighter.
+constexpr uint32_t kOutroPlaceSite = 0x0027B30F;
+constexpr uint32_t kOutroPlaceContinue = 0x0027B316;
+constexpr uint32_t kFighterPlace = 0x000F2280;
+float g_NoPlace[4] = {};
+
+void __declspec(naked) OutroPlaceGuard()
+{
+    __asm {
+        mov ecx, esi
+        test ecx, ecx
+        jz none
+        mov eax, kFighterPlace
+        call eax
+        push kOutroPlaceContinue
+        ret
+    none:
+        mov eax, offset g_NoPlace
+        push kOutroPlaceContinue
+        ret
+    }
+}
+
 // A character answers whether it goes by a name (vfunc +0x460, 0x14FE90, shared by 42 classes) by comparing it with
 // the two names of its class's script (`[[character+0x434]+4]` +0x5C and +0x60) through 0x2233F0, which does not
 // take a null string. Palpatine's class has no second name, so asking a Palpatine (as the game's logic does about
@@ -179,6 +206,15 @@ void InstallGameFixes()
         PatchJump(kBindingCountSite, reinterpret_cast<const void*>(uintptr_t(kBindingRebuild)));
     else
         LOG_WARN("Game fix: animation binding count site does not match; not patched");
+    uint8_t outroBytes[7] = { 0x8B, 0xCE, 0xE8 };
+    const int32_t place = int32_t(kFighterPlace) - int32_t(kOutroPlaceSite + 7);
+    std::memcpy(outroBytes + 3, &place, 4);
+    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kOutroPlaceSite)), outroBytes, sizeof(outroBytes)) == 0) {
+        PatchJump(kOutroPlaceSite, reinterpret_cast<const void*>(&OutroPlaceGuard));
+        PatchNop(kOutroPlaceSite + 5, sizeof(outroBytes) - 5);
+    } else {
+        LOG_WARN("Game fix: Versus outro site does not match; not patched");
+    }
     uint8_t branchBytes[9] = { 0x8D, 0x4C, 0x24, 0x0C, 0xE8 };
     const int32_t release = int32_t(kStringRelease) - int32_t(kSequenceBranchSite + 9);
     std::memcpy(branchBytes + 5, &release, 4);

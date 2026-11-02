@@ -644,8 +644,10 @@ void RestoreLocked()
     input::SetPadSource(nullptr);
     input::SetOnlinePorts(false);
     kernel::SetLaunchObserver(nullptr);
-    if (g_S.server && !g_S.host)
+    if (g_S.server && !g_S.host) {
         game::SetDamageFilter(nullptr);
+        game::SetFatalHitGuard(nullptr);
+    }
     kernel::SetDeterministicBoot(false);
     kernel::SetDeterministicAddresses(false);
     kernel::SetSessionDrives(std::wstring(), std::wstring());
@@ -950,6 +952,11 @@ float GuestDamage(uint8_t* character, float change)
     return character && (character == g_GuestFighters[0] || character == g_GuestFighters[1]) ? 0.0f : change;
 }
 
+bool GuestFatalHit(uint8_t* character)
+{
+    return character && (character == g_GuestFighters[0] || character == g_GuestFighters[1]);
+}
+
 // The game starts a level (or the menus) on its own (XLaunchNewImage). The host's goes to the guest, whose game
 // follows it; the guest's own waits for the host's and takes it instead.
 void LaunchObserved(std::string& arguments)
@@ -1194,6 +1201,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     g_GuestFighters[0] = duel ? fighters[0] : nullptr;
     g_GuestFighters[1] = duel ? fighters[1] : nullptr;
     game::SetDamageFilter(duel ? &GuestDamage : nullptr);
+    game::SetFatalHitGuard(duel ? &GuestFatalHit : nullptr); // no instant kill of its own either (a fall, a pit)
     if (!duel || !haveState)
         return;
     const uint32_t lead = pingMs > 0 ? uint32_t(pingMs * 60 / 2000) : 0; // half the round trip, in game ticks
