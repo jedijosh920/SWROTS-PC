@@ -535,6 +535,28 @@ sequences in 65 s with none refused, no crash; health bars and positions match t
 fighter is shown as the host has it (its inputs take a round trip), the guest does not see the host's select screens
 (it waits), and a whole match's end (back to the menus) is still to be seen.
 
+### Phase 2, a remote session's findings (2026-11-02)
+
+A match between two PCs over the Internet (each player host once): movement smooth on both sides. Found and fixed:
+
+- **The guest's black screen at a round's end**: the Versus outro (0x27B270) looks up a living fighter and asks its
+  place (0xF2280) without a null check. On the guest, whose game had a fighter die on its own (a pit: an instant kill
+  that bypasses the damage filter), none was living: a crash at 0x27B316. The call site (0x27B30F, `mov ecx, esi /
+  call 0xF2280`) now goes to a guard (`fixes.cpp`, `OutroPlaceGuard`), and the guest's fighters take no instant kill
+  of their own (`SetFatalHitGuard`); their deaths come with the host's health.
+- **Pause in a duel**: Start and Back are taken out of every pad both games get in a match's level (`NoPauseLocked`,
+  the host's own pad included, read through the pad source there).
+- **Intros and grabs**: corrections fought the guest's own intro (Grievous's, started a little later there) and a
+  grab's pair of sequences (the held fighter's place set by the other's). Sequences named `*Intro*`/`*Outro*` (either
+  game's) and a pair's (`Grab`, `Grapple`, `Choke`, `SaberLock`, `_Kill_`, names ending `GB`/`GR`) once both games
+  play one are left to the guest's game: only the health is applied.
+- **The main menu on joining**: the match's start restarts both games (the host's profile, no mods), which come up at
+  their main menu before the room. That is covered (`OnlineStatusInfo::entering`, a black screen with "Joining the
+  room" in the menus' font) until the room has shown for a few frames; the host goes to the room after 20 frames
+  (was 90).
+- **The host's gameplay settings**: a match plays with them in memory; `SaveSettings` during a match now writes the
+  PC's own (`SetOwnGameplaySettings`), so a host's co-op setting can never stay on the guest's PC.
+
 ### Phases
 
 1. **Duel state capture/apply** on one PC: the state's size (a few KiB expected), and whether writing it into a
