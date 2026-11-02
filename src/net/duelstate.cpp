@@ -753,8 +753,12 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
     // Its place: the host's (the other player's fighter), or this PC's own fighter's own unless it is far off.
     // This PC's own fighter down on the host's game (its round lost): its fall is the host's too, so that it lies where
     // the host's does for the outro (this PC's pad no longer plays it).
+    // (Down on this game as well: one made again for a new round, living here first, does not take the host's last.)
+    bool liveHere = true;
+    float healthHere = 0;
+    LivingRaw(fighter, liveHere, healthHere);
     const bool hostDown = Packed<uint8_t>(s, 0x12C) != 0 || Packed<float>(s, 0x130) <= 0.0f;
-    const bool follow = hostGrab || hostDown;
+    const bool follow = hostGrab || (hostDown && !liveHere);
     Into into = own && !follow ? Into::Own : Into::Remote;
     if (own && !follow) {
         float x = 0, z = 0;
