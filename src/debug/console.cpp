@@ -32,6 +32,7 @@
 #include "game/menus.h"
 #include "game/onlinemenu.h"
 #include "net/duelstate.h"
+#include "net/props.h"
 #include "net/session.h"
 
 namespace swrots::debug {
@@ -1108,7 +1109,7 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         command != "infiniteforce" && command != "memory" && command != "team" &&
         command != "findrefs" && command != "despawn" && command != "characters" && command != "scale" &&
         command != "screenshot" && command != "coop" &&
-        command != "devmap" && command != "hvv" && command != "versus" && command != "mission" && command != "kill" && command != "synctest" && command != "nettest" & && command != "press"&
+        command != "devmap" && command != "hvv" && command != "versus" && command != "mission" && command != "kill" && command != "synctest" && command != "nettest" & && command != "press" && command != "objects"&
         command != "online" && command != "duelrec" && command != "duelsnap" && command != "duelplay")
         return false;
     Print(LineKind::Output, "> %s", line.c_str());
@@ -1284,6 +1285,10 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         }
         Print(LineKind::Output, "  starting the developer map...");
         game::StartDevMap(words.size() > 1 ? "custommap:" + words[1] : "");
+    } else if (command == "objects") { // objects [list [class]] | move <class> <up> | destroy <class>
+        const std::string verb = words.size() > 1 ? words[1] : "list";
+        Print(LineKind::Output, "  %s", net::ObjectsCommand(verb, words.size() > 2 ? words[2] : "",
+            words.size() > 3 ? float(std::atof(words[3].c_str())) : 0.0f).c_str());
     } else if (command == "press") { // player 1's buttons held a while (a test's): press Start+A 0.2
         input::ScriptButtons(words.size() > 1 ? words[1].c_str() : "", words.size() > 2 ? std::atof(words[2].c_str()) : 0.15);
         Print(LineKind::Output, "  pressed");
@@ -1381,7 +1386,7 @@ void RunQueuedConsoleCommands()
             // and gone while a level loads).
             const std::vector<std::string> words = Words(line);
             static const char* const kStandalone[] = { "player", "variants", "meshes", "restart", "autorestart",
-                "duelist", "freecam", "saber", "spawn", "peek", "infiniteforce", "memory", "team", "findrefs", "despawn", "characters", "scale", "screenshot", "coop", "devmap", "hvv", "versus", "mission", "kill", "synctest", "nettest", "online", "press", "clear", "cls" };
+                "duelist", "freecam", "saber", "spawn", "peek", "infiniteforce", "memory", "team", "findrefs", "despawn", "characters", "scale", "screenshot", "coop", "devmap", "hvv", "versus", "mission", "kill", "synctest", "nettest", "online", "press", "objects", "clear", "cls" };
             const bool standalone = !words.empty() && std::any_of(std::begin(kStandalone), std::end(kStandalone),
                 [&](const char* c) { return _stricmp(words[0].c_str(), c) == 0; });
             if (standalone) {

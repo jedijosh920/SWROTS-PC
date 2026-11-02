@@ -28,6 +28,7 @@
 #include "kernel/kernel.h"
 #include "kernel/sched.h"
 #include "net/duelstate.h"
+#include "net/props.h"
 #include "net/transport.h"
 #include "net/upnp.h"
 
@@ -40,7 +41,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr uint32_t kMagic = 0x4E525753; // 'SWRN'
-constexpr uint16_t kProtocol = 4; // 2: the players' names; 3: client/server matches; 4: the arena's picker
+constexpr uint16_t kProtocol = 5; // 2: the players' names; 3: client/server matches; 4: the arena's picker; 5: props
 constexpr uint16_t kDefaultPort = 27960;
 constexpr uint32_t kHistory = 512;      // frames of inputs kept (a power of two)
 constexpr uint32_t kMaxSend = 48;       // inputs in one packet at most
@@ -80,7 +81,7 @@ constexpr int kConnectMs = 20000;       // the guest gives up calling after that
 
 enum class Msg : uint8_t {
     Hello = 1, Welcome, Reject, Chunk, ChunkAck, Ready, Start, Started, Input, Ping, Pong, Bye, Pages,
-    Pad, Launch, State, Room, // client/server
+    Pad, Launch, State, Room, Props, // client/server
 };
 
 constexpr uint32_t kPage = 1024;      // a desync's report: the data checked, hashed by 1 KiB pages
@@ -174,6 +175,15 @@ struct StateMsg {
     uint32_t seq;
     uint32_t hostFrame;
     FighterState fighters[2];
+};
+// The arena's props that moved or are gone on the host's game (props.h).
+struct PropsMsg {
+    Header h;
+    uint32_t seq;
+    uint8_t count, goneCount;
+    uint16_t reserved;
+    PropState props[kPropsPerMsg];
+    uint32_t gone[kGonePerMsg];
 };
 // The host's gameplay settings, which the guest plays with for the match.
 struct GameplaySettings {
@@ -495,6 +505,8 @@ struct Session {
     input::GamePad ownPad = {};
     uint32_t ownPacket = 0;
     bool inLevel = false;               // the match's level is up (no pause there: NoPause)
+    std::vector<PropsMsg> propsIn;      // the guest: the host's props messages, for the game thread
+    uint32_t propsSeqOut = 0, propsSeqIn = 0;
     int roundWinner = -1;               // the host: the last round's winner (0 player 1, 1 player 2), -1 none yet
     int matchWinner = -1;               // the host: the last match's (its last round's), for the arena's picker
     bool entering = false;              // from the match's start to its room: the game's restart covered (the HUD)
@@ -1116,6 +1128,16 @@ void OnServerMsgLocked(Msg type, const uint8_t* data, size_t size)
             g_S.room = m.room;
         }
         break;
+    case Msg::Props:
+        if (!g_S.host && size >= sizeof(PropsMsg) && g_S.propsIn.size() < 64) {
+            PropsMsg m;
+            std::memcpy(&m, data, sizeof(m));
+            if (m.seq <= g_S.propsSeqIn)
+                return;
+            g_S.propsSeqIn = m.seq;
+            g_S.propsIn.push_back(m);
+        }
+        break;
     case Msg::State:
         if (!g_S.host && size >= sizeof(StateMsg)) {
             StateMsg m;
@@ -1256,10 +1278,30 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     StateMsg state = g_S.latestState;
     const bool haveState = g_S.haveState;
     const uint32_t frame = g_S.frame;
+    std::vector<PropsMsg> propsIn;
+    propsIn.swap(g_S.propsIn);
     lock.unlock();
 
     uint8_t* fighters[2] = {};
     const bool duel = DuelFighters(fighters[0], fighters[1]);
+    { // the arena's props: found again at each duel's start
+        static bool wasDuel = false;
+        if (duel && !wasDuel)
+            PropsReset();
+        wasDuel = duel;
+    }
+    if (duel && frame % 120 == 0) { // diagnostics: both fighters' places on both games (a small one's, Yoda's)
+        static uint32_t described = 0;
+        if (described++ < 300)
+            LOG_INFO("Online: duel, frame %u: %s", frame, DescribeDuel().c_str());
+    }
+    if (!host && duel) {
+        for (const PropsMsg& m : propsIn)
+            PropsReceive(frame, m.props, std::min<int>(m.count, kPropsPerMsg), m.gone, std::min<int>(m.goneCount, kGonePerMsg));
+        PropsApply(frame);
+        if (frame % 600 == 0)
+            LOG_INFO("Online: %s", PropsStats().c_str());
+    }
     if (host) {
         {
             std::lock_guard<std::mutex> relock(g_S.lock);
@@ -1292,6 +1334,17 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         if (m.seq % 600 == 1)
             LOG_INFO("Online: host frame %u, state %u sent (%u bytes), ping %d ms", frame, m.seq, unsigned(sizeof(m)),
                 pingMs);
+        PropsMsg pm = {};
+        int count = 0, goneCount = 0;
+        if (m.seq > 30 && PropsCapture(frame, pm.props, count, pm.gone, goneCount)) { // (after the intro's first frames)
+            pm.h = MakeHeader(Msg::Props, g_S.token);
+            pm.seq = ++g_S.propsSeqOut;
+            pm.count = uint8_t(count);
+            pm.goneCount = uint8_t(goneCount);
+            SendLocked(pm);
+        }
+        if (m.seq % 600 == 1)
+            LOG_INFO("Online: %s", PropsStats().c_str());
         return;
     }
     {
@@ -1634,7 +1687,7 @@ void HandleLocked(const uint8_t* data, size_t size, const Endpoint& from)
         }
     }
     // Both ways.
-    if (type == Msg::Pad || type == Msg::Launch || type == Msg::State || type == Msg::Room) {
+    if (type == Msg::Pad || type == Msg::Launch || type == Msg::State || type == Msg::Room || type == Msg::Props) {
         if (g_S.server && (g_S.armed || g_S.bootPending || type == Msg::Room))
             OnServerMsgLocked(type, data, size);
         return;
@@ -1863,6 +1916,8 @@ void ResetSessionLocked(bool host)
     g_S.pendingLaunch.clear();
     g_S.pendingLaunchSet = g_S.followingLaunch = g_S.followStarted = false;
     g_S.stateSeqOut = g_S.stateSeqIn = g_S.statesIn = 0;
+    g_S.propsSeqOut = g_S.propsSeqIn = 0;
+    g_S.propsIn.clear();
     g_S.haveState = false;
     g_S.guestInDuel = false;
     g_S.ownPad = g_S.hostLive = {};
