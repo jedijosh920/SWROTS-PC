@@ -604,7 +604,6 @@ bool Paired(const char* name)
 struct Applied {
     uint8_t* fighter = nullptr;
     bool hostPaired = false, livePaired = false; // the host's and this game's sequences are a grab's
-    uint32_t livePairedAt = 0;   // the frame this game's sequence was last a grab's (+1; 0 never)
     bool leftLiving = true;      // the fighter was living after the last health written
     uint32_t reviveHold = 0;     // this game brought it back (a new round) before the host's state did: until then
     bool hostLiving = true;
@@ -674,8 +673,11 @@ void ApplyHealth(int slot, Applied& a, uint8_t* fighter, const FighterState& s)
         return;
     const float hostHealth = Packed<float>(s, 0x130);
     const bool hostLiving = !Packed<uint8_t>(s, 0x12C) && hostHealth > 0.0f;
-    if (living && !a.leftLiving && !hostLiving)
-        a.reviveHold = g_ApplyFrame + 120;
+    float maxHealth = 0;
+    ReadFloat(fighter, 0x134, maxHealth);
+    // brought back by this game (a new round's full health), not a small remainder of its own (a hit's rounding)
+    if (living && !a.leftLiving && !hostLiving && maxHealth > 0 && health >= maxHealth * 0.5f)
+        a.reviveHold = g_ApplyFrame + 600;
     if (hostLiving)
         a.reviveHold = 0;
     if ((hostLiving != a.hostLiving || living != a.leftLiving) && g_LivingLogged < 80) {
@@ -718,17 +720,12 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
         SeqNameAtRaw(fighter, s.seq, hostName);
     a.hostPaired = Paired(hostName);
     a.livePaired = Paired(live.name);
-    if (a.livePaired)
-        a.livePairedAt = g_ApplyFrame + 1;
     if ((a.hostPaired || a.livePaired) && std::strcmp(hostName, live.name) != 0 && g_NamesLogged < 60) {
         ++g_NamesLogged;
         LOG_INFO("Online: P%d grab: the host's '%s', this game's '%s'", slot + 1, hostName, live.name);
     }
     const Applied& other = g_Applied[slot ^ 1];
     const bool staged = Staged(hostName) || Staged(live.name);
-    // A grab played here (this game's own fighter's, at once from its pad) is often over before the host's ends: it is
-    // not started again from the host's (it would play twice), nor its place taken, until the host's is over too.
-    const auto recent = [](const Applied& x) { return x.livePairedAt && g_ApplyFrame + 1 - x.livePairedAt < 150; };
     const bool hostPairedAny = a.hostPaired || other.hostPaired, livePairedAny = a.livePaired || other.livePaired;
     // A grab begun here (the guest's own pad, at once) comes on the host's a round trip later: it is waited for a
     // while (if the host's game has none, the grab missed there: the host's sequences come back).
@@ -739,7 +736,11 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
         a.waitFrom = 0;
     }
     const bool waiting = a.waitFrom && g_ApplyFrame + 1 - a.waitFrom < 45;
-    const bool held = (hostPairedAny && (recent(a) || recent(other))) || waiting;
+    // A grab on the host's game (a pair: the grabber's and the held one's sequences) is the host's alone: both fighters
+    // follow it here whole (this game's own fighter too, its place included), at the host's time in it, so that one
+    // missed here (the guest's own attempt, its target elsewhere) or over sooner shows as the host's.
+    const bool hostGrab = hostPairedAny;
+    const bool held = waiting && !hostGrab;
     if (staged || held) {
         ++(staged ? g_ApplyStaged : g_ApplyHeld);
         a.starts = s.starts;
@@ -748,8 +749,8 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
         return;
     }
     // Its place: the host's (the other player's fighter), or this PC's own fighter's own unless it is far off.
-    Into into = own ? Into::Own : Into::Remote;
-    if (own) {
+    Into into = own && !hostGrab ? Into::Own : Into::Remote;
+    if (own && !hostGrab) {
         float x = 0, z = 0;
         if (ReadFloat(fighter, 0x180, x) && ReadFloat(fighter, 0x188, z)) {
             const float dx = x - Packed<float>(s, 0x180), dz = z - Packed<float>(s, 0x188);
@@ -768,7 +769,9 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
     a.parted = live.index != s.seq ? a.parted + 1 : 0;
     // The other player's fighter plays here from the host's pad too: started again only where it went its own way.
     // This PC's own fighter plays at once from this PC's pad: only when it stays parted from the host's.
-    const bool start = own ? a.parted > 20 : ((started && a.parted) || a.parted > 6);
+    const bool start = hostGrab ? ((started && a.parted) || a.parted > 2)
+                       : own    ? a.parted > 20
+                                : ((started && a.parted) || a.parted > 6);
     if (!start || g_ApplyFrame < a.refusedUntil)
         return;
     const float at = float(s.ticks + leadTicks) / 60.0f; // the game's 60 ticks a second ([0x645EA0])
