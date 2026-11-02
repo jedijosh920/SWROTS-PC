@@ -554,6 +554,16 @@ A match between two PCs over the Internet (each player host once): movement smoo
   their main menu before the room. That is covered (`OnlineStatusInfo::entering`, a black screen with "Joining the
   room" in the menus' font) until the room has shown for a few frames; the host goes to the room after 20 frames
   (was 90).
+- **Still the black screen (second session)**: 0x27B270 is the round's end turning each living fighter (esi) toward
+  the other (edi), both looked up as living; the guard gave a place for a missing esi but the turn then called through
+  it (0x27B3E9). The guard now goes on to the next fighter (0x27B3FB) unless both are there. The guest's damage filter
+  also let no heal through (a new round's full health): only negative changes are taken out now.
+- **The match's end**: the game restarts with its own profile at its main menu; it is covered ("Leaving the room")
+  and taken on to the Online screen (with the game's popup when the other player left or the connection was lost)
+  as soon as the front end is up, after the restart (`OnlineReboot` while `leaving`), retried until it holds.
+- **The arena**: the room's Arena is Host Picks, Random, Loser Picks or Winner Picks (the last match's, from the
+  last round's living fighter on the host; the host picks the first). The picker (`OnlineRoomSettings::picker`, set
+  by the host on the arena screen, sent with the room; protocol 4) is the only pad the arena screen gets on both games.
 - **The host's gameplay settings**: a match plays with them in memory; `SaveSettings` during a match now writes the
   PC's own (`SetOwnGameplaySettings`), so a host's co-op setting can never stay on the guest's PC.
 
