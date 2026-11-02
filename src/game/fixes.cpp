@@ -153,6 +153,27 @@ void __declspec(naked) OutroPlaceGuard()
     }
 }
 
+// A character bound to a controller (0x150580, thiscall (controller, -1 none): +0x43C, then 0x8ADD0): the Versus round's
+// logic calls it on its living fighters (0x27AB30) without a check (0x27D10F, 0x27D25B, 0x27D2AB, ...). A null one
+// (an online guest's fighter not yet brought back for a new round) is left alone:
+//   mov edx, [esp+4] / mov [ecx+0x43C], edx   (10 bytes at 0x150580)
+constexpr uint32_t kBindControllerSite = 0x00150580;
+constexpr uint32_t kBindControllerContinue = 0x0015058A;
+
+void __declspec(naked) BindControllerGuard()
+{
+    __asm {
+        test ecx, ecx
+        jz none
+        mov edx, [esp+4]
+        mov [ecx+0x43C], edx
+        push kBindControllerContinue
+        ret
+    none:
+        ret 4
+    }
+}
+
 // A character answers whether it goes by a name (vfunc +0x460, 0x14FE90, shared by 42 classes) by comparing it with
 // the two names of its class's script (`[[character+0x434]+4]` +0x5C and +0x60) through 0x2233F0, which does not
 // take a null string. Palpatine's class has no second name, so asking a Palpatine (as the game's logic does about
@@ -209,6 +230,13 @@ void InstallGameFixes()
         PatchJump(kBindingCountSite, reinterpret_cast<const void*>(uintptr_t(kBindingRebuild)));
     else
         LOG_WARN("Game fix: animation binding count site does not match; not patched");
+    const uint8_t bindBytes[10] = { 0x8B, 0x54, 0x24, 0x04, 0x89, 0x91, 0x3C, 0x04, 0x00, 0x00 };
+    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kBindControllerSite)), bindBytes, sizeof(bindBytes)) == 0) {
+        PatchJump(kBindControllerSite, reinterpret_cast<const void*>(&BindControllerGuard));
+        PatchNop(kBindControllerSite + 5, sizeof(bindBytes) - 5);
+    } else {
+        LOG_WARN("Game fix: controller binding site does not match; not patched");
+    }
     uint8_t outroBytes[7] = { 0x8B, 0xCE, 0xE8 };
     const int32_t place = int32_t(kFighterPlace) - int32_t(kOutroPlaceSite + 7);
     std::memcpy(outroBytes + 3, &place, 4);

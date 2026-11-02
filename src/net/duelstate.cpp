@@ -604,6 +604,11 @@ bool Paired(const char* name)
 struct Applied {
     uint8_t* fighter = nullptr;
     bool hostPaired = false, livePaired = false; // the host's and this game's sequences are a grab's
+    uint32_t livePairedAt = 0;   // the frame this game's sequence was last a grab's (+1; 0 never)
+    bool leftLiving = true;      // the fighter was living after the last health written
+    uint32_t reviveHold = 0;     // this game brought it back (a new round) before the host's state did: until then
+    bool hostLiving = true;
+    uint32_t waitFrom = 0;       // the frame a grab began here with none yet on the host's (+1; 0 none)
     uint32_t starts = 0;     // the host's start count last seen
     uint32_t parted = 0;     // frames this game's sequence has differed from the host's
     uint32_t refusedUntil = 0;
@@ -611,7 +616,7 @@ struct Applied {
 Applied g_Applied[2];
 uint32_t g_ApplyFrame = 0;
 uint32_t g_ApplyStarts = 0, g_ApplyRefused = 0, g_ApplyPlaced = 0, g_ApplyStaged = 0, g_ApplyHeld = 0;
-uint32_t g_NamesLogged = 0;
+uint32_t g_NamesLogged = 0, g_LivingLogged = 0;
 constexpr float kOwnPlaceError = 120.0f; // this PC's own fighter is put at the host's place beyond that (game units)
 
 } // namespace
@@ -630,6 +635,68 @@ bool CaptureFighter(const uint8_t* fighter, FighterState& out)
     out.valid = 1;
     return true;
 }
+
+namespace {
+
+bool LivingRaw(const uint8_t* fighter, bool& living, float& health)
+{
+    __try {
+        health = *reinterpret_cast<const float*>(fighter + 0x130);
+        living = !fighter[0x12C] && health > 0.0f;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool WriteLivingRaw(uint8_t* fighter, float health, bool revive)
+{
+    __try {
+        *reinterpret_cast<float*>(fighter + 0x130) = health;
+        if (revive)
+            fighter[0x12C] = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// The host's health, exactly (the game's own change scales a loss by the character's defence: [[+0x434]+0x1C]+0x8C),
+// through the game's change first (a hit's effects). Its round's end on this game comes from it: a fighter at no
+// health is the game's to make dead; one the host brings back (a new round: not dead, health) is brought back here.
+// The game's Versus logic takes both fighters as living at a new round's start (0x27AB30, unchecked), so one this
+// game brought back itself before the host's state did is not put down again meanwhile.
+void ApplyHealth(int slot, Applied& a, uint8_t* fighter, const FighterState& s)
+{
+    bool living = true;
+    float health = 0;
+    if (!LivingRaw(fighter, living, health))
+        return;
+    const float hostHealth = Packed<float>(s, 0x130);
+    const bool hostLiving = !Packed<uint8_t>(s, 0x12C) && hostHealth > 0.0f;
+    if (living && !a.leftLiving && !hostLiving)
+        a.reviveHold = g_ApplyFrame + 120;
+    if (hostLiving)
+        a.reviveHold = 0;
+    if ((hostLiving != a.hostLiving || living != a.leftLiving) && g_LivingLogged < 80) {
+        ++g_LivingLogged;
+        LOG_INFO("Online: P%d living: the host's %s (health %.1f), this game's %s (health %.1f, dead %d)%s", slot + 1,
+            hostLiving ? "yes" : "no", hostHealth, living ? "yes" : "no", health, fighter[0x12C],
+            g_ApplyFrame < a.reviveHold ? ", brought back here first" : "");
+    }
+    a.hostLiving = hostLiving;
+    if (g_ApplyFrame < a.reviveHold) {
+        a.leftLiving = living;
+        return;
+    }
+    const float change = hostHealth - health;
+    if (change > 0.5f || change < -0.5f)
+        game::ChangeHealthDirect(fighter, change);
+    WriteLivingRaw(fighter, hostHealth, hostLiving && !living);
+    LivingRaw(fighter, a.leftLiving, health);
+}
+
+} // namespace
 
 void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t leadTicks, bool own)
 {
@@ -651,23 +718,33 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
         SeqNameAtRaw(fighter, s.seq, hostName);
     a.hostPaired = Paired(hostName);
     a.livePaired = Paired(live.name);
+    if (a.livePaired)
+        a.livePairedAt = g_ApplyFrame + 1;
     if ((a.hostPaired || a.livePaired) && std::strcmp(hostName, live.name) != 0 && g_NamesLogged < 60) {
         ++g_NamesLogged;
         LOG_INFO("Online: P%d grab: the host's '%s', this game's '%s'", slot + 1, hostName, live.name);
     }
     const Applied& other = g_Applied[slot ^ 1];
     const bool staged = Staged(hostName) || Staged(live.name);
-    const bool held = (a.hostPaired || other.hostPaired) && (a.livePaired || other.livePaired);
+    // A grab played here (this game's own fighter's, at once from its pad) is often over before the host's ends: it is
+    // not started again from the host's (it would play twice), nor its place taken, until the host's is over too.
+    const auto recent = [](const Applied& x) { return x.livePairedAt && g_ApplyFrame + 1 - x.livePairedAt < 150; };
+    const bool hostPairedAny = a.hostPaired || other.hostPaired, livePairedAny = a.livePaired || other.livePaired;
+    // A grab begun here (the guest's own pad, at once) comes on the host's a round trip later: it is waited for a
+    // while (if the host's game has none, the grab missed there: the host's sequences come back).
+    if (livePairedAny && !hostPairedAny) {
+        if (!a.waitFrom)
+            a.waitFrom = g_ApplyFrame + 1;
+    } else {
+        a.waitFrom = 0;
+    }
+    const bool waiting = a.waitFrom && g_ApplyFrame + 1 - a.waitFrom < 45;
+    const bool held = (hostPairedAny && (recent(a) || recent(other))) || waiting;
     if (staged || held) {
         ++(staged ? g_ApplyStaged : g_ApplyHeld);
         a.starts = s.starts;
         a.parted = 0;
-        float health = 0; // its damage still comes from the host
-        if (ReadFloat(fighter, 0x130, health)) {
-            const float change = Packed<float>(s, 0x130) - health;
-            if (change > 0.5f || change < -0.5f)
-                game::ChangeHealthDirect(fighter, change);
-        }
+        ApplyHealth(slot, a, fighter, s); // its damage still comes from the host
         return;
     }
     // Its place: the host's (the other player's fighter), or this PC's own fighter's own unless it is far off.
@@ -683,13 +760,7 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
         }
     }
     CopyFields(fighter, s.fields, into);
-    // Health: the host's changes, made by the game's own health change (its hits, its death, the round's end).
-    float health = 0;
-    if (ReadFloat(fighter, 0x130, health)) {
-        const float change = Packed<float>(s, 0x130) - health;
-        if (change > 0.5f || change < -0.5f)
-            game::ChangeHealthDirect(fighter, change);
-    }
+    ApplyHealth(slot, a, fighter, s); // the host's (its hits, its death, the round's end)
     if (s.seq < 0)
         return;
     const bool started = s.starts != a.starts; // the host started a sequence since

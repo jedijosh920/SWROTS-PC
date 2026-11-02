@@ -1169,6 +1169,18 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             const bool live1 = Living(p1), live2 = Living(p2);
             if (live1 != live2)
                 g_S.roundWinner = live1 ? 0 : 1;
+            static bool was[2] = { true, true };
+            static uint32_t logged = 0;
+            const bool now[2] = { live1, live2 };
+            for (int i = 0; i < 2; ++i)
+                if (now[i] != was[i] && logged < 80) {
+                    ++logged;
+                    uint8_t* f = i ? p2 : p1;
+                    LOG_INFO("Online: P%d living: %s (health %.1f, dead %d), frame %u", i + 1, now[i] ? "yes" : "no",
+                        *reinterpret_cast<const float*>(f + 0x130), f[0x12C], g_S.frame);
+                }
+            was[0] = live1;
+            was[1] = live2;
         }
         if (screen != g_S.screen) {
             LOG_INFO("Online: screen 0x%08X (was 0x%08X)", screen, g_S.screen);

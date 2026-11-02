@@ -1058,6 +1058,12 @@ void Online(const std::vector<std::string>& words)
         room.arena = uint8_t(std::clamp(std::atoi(words[3].c_str()), 0, 3));
         room.rematch = uint8_t(std::atoi(words[4].c_str()) ? 1 : 0);
         net::SetOnlineRoom(room);
+    } else if (_stricmp(what.c_str(), "hurt") == 0 && words.size() >= 4) { // online hurt <player 1|2> <health> (tests)
+        uint8_t* fighter = game::GamePlayerSlot(std::atoi(words[2].c_str()) == 2 ? 1 : 0);
+        if (fighter)
+            reinterpret_cast<void(__fastcall*)(uint8_t*, void*, float, uint32_t, uint32_t)>(uintptr_t(0x00151500))(
+                fighter, nullptr, -float(std::atof(words[3].c_str())), 0, 0);
+        Print(LineKind::Output, fighter ? "  hurt" : "  no such fighter");
     } else if (_stricmp(what.c_str(), "start") == 0) { // the room's Start (tests)
         Print(LineKind::Output, game::OnlineStartVersus() ? "  to the Versus select" : "  not in the front end");
         return;
