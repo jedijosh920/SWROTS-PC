@@ -33,8 +33,9 @@ enum class OnlinePhase {
 struct OnlineRoomSettings {
     uint8_t mode = 0;     // 0 Versus (the only one for now)
     uint8_t rounds = 3;   // rounds to win: 1, 2, 3 or 5
-    uint8_t arena = 0;    // 0 chosen on the arena screen, 1 random
+    uint8_t arena = 0;    // the arena: 0 the host picks, 1 random, 2 the last match's loser picks, 3 its winner
     uint8_t rematch = 0;  // after a match: 0 back to the room, 1 the fighters' select again
+    uint8_t picker = 0;   // who picks on the arena screen now (the host sets it): 0 the host, 1 the guest
 };
 #pragma pack(pop)
 
@@ -54,6 +55,7 @@ struct OnlineStatusInfo {
     bool lost = false;      // it ended without this player leaving (the connection, the other player)
     OnlineRoomSettings room;
     bool entering = false;  // the match's start until its room shows (the game's restart, its main menu: covered)
+    bool leaving = false;   // the match's end until the Online screen shows (the same)
 };
 
 // The player's name online, and its change (Online Settings: [Online] Name in settings.ini).

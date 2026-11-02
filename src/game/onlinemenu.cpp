@@ -305,7 +305,8 @@ void UpdateTexts()
     // the room
     SetMenuText(ValueId(kMode).c_str(), L"VERSUS");
     SetMenuText(ValueId(kRounds).c_str(), Wide(std::to_string(s.room.rounds)));
-    SetMenuText(ValueId(kArena).c_str(), s.room.arena == 1 ? L"RANDOM" : L"CHOOSE");
+    static const wchar_t* const kArenaTexts[] = { L"HOST PICKS", L"RANDOM", L"LOSER PICKS", L"WINNER PICKS" };
+    SetMenuText(ValueId(kArena).c_str(), kArenaTexts[s.room.arena < std::size(kArenaTexts) ? s.room.arena : 0]);
     SetMenuText(ValueId(kRematch).c_str(), s.room.rematch ? L"ON" : L"OFF");
     const std::string me = Shorten(s.localName.empty() ? net::OnlinePlayerName() : s.localName, 15);
     const std::string other = Shorten(s.remoteName, 15);
@@ -594,7 +595,7 @@ char __fastcall ValueEvent(uint8_t* handler, void*, int event, int value)
         at = (at + step + int(std::size(kRoundChoices))) % int(std::size(kRoundChoices));
         room.rounds = kRoundChoices[at];
     } else if (row == kArena) {
-        room.arena = room.arena ? 0 : 1;
+        room.arena = uint8_t((room.arena + step + 4) % 4); // the host, random, the loser, the winner
     } else if (row == kRematch) {
         room.rematch = room.rematch ? 0 : 1;
     } else {
@@ -991,13 +992,13 @@ bool OnlineRefusesMainMenuEvent(uint8_t*, int)
     return false; // the main menu stays whole (online play has its own screens)
 }
 
-void OnlineShowLost(const std::string& why)
+bool OnlineShowLost(const std::string& why)
 {
     const bool left = why.find("left") != std::string::npos;
     SetMenuText("IDS_PORT_LOST_TEXT", left ? L"The other player left the room." :
         L"The connection to the other player was lost.");
     g_LostPopup = true;
-    GoToShellScreen(kScreenNames[kOnline]);
+    return GoToShellScreen(kScreenNames[kOnline]);
 }
 
 bool OnlineStartVersus()

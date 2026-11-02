@@ -40,7 +40,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr uint32_t kMagic = 0x4E525753; // 'SWRN'
-constexpr uint16_t kProtocol = 3; // 2: the players' names; 3: client/server matches
+constexpr uint16_t kProtocol = 4; // 2: the players' names; 3: client/server matches; 4: the arena's picker
 constexpr uint16_t kDefaultPort = 27960;
 constexpr uint32_t kHistory = 512;      // frames of inputs kept (a power of two)
 constexpr uint32_t kMaxSend = 48;       // inputs in one packet at most
@@ -495,6 +495,8 @@ struct Session {
     input::GamePad ownPad = {};
     uint32_t ownPacket = 0;
     bool inLevel = false;               // the match's level is up (no pause there: NoPause)
+    int roundWinner = -1;               // the host: the last round's winner (0 player 1, 1 player 2), -1 none yet
+    int matchWinner = -1;               // the host: the last match's (its last round's), for the arena's picker
     bool entering = false;              // from the match's start to its room: the game's restart covered (the HUD)
     uint32_t roomSince = 0;             // the frame the room's screen came (the cover lifted a little after)
     input::GamePad hostLive = {};       // the host's own pad in the level, as its game gets it
@@ -506,6 +508,10 @@ struct Session {
     bool toRoom = false;                // to the room's screen once the front end is up
     uint32_t toRoomAt = 0;              // the frame it was asked
     bool lostPopup = false;             // after the session's end: the game's popup at the Online screen
+    // After a match's end: the game restarts (its own profile) at its main menu and goes on to the Online screen,
+    // covered until it is there (the HUD).
+    bool leaving = false, leaveBooted = false, leaveSent = false;
+    Clock::time_point leaveTried = {}, leaveSeen = {};
     Clock::time_point endedAt = {};
     uint32_t followTried = 0;
     std::string ownMenuArgs;            // this PC's own start at its main menu (its profile), for the session's end
@@ -680,6 +686,9 @@ void EndLocked(const std::string& why, bool tellOther)
     g_S.lost = !tellOther;
     g_S.lostPopup = !tellOther && matchOn;
     g_S.endedAt = Clock::now();
+    g_S.leaving = matchOn;
+    g_S.leaveBooted = g_S.leaveSent = false;
+    g_S.leaveTried = g_S.leaveSeen = {};
     g_S.armed = false;
     g_S.bootPending = false;
     RestoreLocked();
@@ -870,6 +879,16 @@ bool PadFromSession(int port, input::GamePad& pad, uint32_t& packet)
 // devices and player 2 nothing (the guest's pad does not move the host's menus).
 constexpr uint32_t kVersusSelectKey = 0x8DC51DC9u; // the fighters' select as the Versus row opens it
 
+// A duel's fighter still in the round (not dead, health above 0).
+bool Living(const uint8_t* fighter)
+{
+    __try {
+        return !fighter[0x12C] && *reinterpret_cast<const float*>(fighter + 0x130) > 0.0f;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return true;
+    }
+}
+
 bool IsSelectScreen(uint32_t screen)
 {
     return screen == kVersusSelectKey || screen == game::MenuKey("select_jedi");
@@ -908,6 +927,11 @@ bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
     if (g_S.host) {
         if (port == 0) {
             const bool arena = g_S.frame >= g_S.arenaAt && g_S.frame < g_S.arenaAt + 6;
+            if (!arena && g_S.screen == game::MenuKey("select_arena") && g_S.room.picker == 1) {
+                pad = {}; // the guest picks the arena
+                packet = g_S.ownPacket;
+                return true;
+            }
             if (!arena && !g_S.inLevel)
                 return false; // this PC's own devices
             input::ReadLivePad(0, pad);
@@ -927,6 +951,8 @@ bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
         if (port == 1) { // the guest's pad, always there (the menus only listen to a pad they have seen all along);
             pad = both ? g_S.remotePad : input::GamePad{}; // its buttons only where both play (its join: a Start of
             NoPauseLocked(pad);                              // the guest's own)
+            if (g_S.screen == game::MenuKey("select_arena") && g_S.room.picker != 1)
+                pad = {}; // the arena: the host's to pick
             packet = g_S.remotePacket;
             ++g_S.remoteReads;
             return true;
@@ -934,9 +960,11 @@ bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
     } else if (both) {
         if (port == 0) {
             pad = g_S.remotePad;
-            if (g_S.screen == game::MenuKey("select_arena")) { // the arena is the host's to take (its game starts
-                pad.analog[0] = 0;                              // the duel; this one follows that)
-                pad.buttons &= ~0x0010;
+            if (g_S.screen == game::MenuKey("select_arena")) { // the arena is the host's game's to take (it starts
+                if (g_S.room.picker == 1)                       // the duel; this one follows that): here only its
+                    pad = {};                                   // cursor, moved by the one who picks
+                pad.analog[0] = pad.analog[1] = 0;
+                pad.buttons &= ~(0x0010 | 0x0020);
             }
             NoPauseLocked(pad);
             packet = g_S.remotePacket;
@@ -946,6 +974,12 @@ bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
             input::ReadLivePad(0, pad);
             InjectLocked(1, pad);
             NoPauseLocked(pad);
+            if (g_S.screen == game::MenuKey("select_arena")) { // the guest's own pad: the cursor when it picks
+                if (g_S.room.picker != 1)
+                    pad = {};
+                pad.analog[0] = pad.analog[1] = 0;
+                pad.buttons &= ~(0x0010 | 0x0020);
+            }
             if (std::memcmp(&pad, &g_S.ownPad, sizeof(pad)) != 0) {
                 g_S.ownPad = pad;
                 ++g_S.ownPacket;
@@ -975,7 +1009,9 @@ bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
 std::atomic<uint8_t*> g_GuestFighters[2] = {};
 float GuestDamage(uint8_t* character, float change)
 {
-    return character && (character == g_GuestFighters[0] || character == g_GuestFighters[1]) ? 0.0f : change;
+    // its damage only: the game's own heals (a new round's full health) go through
+    return change < 0.0f && character && (character == g_GuestFighters[0] || character == g_GuestFighters[1]) ? 0.0f
+                                                                                                             : change;
 }
 
 bool GuestFatalHit(uint8_t* character)
@@ -1000,6 +1036,11 @@ void LaunchObserved(std::string& arguments)
                 "v_roundcount:" + std::to_string(g_S.room.rounds));
         }
         // back to the menus after a match: to the room, unless it plays again at once
+        if (arguments.find("v_roundsp1:") != std::string::npos && g_S.roundWinner >= 0) {
+            g_S.matchWinner = g_S.roundWinner; // the match's last round
+            g_S.roundWinner = -1;
+            LOG_INFO("Online: the match won by player %d", g_S.matchWinner + 1);
+        }
         if (arguments.find("v_roundsp1:") != std::string::npos && !g_S.room.rematch) {
             g_S.toRoom = true;
             g_S.toRoomAt = g_S.frame;
@@ -1124,6 +1165,11 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         const bool level = DuelFighters(p1, p2) || game::PlayerObject();
         const uint32_t screen = level ? 0 : game::LastShellScreen();
         g_S.inLevel = level;
+        if (g_S.host && p1 && p2) { // a round's winner: the one living when the other is not
+            const bool live1 = Living(p1), live2 = Living(p2);
+            if (live1 != live2)
+                g_S.roundWinner = live1 ? 0 : 1;
+        }
         if (screen != g_S.screen) {
             LOG_INFO("Online: screen 0x%08X (was 0x%08X)", screen, g_S.screen);
             g_S.screen = screen;
@@ -1132,6 +1178,11 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
                 g_S.joinAt = g_S.frame + 75; // player 2 joins (as its Start would), once the screen is in
             if (screen == game::MenuKey("select_arena") && g_S.host && g_S.room.arena == 1)
                 g_S.arenaAt = g_S.frame + 75; // the arena: a random open row, taken once the screen is in
+            if (screen == game::MenuKey("select_arena") && g_S.host) { // who picks it (the guest learns it with the room)
+                const int w = g_S.matchWinner;
+                g_S.room.picker = uint8_t(g_S.room.arena == 2 && w >= 0 ? 1 - w : g_S.room.arena == 3 && w >= 0 ? w : 0);
+                LOG_INFO("Online: the arena is the %s's to pick", g_S.room.picker ? "guest" : "host");
+            }
         }
     }
     const uint32_t screen = g_S.screen, since = g_S.frame - g_S.screenSince;
@@ -1805,6 +1856,7 @@ void ResetSessionLocked(bool host)
     g_S.guestInDuel = false;
     g_S.ownPad = g_S.hostLive = {};
     g_S.inLevel = g_S.entering = false;
+    g_S.roundWinner = g_S.matchWinner = -1;
     g_S.roomSince = 0;
     g_S.ownPacket = g_S.remoteReads = g_S.remoteChanges = 0;
     g_S.remoteInDuel = g_S.duelStartWaited = false;
@@ -1942,6 +1994,7 @@ OnlineStatusInfo OnlineStatus()
     i.lost = g_S.lost;
     i.room = g_S.room;
     i.entering = g_S.entering && (g_S.phase == OnlinePhase::Starting || g_S.phase == OnlinePhase::Playing);
+    i.leaving = g_S.leaving && g_S.phase == OnlinePhase::Ended;
     return i;
 }
 
@@ -1987,6 +2040,8 @@ void OnlineReboot()
 {
     std::lock_guard<std::mutex> lock(g_S.lock);
     g_S.followStarted = false; // the host's launch is in
+    if (g_S.leaving)
+        g_S.leaveBooted = true; // the restart after the match's end: its main menu comes next
     if (!g_S.bootPending)
         return; // a level change in a match: the frames go on
     g_S.bootPending = false;
@@ -2008,12 +2063,36 @@ void OnlineReboot()
 void OnlineFrame()
 {
     std::unique_lock<std::mutex> lock(g_S.lock);
-    if (g_S.lostPopup && g_S.phase == OnlinePhase::Ended && Clock::now() - g_S.endedAt > std::chrono::seconds(4)) {
-        g_S.lostPopup = false; // the game is back at its main menu: the Online screen, the game's popup over it
-        const std::string why = g_S.message;
-        lock.unlock();
-        game::OnlineShowLost(why);
-        return;
+    if (g_S.leaving) { // the game back at its main menu after the match: on to the Online screen (the popup over it)
+        const auto now = Clock::now();
+        if (g_S.phase != OnlinePhase::Ended || now - g_S.endedAt > std::chrono::seconds(15)) {
+            g_S.leaving = false;
+        } else if (g_S.leaveBooted && now - g_S.leaveTried > std::chrono::milliseconds(400)) {
+            uint8_t* f1 = nullptr;
+            uint8_t* f2 = nullptr;
+            const bool inShell = !DuelFighters(f1, f2) && !game::PlayerObject();
+            if (inShell && g_S.leaveSent && game::LastShellScreen() == game::MenuKey("online")) {
+                if (g_S.leaveSeen == Clock::time_point{})
+                    g_S.leaveSeen = now;
+                else if (now - g_S.leaveSeen > std::chrono::milliseconds(300)) {
+                    g_S.leaving = false;
+                    LOG_INFO("Online: back at the Online screen");
+                }
+            } else if (g_S.leaveSent && now - g_S.leaveTried > std::chrono::seconds(3)) {
+                g_S.leaveSent = false; // the move did not hold (the front end was still coming up): again
+            } else if (inShell && !g_S.leaveSent) {
+                g_S.leaveTried = now;
+                const bool popup = g_S.lostPopup;
+                const std::string why = g_S.message;
+                g_S.lostPopup = false;
+                lock.unlock();
+                const bool ok = popup ? game::OnlineShowLost(why) : game::GoToShellScreen("online");
+                lock.lock();
+                if (ok)
+                    g_S.leaveSent = true;
+                return;
+            }
+        }
     }
     if (g_S.packageWanted && g_S.host) { // the host's profile, saved by the game's code
         g_S.packageWanted = false;

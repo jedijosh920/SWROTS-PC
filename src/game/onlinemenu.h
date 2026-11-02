@@ -23,6 +23,6 @@ bool OnlineGoToScreen(uint32_t key);
 // The room's Start: the Versus fighters' select (tests: the console's online start).
 bool OnlineStartVersus();
 // The session ended without this player leaving (`why`): the Online screen with the game's popup saying so.
-void OnlineShowLost(const std::string& why);
+bool OnlineShowLost(const std::string& why);
 
 } // namespace swrots::game

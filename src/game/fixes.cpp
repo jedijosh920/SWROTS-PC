@@ -123,29 +123,32 @@ void __declspec(naked) EmptySequenceGuard()
     }
 }
 
-// The Versus outro (0x27B270) takes the place of the fighter it ends on, looked up as a living one (not dead, health
-// above 0) and asked for its place (0xF2280) without a check: with none living (an online guest whose game had the
-// round end otherwise than the host's) it read a null fighter's place and crashed (0x27B316). The call
+// The Versus round's end (0x27B270, from 0x27D22A) turns each living fighter (not dead, health above 0) to face the
+// other living one: for each of the two, esi the fighter, edi the other (either null when not living), their places
+// (0xF2280) and a turn (vfunc +0x1F4 of esi), without a check. With one not living (an online guest's game, whose
+// fighters' health is the host's) it read a null fighter's place (0x27B316) or called through a null one (0x27B3E9).
+// The first place's call
 //   mov ecx, esi / call 0xF2280   (7 bytes at 0x27B30F)
-// goes to a guard that gives a place at the origin for no fighter.
+// goes to a guard that goes on to the next fighter (0x27B3FB) unless both are there.
 constexpr uint32_t kOutroPlaceSite = 0x0027B30F;
 constexpr uint32_t kOutroPlaceContinue = 0x0027B316;
+constexpr uint32_t kOutroNextFighter = 0x0027B3FB;
 constexpr uint32_t kFighterPlace = 0x000F2280;
-float g_NoPlace[4] = {};
 
 void __declspec(naked) OutroPlaceGuard()
 {
     __asm {
+        test esi, esi
+        jz skip
+        test edi, edi
+        jz skip
         mov ecx, esi
-        test ecx, ecx
-        jz none
         mov eax, kFighterPlace
         call eax
         push kOutroPlaceContinue
         ret
-    none:
-        mov eax, offset g_NoPlace
-        push kOutroPlaceContinue
+    skip:
+        push kOutroNextFighter
         ret
     }
 }
