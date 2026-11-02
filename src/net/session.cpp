@@ -494,6 +494,8 @@ struct Session {
     bool guestInDuel = false;           // this game is in a duel (both players play it: BothPlayLocked)
     input::GamePad ownPad = {};
     uint32_t ownPacket = 0;
+    bool inLevel = false;               // the match's level is up (no pause there: NoPause)
+    input::GamePad hostLive = {};       // the host's own pad in the level, as its game gets it
     uint32_t remoteReads = 0, remoteChanges = 0;
     bool remoteInDuel = false, duelStartWaited = false;
     OnlineRoomSettings room;            // the host's (the guest: as it last came)
@@ -886,6 +888,14 @@ void InjectLocked(int port, input::GamePad& pad)
         pad.analog[0] = 0xFF;  // A
 }
 
+// No pause in an online match's level: the other game plays on (Start and Back are the game's pause).
+constexpr uint16_t kPauseButtons = 0x0010 | 0x0020;
+void NoPauseLocked(input::GamePad& pad)
+{
+    if (g_S.inLevel)
+        pad.buttons &= ~kPauseButtons;
+}
+
 bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
 {
     std::lock_guard<std::mutex> lock(g_S.lock);
@@ -894,16 +904,27 @@ bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
     const bool both = BothPlayLocked();
     if (g_S.host) {
         if (port == 0) {
-            if (g_S.frame < g_S.arenaAt || g_S.frame >= g_S.arenaAt + 6)
+            const bool arena = g_S.frame >= g_S.arenaAt && g_S.frame < g_S.arenaAt + 6;
+            if (!arena && !g_S.inLevel)
                 return false; // this PC's own devices
             input::ReadLivePad(0, pad);
-            InjectLocked(0, pad);
-            packet = ++g_S.ownPacket;
+            if (arena) {
+                InjectLocked(0, pad);
+                packet = ++g_S.ownPacket;
+                return true;
+            }
+            NoPauseLocked(pad);
+            if (std::memcmp(&pad, &g_S.hostLive, sizeof(pad)) != 0) {
+                g_S.hostLive = pad;
+                ++g_S.ownPacket;
+            }
+            packet = g_S.ownPacket;
             return true;
         }
         if (port == 1) { // the guest's pad, always there (the menus only listen to a pad they have seen all along);
             pad = both ? g_S.remotePad : input::GamePad{}; // its buttons only where both play (its join: a Start of
-            packet = g_S.remotePacket;                       // the guest's own)
+            NoPauseLocked(pad);                              // the guest's own)
+            packet = g_S.remotePacket;
             ++g_S.remoteReads;
             return true;
         }
@@ -914,12 +935,14 @@ bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
                 pad.analog[0] = 0;                              // the duel; this one follows that)
                 pad.buttons &= ~0x0010;
             }
+            NoPauseLocked(pad);
             packet = g_S.remotePacket;
             return true;
         }
         if (port == 1) {
             input::ReadLivePad(0, pad);
             InjectLocked(1, pad);
+            NoPauseLocked(pad);
             if (std::memcmp(&pad, &g_S.ownPad, sizeof(pad)) != 0) {
                 g_S.ownPad = pad;
                 ++g_S.ownPacket;
@@ -1081,6 +1104,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     pm.h = MakeHeader(Msg::Pad, g_S.token);
     pm.seq = ++g_S.padSeqOut;
     input::ReadLivePad(0, pm.pad);
+    NoPauseLocked(pm.pad);
     if (!g_S.host && g_S.frame >= g_S.joinAt && g_S.frame < g_S.joinAt + 9) {
         pm.pad.buttons |= 0x0010; // player 2's join on the Versus select: a Start of the guest's, for both games
         if (g_S.frame == g_S.joinAt)
@@ -1096,6 +1120,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         uint8_t* p2 = nullptr;
         const bool level = DuelFighters(p1, p2) || game::PlayerObject();
         const uint32_t screen = level ? 0 : game::LastShellScreen();
+        g_S.inLevel = level;
         if (screen != g_S.screen) {
             LOG_INFO("Online: screen 0x%08X (was 0x%08X)", screen, g_S.screen);
             g_S.screen = screen;
@@ -1763,7 +1788,8 @@ void ResetSessionLocked(bool host)
     g_S.stateSeqOut = g_S.stateSeqIn = g_S.statesIn = 0;
     g_S.haveState = false;
     g_S.guestInDuel = false;
-    g_S.ownPad = {};
+    g_S.ownPad = g_S.hostLive = {};
+    g_S.inLevel = false;
     g_S.ownPacket = g_S.remoteReads = g_S.remoteChanges = 0;
     g_S.remoteInDuel = g_S.duelStartWaited = false;
     g_S.remoteScreen = g_S.screen = g_S.screenSince = g_S.followTried = 0;

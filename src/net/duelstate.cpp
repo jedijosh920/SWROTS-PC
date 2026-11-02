@@ -143,6 +143,30 @@ void ReadSeq(const uint8_t* character, SeqInfo& out)
         out = SeqInfo();
 }
 
+// The name of the sequence of this index of the character's class (empty when there is none).
+bool SeqNameAtRaw(const uint8_t* character, int32_t index, char (&out)[kSeqNameBytes])
+{
+    out[0] = 0;
+    __try {
+        const uint8_t* state = *reinterpret_cast<uint8_t* const*>(character + kCharState);
+        if (!state || *reinterpret_cast<const uint32_t*>(state) != kCharStateVtable)
+            return false;
+        const uint8_t* info = *reinterpret_cast<uint8_t* const*>(state + 4);
+        if (index < 0 || index >= *reinterpret_cast<const int*>(info + 8))
+            return false;
+        const uint8_t* record = (*reinterpret_cast<uint8_t* const* const*>(info + 0xC))[index];
+        const char* name = record ? *reinterpret_cast<const char* const*>(record + 0xC) : nullptr;
+        uint32_t i = 0;
+        for (; name && i + 1 < kSeqNameBytes && name[i]; ++i)
+            out[i] = name[i];
+        out[i] = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out[0] = 0;
+        return false;
+    }
+}
+
 // Starts the sequence of this index of the character's class (as the duel's intro starts one: 0x150E30, thiscall
 // (record, start time, 0, 0, speed)); false when it refuses.
 bool StartSeqRaw(uint8_t* character, int32_t index, float atSeconds = 0.0f)
@@ -544,15 +568,50 @@ bool ReadFloat(const uint8_t* object, uint32_t offset, float& out)
     }
 }
 
+// Sequences each game plays on its own, which corrections only spoil: a fighter's intro and outro (the duel's own
+// staging, started on each game by its duel), and a grab (a pair of sequences, one per fighter, the held one's place
+// set by the other's: once both games have it playing, the place of either is left to the game).
+bool HasWord(const char* name, const char* word)
+{
+    return name && word && std::strstr(name, word) != nullptr;
+}
+
+bool Staged(const char* name)
+{
+    return HasWord(name, "Intro") || HasWord(name, "Outro");
+}
+
+// A sequence of a pair: its name says a grab, a choke, a saber lock, a finishing move, or ends with the pair's side
+// (_GB, _GR, HumanGB, GrvGR, ..., before an _NoKill or a _Part2).
+bool Paired(const char* name)
+{
+    if (!name || !*name)
+        return false;
+    if (HasWord(name, "Grab") || HasWord(name, "Grapple") || HasWord(name, "Choke") || HasWord(name, "SaberLock") ||
+        HasWord(name, "Saberlock") || HasWord(name, "_Kill_") || HasWord(name, "Riding"))
+        return true;
+    size_t n = std::strlen(name);
+    for (const char* tail : { "_NoKill_Part2", "_NoKill", "_Part2" }) {
+        const size_t t = std::strlen(tail);
+        if (n > t && std::strcmp(name + n - t, tail) == 0) {
+            n -= t;
+            break;
+        }
+    }
+    return n >= 2 && name[n - 2] == 'G' && (name[n - 1] == 'B' || name[n - 1] == 'R');
+}
+
 struct Applied {
     uint8_t* fighter = nullptr;
+    bool hostPaired = false, livePaired = false; // the host's and this game's sequences are a grab's
     uint32_t starts = 0;     // the host's start count last seen
     uint32_t parted = 0;     // frames this game's sequence has differed from the host's
     uint32_t refusedUntil = 0;
 };
 Applied g_Applied[2];
 uint32_t g_ApplyFrame = 0;
-uint32_t g_ApplyStarts = 0, g_ApplyRefused = 0, g_ApplyPlaced = 0;
+uint32_t g_ApplyStarts = 0, g_ApplyRefused = 0, g_ApplyPlaced = 0, g_ApplyStaged = 0, g_ApplyHeld = 0;
+uint32_t g_NamesLogged = 0;
 constexpr float kOwnPlaceError = 120.0f; // this PC's own fighter is put at the host's place beyond that (game units)
 
 } // namespace
@@ -584,6 +643,33 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
         a.fighter = fighter;
         a.starts = s.starts;
     }
+    // The sequences of the host's fighter and this game's: their staging and grabs are left to this game.
+    char hostName[kSeqNameBytes] = {};
+    SeqInfo live;
+    ReadSeq(fighter, live);
+    if (s.seq >= 0)
+        SeqNameAtRaw(fighter, s.seq, hostName);
+    a.hostPaired = Paired(hostName);
+    a.livePaired = Paired(live.name);
+    if ((a.hostPaired || a.livePaired) && std::strcmp(hostName, live.name) != 0 && g_NamesLogged < 60) {
+        ++g_NamesLogged;
+        LOG_INFO("Online: P%d grab: the host's '%s', this game's '%s'", slot + 1, hostName, live.name);
+    }
+    const Applied& other = g_Applied[slot ^ 1];
+    const bool staged = Staged(hostName) || Staged(live.name);
+    const bool held = (a.hostPaired || other.hostPaired) && (a.livePaired || other.livePaired);
+    if (staged || held) {
+        ++(staged ? g_ApplyStaged : g_ApplyHeld);
+        a.starts = s.starts;
+        a.parted = 0;
+        float health = 0; // its damage still comes from the host
+        if (ReadFloat(fighter, 0x130, health)) {
+            const float change = Packed<float>(s, 0x130) - health;
+            if (change > 0.5f || change < -0.5f)
+                game::ChangeHealthDirect(fighter, change);
+        }
+        return;
+    }
     // Its place: the host's (the other player's fighter), or this PC's own fighter's own unless it is far off.
     Into into = own ? Into::Own : Into::Remote;
     if (own) {
@@ -606,8 +692,6 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
     }
     if (s.seq < 0)
         return;
-    SeqInfo live;
-    ReadSeq(fighter, live);
     const bool started = s.starts != a.starts; // the host started a sequence since
     a.starts = s.starts;
     a.parted = live.index != s.seq ? a.parted + 1 : 0;
@@ -630,9 +714,10 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
 
 std::string ApplyStats()
 {
-    char line[128];
-    std::snprintf(line, sizeof(line), "%u sequence(s) started again, %u refused, own fighter placed %u time(s)",
-        g_ApplyStarts, g_ApplyRefused, g_ApplyPlaced);
+    char line[192];
+    std::snprintf(line, sizeof(line), "%u sequence(s) started again, %u refused, own fighter placed %u time(s), "
+        "%u frame(s) of staging and %u of grabs left to this game", g_ApplyStarts, g_ApplyRefused, g_ApplyPlaced,
+        g_ApplyStaged, g_ApplyHeld);
     return line;
 }
 
