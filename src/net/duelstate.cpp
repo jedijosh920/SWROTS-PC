@@ -19,6 +19,7 @@
 #include "d3d/recorder.h"
 #include "game/characters.h"
 #include "game/coop.h"
+#include "game/freecam.h"
 #include "input/controls.h"
 
 namespace swrots::net {
@@ -785,6 +786,47 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
         if (g_ApplyRefused <= 20 || g_ApplyRefused % 100 == 0)
             LOG_INFO("Online: P%d's sequence %d refused (%u refusals)", slot + 1, s.seq, g_ApplyRefused);
     }
+}
+
+bool DuelStaged()
+{
+    uint8_t* p[2] = {};
+    if (!DuelFighters(p[0], p[1]))
+        return false;
+    for (uint8_t* f : p) {
+        SeqInfo seq;
+        ReadSeq(f, seq);
+        if (Staged(seq.name))
+            return true;
+    }
+    return false;
+}
+
+std::string DescribeDuel()
+{
+    uint8_t* p[2] = {};
+    if (!DuelFighters(p[0], p[1]))
+        return "no duel";
+    std::string line;
+    char part[192];
+    for (int i = 0; i < 2; ++i) {
+        SeqInfo seq;
+        ReadSeq(p[i], seq);
+        float v[8] = {};
+        const uint32_t at[8] = { 0x180, 0x184, 0x188, 0x170, 0x174, 0x178, 0x130, 0 };
+        for (int k = 0; k < 7; ++k)
+            ReadFloat(p[i], at[k], v[k]);
+        std::snprintf(part, sizeof(part), "P%d '%s' at %.0f %.0f %.0f facing %.2f %.2f %.2f health %.0f; ", i + 1,
+            seq.name, v[0], v[1], v[2], v[3], v[4], v[5], v[6]);
+        line += part;
+    }
+    float m[16] = {}, fov = 0;
+    if (game::GameCameraPlacement(m, fov)) {
+        std::snprintf(part, sizeof(part), "camera at %.0f %.0f %.0f looking %.2f %.2f %.2f", m[12], m[13], m[14], m[8],
+            m[9], m[10]);
+        line += part;
+    }
+    return line;
 }
 
 std::string ApplyStats()

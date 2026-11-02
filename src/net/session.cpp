@@ -1191,6 +1191,13 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         }
     }
     const uint32_t screen = g_S.screen, since = g_S.frame - g_S.screenSince;
+    if (g_S.inLevel && g_S.frame % 10 == 0) { // diagnostics: the duel's staging (an outro's camera) on both games
+        static uint32_t described = 0;
+        if (described < 240 && DuelStaged()) {
+            ++described;
+            LOG_INFO("Online: staging, frame %u: %s", g_S.frame, DescribeDuel().c_str());
+        }
+    }
     if (g_S.entering) { // the cover lifts once the room is in (or a level, or after 25 s in any case)
         const bool room = screen == game::MenuKey("online_room");
         if (room && !g_S.roomSince)

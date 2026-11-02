@@ -54,5 +54,8 @@ bool CaptureFighter(const uint8_t* fighter, FighterState& out);
 // only when it stays parted.
 void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t leadTicks, bool own);
 std::string ApplyStats();
+// Whether either fighter of the duel plays its intro or outro now, and a line about both and the camera (diagnostics).
+bool DuelStaged();
+std::string DescribeDuel();
 
 } // namespace swrots::net
