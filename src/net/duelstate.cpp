@@ -604,7 +604,8 @@ bool Paired(const char* name)
 struct Applied {
     uint8_t* fighter = nullptr;
     bool hostPaired = false, livePaired = false; // the host's and this game's sequences are a grab's
-    bool leftLiving = true;      // the fighter was living after the last health written
+    bool leftLiving = false;     // the fighter was living after the last health written (none yet: a new round's
+                                 // fighter, made living by this game, waits for the host's to be living too)
     uint32_t reviveHold = 0;     // this game brought it back (a new round) before the host's state did: until then
     bool hostLiving = true;
     uint32_t waitFrom = 0;       // the frame a grab began here with none yet on the host's (+1; 0 none)
