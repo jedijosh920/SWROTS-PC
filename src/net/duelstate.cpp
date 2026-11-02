@@ -751,8 +751,12 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
         return;
     }
     // Its place: the host's (the other player's fighter), or this PC's own fighter's own unless it is far off.
-    Into into = own && !hostGrab ? Into::Own : Into::Remote;
-    if (own && !hostGrab) {
+    // This PC's own fighter down on the host's game (its round lost): its fall is the host's too, so that it lies where
+    // the host's does for the outro (this PC's pad no longer plays it).
+    const bool hostDown = Packed<uint8_t>(s, 0x12C) != 0 || Packed<float>(s, 0x130) <= 0.0f;
+    const bool follow = hostGrab || hostDown;
+    Into into = own && !follow ? Into::Own : Into::Remote;
+    if (own && !follow) {
         float x = 0, z = 0;
         if (ReadFloat(fighter, 0x180, x) && ReadFloat(fighter, 0x188, z)) {
             const float dx = x - Packed<float>(s, 0x180), dz = z - Packed<float>(s, 0x188);
@@ -771,7 +775,7 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
     a.parted = live.index != s.seq ? a.parted + 1 : 0;
     // The other player's fighter plays here from the host's pad too: started again only where it went its own way.
     // This PC's own fighter plays at once from this PC's pad: only when it stays parted from the host's.
-    const bool start = hostGrab ? ((started && a.parted) || a.parted > 2)
+    const bool start = follow   ? ((started && a.parted) || a.parted > 2)
                        : own    ? a.parted > 20
                                 : ((started && a.parted) || a.parted > 6);
     if (!start || g_ApplyFrame < a.refusedUntil)
