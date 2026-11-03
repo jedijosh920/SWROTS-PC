@@ -8,6 +8,7 @@
 
 #include <windows.h>
 
+#include <cmath>
 #include <cstdio>
 #include <algorithm>
 #include <cstdlib>
@@ -609,7 +610,8 @@ struct Applied {
                                  // fighter, made living by this game, waits for the host's to be living too)
     uint32_t reviveHold = 0;     // this game brought it back (a new round) before the host's state did: until then
     bool hostLiving = true;
-    uint32_t waitFrom = 0;       // the frame a grab began here with none yet on the host's (+1; 0 none)
+    uint32_t waitFrom = 0;
+    uint32_t heightOff = 0;      // frames this game's own fighter has stayed at another height than the host's       // the frame a grab began here with none yet on the host's (+1; 0 none)
     uint32_t starts = 0;     // the host's start count last seen
     uint32_t parted = 0;     // frames this game's sequence has differed from the host's
     uint32_t refusedUntil = 0;
@@ -761,12 +763,16 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
     const bool follow = hostGrab || (hostDown && !liveHere);
     Into into = own && !follow ? Into::Own : Into::Remote;
     if (own && !follow) {
-        float x = 0, z = 0;
-        if (ReadFloat(fighter, 0x180, x) && ReadFloat(fighter, 0x188, z)) {
-            const float dx = x - Packed<float>(s, 0x180), dz = z - Packed<float>(s, 0x188);
-            if (dx * dx + dz * dz > kOwnPlaceError * kOwnPlaceError) {
+        float x = 0, y = 0, z = 0;
+        if (ReadFloat(fighter, 0x180, x) && ReadFloat(fighter, 0x184, y) && ReadFloat(fighter, 0x188, z)) {
+            const float dx = x - Packed<float>(s, 0x180), dy = y - Packed<float>(s, 0x184), dz = z - Packed<float>(s, 0x188);
+            // its height too: one left hanging in the air here (a jump the host's game ended otherwise) stays there,
+            // while a jump of its own is only ahead of the host's for a round trip
+            a.heightOff = std::fabs(dy) > 40.0f ? a.heightOff + 1 : 0;
+            if (dx * dx + dz * dz > kOwnPlaceError * kOwnPlaceError || a.heightOff > 30) {
                 into = Into::OwnPlaced;
                 ++g_ApplyPlaced;
+                a.heightOff = 0;
             }
         }
     }

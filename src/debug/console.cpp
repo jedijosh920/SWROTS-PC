@@ -1059,6 +1059,15 @@ void Online(const std::vector<std::string>& words)
         room.arena = uint8_t(std::clamp(std::atoi(words[3].c_str()), 0, 3));
         room.rematch = uint8_t(std::atoi(words[4].c_str()) ? 1 : 0);
         net::SetOnlineRoom(room);
+    } else if (_stricmp(what.c_str(), "arena") == 0 && words.size() >= 6) {
+        // online arena <class 1> <class 2> <map> <arena number>: a Versus duel as the select screens start one (tests)
+        kernel::LaunchGame("v_sessionCreated:1 v_ch01:0 v_ch02:0 v_ch03:0 v_ch04:0 v_ch05:0 v_ch06:0 v_c1:" + words[2] +
+            " v_p1:0 v_c2:" + words[3] + " v_p2:1 v_roundcount:3 v_arena:" + words[5] +
+            " controller:0 memoryunit:0 pack:2 session: sessionload:1 nextmap:0 preservebackbuffer:0 useSelectScreen:0 "
+            "preservelogfile:1 spawnindex:-1 map:" + words[4] + " title:0 previousmap: cheats:0 resurrected:0 checkpoint:0 "
+            "spawnindex:-1 language:english autosave:1 playlicensemovie:0 allowgameskipmovie:0 alreadyPlayedMovieList: "
+            "v_checkpointIndex:-1 v_versusMode:0 v_bonusMissionMode:0 v_challengeMissionMode:0 v_shellBetweenLevels:0 ");
+        Print(LineKind::Output, "  starting the duel");
     } else if (_stricmp(what.c_str(), "hurt") == 0 && words.size() >= 4) { // online hurt <player 1|2> <health> (tests)
         uint8_t* fighter = game::GamePlayerSlot(std::atoi(words[2].c_str()) == 2 ? 1 : 0);
         if (fighter)
