@@ -23,6 +23,7 @@
 #include "game/hvvmenu.h"
 #include "game/menus.h"
 #include "game/onlinemenu.h"
+#include "game/roster.h"
 #include "input/controls.h"
 #include "kernel/clock.h"
 #include "kernel/kernel.h"
@@ -664,6 +665,7 @@ void SetMessage(const std::string& text)
 void RestoreLocked()
 {
     input::SetPadSource(nullptr);
+    game::SetStripLocalPlayer(-1);
     input::SetOnlinePorts(false);
     kernel::SetLaunchObserver(nullptr);
     if (g_S.server && !g_S.host)
@@ -1494,6 +1496,7 @@ void BeginBootLocked()
     input::SetOnlinePorts(true);
     if (g_S.server) { // client/server: each game at its own pace; the host's is the match
         input::SetPadSource(&PadFromServer);
+        game::SetStripLocalPlayer(g_S.host ? 0 : 1); // the select strip follows this PC's player
         g_S.bootPending = true;
         g_S.entering = true; // its restart (to its main menu, then the room) under a cover
         g_S.roomSince = 0;

@@ -27,6 +27,8 @@ const char* SelectSlotClass(int slot);
 // Draws the select screen's strip of fighters' heads (in place of its own draw, 0x2D56F0) when they do not fit, a
 // scrolling part of it; false: they fit (the game's own draw then).
 bool DrawSelectStrip(uint8_t* screen, uint32_t context);
+// An online match: the strip's view follows only this PC's player's cursor (0 player 1, 1 player 2; -1 either).
+void SetStripLocalPlayer(int player);
 
 // A menu picture record (an entry of a screen's picture set, e.g. the arena screen's) drawn with a picture loaded
 // from its file instead (its path without .stx; loaded the first time it is drawn), for this start of the game.

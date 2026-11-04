@@ -814,7 +814,24 @@ char __fastcall KeyEvent(uint8_t* key, void*, int event, int value)
             return 1;
         }
     }
-    return reinterpret_cast<ItemEventFn>(uintptr_t(kKeyEvents[I]))(key, nullptr, event, value);
+    const char result = reinterpret_cast<ItemEventFn>(uintptr_t(kKeyEvents[I]))(key, nullptr, event, value);
+    if (I == 0 && !g_KeyboardForName) { // a room code has no S, D or O (read as 5 and 0): those keys type nothing
+        const uint8_t* item = *reinterpret_cast<uint8_t**>(key + 8);
+        const uint8_t* parent = item ? *reinterpret_cast<uint8_t* const*>(item + 0x28) : nullptr;
+        uint8_t* keyboard = parent ? *reinterpret_cast<uint8_t* const*>(parent + 0x80) : nullptr;
+        if (keyboard && *reinterpret_cast<uint32_t**>(keyboard) == g_KeyboardVtable) {
+            const std::string text = KeyboardText(keyboard);
+            std::string kept;
+            for (char c : text)
+                if (c != 'S' && c != 'D' && c != 'O')
+                    kept += c;
+            if (kept != text) {
+                SetKeyboardText(keyboard, kept);
+                Sound(keyboard, kErrorSound);
+            }
+        }
+    }
+    return result;
 }
 constexpr ItemEventFn kKeyHooks[] = { &KeyEvent<0>, &KeyEvent<1>, &KeyEvent<2>, &KeyEvent<3> };
 

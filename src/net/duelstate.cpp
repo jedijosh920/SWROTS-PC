@@ -603,15 +603,22 @@ bool Paired(const char* name)
     return n >= 2 && name[n - 2] == 'G' && (name[n - 1] == 'B' || name[n - 1] == 'R');
 }
 
+// A grab that caught: a pair's sequence other than an attempt (its lunge) or one that was turned away.
+bool Caught(const char* name)
+{
+    return Paired(name) && !HasWord(name, "Attempt") && !HasWord(name, "Negated");
+}
+
 struct Applied {
     uint8_t* fighter = nullptr;
     bool hostPaired = false, livePaired = false; // the host's and this game's sequences are a grab's
+    bool liveCaught = false;     // this game's sequence is a grab that caught (not an attempt)
+    uint32_t caughtAlone = 0;    // frames it has, with none on the host's game
     bool leftLiving = false;     // the fighter was living after the last health written (none yet: a new round's
                                  // fighter, made living by this game, waits for the host's to be living too)
     uint32_t reviveHold = 0;     // this game brought it back (a new round) before the host's state did: until then
     bool hostLiving = true;
-    uint32_t waitFrom = 0;
-    uint32_t heightOff = 0;      // frames this game's own fighter has stayed at another height than the host's       // the frame a grab began here with none yet on the host's (+1; 0 none)
+    uint32_t heightOff = 0;      // frames this game's own fighter has stayed at another height than the host's
     uint32_t starts = 0;     // the host's start count last seen
     uint32_t parted = 0;     // frames this game's sequence has differed from the host's
     uint32_t refusedUntil = 0;
@@ -730,23 +737,20 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
     }
     const Applied& other = g_Applied[slot ^ 1];
     const bool staged = Staged(hostName) || Staged(live.name);
-    const bool hostPairedAny = a.hostPaired || other.hostPaired, livePairedAny = a.livePaired || other.livePaired;
-    // A grab begun here (the guest's own pad, at once) comes on the host's a round trip later: it is waited for a
-    // while (if the host's game has none, the grab missed there: the host's sequences come back).
-    if (livePairedAny && !hostPairedAny) {
-        if (!a.waitFrom)
-            a.waitFrom = g_ApplyFrame + 1;
-    } else {
-        a.waitFrom = 0;
-    }
-    const bool waiting = a.waitFrom && g_ApplyFrame + 1 - a.waitFrom < 45;
-    // A grab on the host's game (a pair: the grabber's and the held one's sequences) is the host's alone: both fighters
-    // follow it here whole (this game's own fighter too, its place included), at the host's time in it, so that one
-    // missed here (the guest's own attempt, its target elsewhere) or over sooner shows as the host's.
-    const bool hostGrab = hostPairedAny;
-    const bool held = waiting && !hostGrab;
-    if (staged || held) {
-        ++(staged ? g_ApplyStaged : g_ApplyHeld);
+    a.liveCaught = Caught(live.name);
+    const bool hostPairedAny = a.hostPaired || other.hostPaired;
+    a.caughtAlone = a.liveCaught && !hostPairedAny ? a.caughtAlone + 1 : 0;
+    // A grab is the host's game's alone: whether it catches is decided there. On the host's game (a pair: the
+    // grabber's and the held one's sequences) both fighters follow it here whole (this game's own fighter too, its
+    // place included), at the host's time in it, so that one missed here (the guest's own attempt, its target
+    // elsewhere) or over sooner shows as the host's. One this game caught on its own (both games play both fighters
+    // from the same pads, a little apart) that the host's has not is undone at once: its fighters go back to the
+    // host's, as for a grab of the host's. An attempt (its lunge) still plays at once from this PC's own pad.
+    // (A round trip's grace first: the host's game may be catching too, its state on its way.)
+    const uint32_t grace = leadTicks * 2 + 6;
+    const bool hostGrab = hostPairedAny || a.caughtAlone > grace || other.caughtAlone > grace;
+    if (staged) {
+        ++g_ApplyStaged;
         a.starts = s.starts;
         a.parted = 0;
         ApplyHealth(slot, a, fighter, s); // its damage still comes from the host
@@ -761,6 +765,8 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
     LivingRaw(fighter, liveHere, healthHere);
     const bool hostDown = Packed<uint8_t>(s, 0x12C) != 0 || Packed<float>(s, 0x130) <= 0.0f;
     const bool follow = hostGrab || (hostDown && !liveHere);
+    if (hostGrab)
+        ++g_ApplyHeld;
     Into into = own && !follow ? Into::Own : Into::Remote;
     if (own && !follow) {
         float x = 0, y = 0, z = 0;
@@ -847,7 +853,7 @@ std::string ApplyStats()
 {
     char line[192];
     std::snprintf(line, sizeof(line), "%u sequence(s) started again, %u refused, own fighter placed %u time(s), "
-        "%u frame(s) of staging and %u of grabs left to this game", g_ApplyStarts, g_ApplyRefused, g_ApplyPlaced,
+        "%u frame(s) of staging left to this game, %u of grabs following the host's", g_ApplyStarts, g_ApplyRefused, g_ApplyPlaced,
         g_ApplyStaged, g_ApplyHeld);
     return line;
 }

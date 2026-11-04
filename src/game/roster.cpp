@@ -948,6 +948,7 @@ void DrawStripArrow(uint32_t context, uint8_t* record, float x, float y, float s
     std::memcpy(uv, keptUv, sizeof keptUv);
 }
 int g_StripCursors[2] = { -1, -1 };
+int g_StripLocal = -1; // an online match: the cursor this PC's view follows (the other player's is theirs to scroll)
 
 void FreeList(void* data) // the engine's free: its services table ([kEngineServices], functions) +0x54
 {
@@ -973,6 +974,11 @@ bool BothPlayersChose(const char* className)
             return false;
     }
     return launch != nullptr && className != nullptr;
+}
+
+void SetStripLocalPlayer(int player)
+{
+    g_StripLocal = player;
 }
 
 bool DrawSelectStrip(uint8_t* screen, uint32_t context)
@@ -1001,13 +1007,14 @@ bool DrawSelectStrip(uint8_t* screen, uint32_t context)
     int follow = -1;
     for (int p = 0; p < 2; ++p) {
         if (cursors[p] != g_StripCursors[p]) {
-            follow = cursors[p];
+            if (g_StripLocal < 0 || g_StripLocal == p)
+                follow = cursors[p];
             g_StripCursors[p] = cursors[p];
         }
     }
     // player 1 has picked (+0x28): from then on the second cursor picks (the opponent's, starting at the first
-    // fighter), and stays in view
-    if (*reinterpret_cast<uint8_t*>(screen + 0x28) && !*reinterpret_cast<uint8_t*>(screen + 0x2A))
+    // fighter), and stays in view (online, each PC's view stays with its own player's cursor)
+    if (g_StripLocal < 0 && *reinterpret_cast<uint8_t*>(screen + 0x28) && !*reinterpret_cast<uint8_t*>(screen + 0x2A))
         follow = cursors[1];
     if (follow >= 0) {
         if (follow < g_StripFirst)

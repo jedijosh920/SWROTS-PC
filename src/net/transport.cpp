@@ -28,17 +28,19 @@ sockaddr_in ToSockaddr(const Endpoint& e)
     return a;
 }
 
-// Crockford's base 32: no I, L, O, U.
-constexpr char kAlphabet[] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+// Base 32 without the letters read as digits: no O or D (0), I (1), S (5); L and U make the 32.
+constexpr char kAlphabet[] = "0123456789ABCEFGHJKLMNPQRTUVWXYZ";
 
 int AlphabetValue(char c)
 {
     if (c >= 'a' && c <= 'z')
         c = char(c - 'a' + 'A');
-    if (c == 'O')
+    if (c == 'O' || c == 'D')
         c = '0';
-    if (c == 'I' || c == 'L')
+    if (c == 'I')
         c = '1';
+    if (c == 'S')
+        c = '5';
     for (int i = 0; i < 32; ++i)
         if (kAlphabet[i] == c)
             return i;
