@@ -635,6 +635,7 @@ struct Applied {
                                  // fighter, made living by this game, waits for the host's to be living too)
     uint32_t reviveHold = 0;     // this game brought it back (a new round) before the host's state did: until then
     bool hostLiving = true;
+    uint32_t farOff = 0;         // frames it has stayed more than kOwnPlaceError off the host's place
     uint32_t heightOff = 0;      // frames this game's own fighter has stayed at another height than the host's
     uint32_t starts = 0;     // the host's start count last seen
     uint32_t parted = 0;     // frames this game's sequence has differed from the host's
@@ -644,7 +645,11 @@ Applied g_Applied[2];
 uint32_t g_ApplyFrame = 0;
 uint32_t g_ApplyStarts = 0, g_ApplyRefused = 0, g_ApplyPlaced = 0, g_ApplyStaged = 0, g_ApplyHeld = 0;
 uint32_t g_NamesLogged = 0, g_LivingLogged = 0;
-constexpr float kOwnPlaceError = 70.0f; // this PC's own fighter is put at the host's place beyond that (game units)
+// This PC's own fighter is put at the host's place when it stays more than kOwnPlaceError off it for kOwnPlaceFrames
+// (its own moves run a little ahead of the host's: a glide, a lunge, a combo's turn taken a frame apart), or at once
+// beyond kOwnPlaceFar (game units).
+constexpr float kOwnPlaceError = 70.0f, kOwnPlaceFar = 180.0f;
+constexpr uint32_t kOwnPlaceFrames = 20;
 
 } // namespace
 
@@ -795,10 +800,12 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
             // its height too: one left hanging in the air here (a jump the host's game ended otherwise) stays there,
             // while a jump of its own is only ahead of the host's for a round trip
             a.heightOff = std::fabs(dy) > 40.0f ? a.heightOff + 1 : 0;
-            if (dx * dx + dz * dz > kOwnPlaceError * kOwnPlaceError || a.heightOff > 30) {
+            const float off = dx * dx + dz * dz;
+            a.farOff = off > kOwnPlaceError * kOwnPlaceError ? a.farOff + 1 : 0;
+            if (off > kOwnPlaceFar * kOwnPlaceFar || a.farOff > kOwnPlaceFrames || a.heightOff > 30) {
                 into = Into::OwnPlaced;
                 ++g_ApplyPlaced;
-                a.heightOff = 0;
+                a.heightOff = a.farOff = 0;
             }
         }
     }
