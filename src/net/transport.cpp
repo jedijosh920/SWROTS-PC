@@ -28,8 +28,9 @@ sockaddr_in ToSockaddr(const Endpoint& e)
     return a;
 }
 
-// Base 32 without the letters read as digits: no O or D (0), I (1), S (5); L and U make the 32.
-constexpr char kAlphabet[] = "0123456789ABCEFGHJKLMNPQRTUVWXYZ";
+// Base 31: the digits and the letters but those read as digits (O and D as 0, I as 1, S as 5, B as 8).
+constexpr char kAlphabet[] = "0123456789ACEFGHJKLMNPQRTUVWXYZ";
+constexpr int kBase = 31;
 
 int AlphabetValue(char c)
 {
@@ -41,7 +42,9 @@ int AlphabetValue(char c)
         c = '1';
     if (c == 'S')
         c = '5';
-    for (int i = 0; i < 32; ++i)
+    if (c == 'B')
+        c = '8';
+    for (int i = 0; i < kBase; ++i)
         if (kAlphabet[i] == c)
             return i;
     return -1;
@@ -58,12 +61,12 @@ uint8_t Crc8(const uint8_t* data, size_t size)
     return crc;
 }
 
-// A room code's 75 bits (15 letters, the game's code keyboard holds 15): the public address and port (48), the low
-// half of the address on its network (16; the guest's own network gives the high half: a home network's addresses
-// share it), whether the host has one (1), whether its port there is the public one (1, else the guest's [Online]
-// Port), a spare bit, and a check (8) over the 67 before.
+// A room code's 73 bits (15 characters in base 31 hold 74; the game's code keyboard holds 15): the public address and
+// port (48), the low half of the address on its network (16; the guest's own network gives the high half: a home
+// network's addresses share it), whether the host has one (1), whether its port there is the public one (1, else the
+// guest's [Online] Port), and a check (7) over the 66 before.
 constexpr size_t kCodeChars = 15;
-constexpr int kCodeBits = 75, kCheckedBits = 67;
+constexpr int kCodeBits = 73, kCheckedBits = 66;
 
 struct Bits {
     uint8_t bytes[10] = {};
@@ -88,7 +91,49 @@ uint8_t CheckOf(const Bits& b)
     Bits copy = b; // the checked bits alone (the rest cleared)
     for (int i = kCheckedBits; i < 80; ++i)
         copy.bytes[i / 8] &= uint8_t(~(0x80 >> (i % 8)));
-    return Crc8(copy.bytes, 9);
+    return Crc8(copy.bytes, 9) & 0x7F;
+}
+
+// The code's bits (the first kCodeBits of Bits, most significant first) as a number, in base 31 and back: a
+// big-endian 80-bit number, the code's bits at its low end.
+void ShiftRight(uint8_t (&n)[10], int count)
+{
+    for (int k = 0; k < count; ++k) {
+        for (int i = 9; i > 0; --i)
+            n[i] = uint8_t(n[i] >> 1 | n[i - 1] << 7);
+        n[0] >>= 1;
+    }
+}
+
+void ShiftLeft(uint8_t (&n)[10], int count)
+{
+    for (int k = 0; k < count; ++k) {
+        for (int i = 0; i < 9; ++i)
+            n[i] = uint8_t(n[i] << 1 | n[i + 1] >> 7);
+        n[9] <<= 1;
+    }
+}
+
+int DivideBy(uint8_t (&n)[10], int d) // n /= d, the remainder returned
+{
+    int r = 0;
+    for (int i = 0; i < 10; ++i) {
+        const int v = r * 256 + n[i];
+        n[i] = uint8_t(v / d);
+        r = v % d;
+    }
+    return r;
+}
+
+bool MultiplyAdd(uint8_t (&n)[10], int m, int add) // n = n * m + add; false on overflow
+{
+    int carry = add;
+    for (int i = 9; i >= 0; --i) {
+        const int v = n[i] * m + carry;
+        n[i] = uint8_t(v & 0xFF);
+        carry = v >> 8;
+    }
+    return carry == 0;
 }
 
 } // namespace
@@ -295,12 +340,16 @@ std::string MakeRoomCode(const Endpoint& publicAddress, const Endpoint& localAdd
     b.Put(localAddress.ip & 0xFFFF, 16);
     b.Put(localAddress.Valid() ? 1 : 0, 1);
     b.Put(localAddress.port == publicAddress.port ? 1 : 0, 1);
-    b.Put(0, 1);
-    b.Put(CheckOf(b), 8);
-    b.at = 0;
+    b.Put(CheckOf(b), 7);
+    uint8_t n[10];
+    std::memcpy(n, b.bytes, sizeof(n));
+    ShiftRight(n, 80 - kCodeBits);
+    char digits[kCodeChars];
+    for (size_t c = kCodeChars; c-- > 0;)
+        digits[c] = kAlphabet[DivideBy(n, kBase)];
     std::string code;
     for (size_t c = 0; c < kCodeChars; ++c) {
-        code += kAlphabet[b.Get(5)];
+        code += digits[c];
         if (c % 5 == 4 && c + 1 < kCodeChars)
             code += '-';
     }
@@ -311,23 +360,27 @@ bool ReadRoomCode(const std::string& code, uint16_t defaultPort, Endpoint& publi
 {
     Bits b;
     size_t chars = 0;
+    uint8_t n[10] = {};
     for (char c : code) {
         if (c == '-' || c == ' ' || c == '\t' || c == '\r' || c == '\n')
             continue;
         const int v = AlphabetValue(c);
-        if (v < 0 || ++chars > kCodeChars)
+        if (v < 0 || ++chars > kCodeChars || !MultiplyAdd(n, kBase, v))
             return false;
-        b.Put(uint32_t(v), 5);
     }
     if (chars != kCodeChars)
         return false;
+    for (int i = 0; i < 80 - kCodeBits; ++i) // no more than the code's bits
+        if (n[i / 8] & (0x80 >> (i % 8)))
+            return false;
+    ShiftLeft(n, 80 - kCodeBits);
+    std::memcpy(b.bytes, n, sizeof(n));
     b.at = 0;
     publicAddress.ip = b.Get(32);
     publicAddress.port = uint16_t(b.Get(16));
     const uint32_t low = b.Get(16);
     const bool hasLocal = b.Get(1) != 0, samePort = b.Get(1) != 0;
-    b.Get(1);
-    const uint8_t check = uint8_t(b.Get(8));
+    const uint8_t check = uint8_t(b.Get(7));
     if (check != CheckOf(b))
         return false;
     localAddress = {};

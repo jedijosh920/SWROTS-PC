@@ -815,7 +815,7 @@ char __fastcall KeyEvent(uint8_t* key, void*, int event, int value)
         }
     }
     const char result = reinterpret_cast<ItemEventFn>(uintptr_t(kKeyEvents[I]))(key, nullptr, event, value);
-    if (I == 0 && !g_KeyboardForName) { // a room code has no S, D or O (read as 5 and 0): those keys type nothing
+    if (I == 0 && !g_KeyboardForName) { // a room code has no S, D, O or B (read as 5, 0, 8): those keys type nothing
         const uint8_t* item = *reinterpret_cast<uint8_t**>(key + 8);
         const uint8_t* parent = item ? *reinterpret_cast<uint8_t* const*>(item + 0x28) : nullptr;
         uint8_t* keyboard = parent ? *reinterpret_cast<uint8_t* const*>(parent + 0x80) : nullptr;
@@ -823,7 +823,7 @@ char __fastcall KeyEvent(uint8_t* key, void*, int event, int value)
             const std::string text = KeyboardText(keyboard);
             std::string kept;
             for (char c : text)
-                if (c != 'S' && c != 'D' && c != 'O')
+                if (!IsCodeLetterRefused(wchar_t(c)))
                     kept += c;
             if (kept != text) {
                 SetKeyboardText(keyboard, kept);
@@ -834,6 +834,37 @@ char __fastcall KeyEvent(uint8_t* key, void*, int event, int value)
     return result;
 }
 constexpr ItemEventFn kKeyHooks[] = { &KeyEvent<0>, &KeyEvent<1>, &KeyEvent<2>, &KeyEvent<3> };
+
+// A letter key's draw (vtable 0x5D5FA0 slot 3, 0x2D0F90): for a room code, the letters read as digits (S, D, O, B)
+// are disabled, as the game disables Back, Space and Done on an empty text (the key's handler +0x20). The key's
+// letter: its item's label (+0x44: a u16 length and the characters).
+constexpr uint32_t kKeyDraw = 0x002D0F90;
+
+bool IsCodeLetterRefused(wchar_t c)
+{
+    return c == L'S' || c == L'D' || c == L'O' || c == L'B';
+}
+
+void DisableKeyRaw(uint8_t* key)
+{
+    __try {
+        const uint8_t* item = *reinterpret_cast<uint8_t* const*>(key + 8);
+        const uint8_t* parent = item ? *reinterpret_cast<uint8_t* const*>(item + 0x28) : nullptr;
+        const uint8_t* keyboard = parent ? *reinterpret_cast<uint8_t* const*>(parent + 0x80) : nullptr;
+        if (!keyboard || *reinterpret_cast<uint32_t* const*>(keyboard) != g_KeyboardVtable)
+            return; // the game's own Codes keyboard: every key
+        const uint16_t* label = *reinterpret_cast<const uint16_t* const*>(item + 0x44);
+        if (label && label[0] == 1)
+            key[0x20] = !g_KeyboardForName && IsCodeLetterRefused(wchar_t(label[1])) ? 1 : 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+char __fastcall KeyDraw(uint8_t* key, void*, uint32_t value)
+{
+    DisableKeyRaw(key);
+    return reinterpret_cast<DrawFn>(uintptr_t(kKeyDraw))(key, nullptr, value);
+}
 
 // Done: joins with the code typed (back to the online screen), or refuses it.
 void __fastcall KeyboardDone(uint8_t* keyboard, void*)
@@ -1058,6 +1089,10 @@ void InstallOnlineMenu()
         !SlotIs(kKeyVtables[2], kEventSlot, kKeyEvents[2]) || !SlotIs(kKeyVtables[3], kEventSlot, kKeyEvents[3])) {
         LOG_WARN("Online menu: the code keyboard is not as expected; no Online entry");
         return;
+    }
+    if (SlotIs(kKeyVtables[0], 3, kKeyDraw)) {
+        const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(&KeyDraw));
+        PatchBytes(kKeyVtables[0] + 3 * 4, &hook, 4);
     }
     if (SlotIs(kJediListVtable, 4, kJediListEvent)) {
         const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(&JediListEvent));

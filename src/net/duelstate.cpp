@@ -603,6 +603,23 @@ bool Paired(const char* name)
     return n >= 2 && name[n - 2] == 'G' && (name[n - 1] == 'B' || name[n - 1] == 'R');
 }
 
+// A fighter's reaction to the other's doing (a hit taken, a knock-down, a fall, getting up, a Force hold): the
+// host's game decides it (its hits), not this PC's pad. R_*, R1_..R9_, <Class>_R_*, and the falls and their like
+// (not an attack's follow-up, ..._Hit2).
+bool Reaction(const char* name)
+{
+    if (!name || !*name)
+        return false;
+    if ((name[0] == 'R' && name[1] == '_') || (name[0] == 'R' && name[1] >= '1' && name[1] <= '9' && name[2] == '_'))
+        return true;
+    static const char* const kWords[] = { "_R_", "Hit_", "Fall_", "Juggle", "Flattened", "Getup", "OnBack",
+        "OnFront", "Shock", "Stun", "Knock", "Dead", "Death", "Thrown", "Stagger" };
+    for (const char* w : kWords)
+        if (HasWord(name, w))
+            return true;
+    return false;
+}
+
 // A grab that caught: a pair's sequence other than an attempt (its lunge) or one that was turned away.
 bool Caught(const char* name)
 {
@@ -627,7 +644,7 @@ Applied g_Applied[2];
 uint32_t g_ApplyFrame = 0;
 uint32_t g_ApplyStarts = 0, g_ApplyRefused = 0, g_ApplyPlaced = 0, g_ApplyStaged = 0, g_ApplyHeld = 0;
 uint32_t g_NamesLogged = 0, g_LivingLogged = 0;
-constexpr float kOwnPlaceError = 120.0f; // this PC's own fighter is put at the host's place beyond that (game units)
+constexpr float kOwnPlaceError = 70.0f; // this PC's own fighter is put at the host's place beyond that (game units)
 
 } // namespace
 
@@ -764,7 +781,10 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
     float healthHere = 0;
     LivingRaw(fighter, liveHere, healthHere);
     const bool hostDown = Packed<uint8_t>(s, 0x12C) != 0 || Packed<float>(s, 0x130) <= 0.0f;
-    const bool follow = hostGrab || (hostDown && !liveHere);
+    // This PC's own fighter taken by a hit, a knock-down, a fall: the host's reaction, whole (this game's own reactions
+    // to its own copy of the other's attacks put it elsewhere: behind its opponent when the host had it aside).
+    const bool reacting = own && (Reaction(hostName) || Reaction(live.name));
+    const bool follow = hostGrab || reacting || (hostDown && !liveHere);
     if (hostGrab)
         ++g_ApplyHeld;
     Into into = own && !follow ? Into::Own : Into::Remote;
