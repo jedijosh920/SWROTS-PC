@@ -802,6 +802,12 @@ bool Paste(uint8_t* keyboard)
     return true;
 }
 
+// A room code's letters read as digits (S, D, O, B: 5, 0, 0, 8), which it has none of.
+bool IsCodeLetterRefused(wchar_t c)
+{
+    return c == L'S' || c == L'D' || c == L'O' || c == L'B';
+}
+
 template <int I>
 char __fastcall KeyEvent(uint8_t* key, void*, int event, int value)
 {
@@ -839,11 +845,6 @@ constexpr ItemEventFn kKeyHooks[] = { &KeyEvent<0>, &KeyEvent<1>, &KeyEvent<2>, 
 // are disabled, as the game disables Back, Space and Done on an empty text (the key's handler +0x20). The key's
 // letter: its item's label (+0x44: a u16 length and the characters).
 constexpr uint32_t kKeyDraw = 0x002D0F90;
-
-bool IsCodeLetterRefused(wchar_t c)
-{
-    return c == L'S' || c == L'D' || c == L'O' || c == L'B';
-}
 
 void DisableKeyRaw(uint8_t* key)
 {
