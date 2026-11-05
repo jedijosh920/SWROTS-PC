@@ -1120,6 +1120,7 @@ void MenuAfterFrame()
 {
     RunQueuedConsoleCommands();
     game::GameTimeFrame();
+    game::CharactersFrame();
     game::CustomCharactersFrame();
     game::PlayerFrame();
     game::CoopFrame();

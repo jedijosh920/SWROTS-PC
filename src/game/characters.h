@@ -124,6 +124,8 @@ void SetInfiniteForce(bool on);
 bool InfiniteForce();
 // Once a frame, on the game thread: keeps up what the switches above ask for.
 void PlayerFrame();
+// Gives the characters whose activation waited for their setup their first tick once it is done (each frame).
+void CharactersFrame();
 // Gives the running level's player its maximum health back.
 void RefillPlayerHealth();
 
