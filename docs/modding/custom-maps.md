@@ -66,6 +66,9 @@ CharacterAmbient=0.26 0.23 0.20  ; the characters' ambient light (the dev map's 
 Lights=0.6                       ; the level's point lights' intensity, scaled
 ```
 
+The notes after `;` above explain each key. In a real map.ini, put a comment on a line of its own: text after a
+value is read as part of it.
+
 `Modes=` keeps a map to some modes: `Versus` (its row on the Select Arena screen), `HvV` (Heroes vs Villains' Map
 row) and `Battlefront` (its setup screen, for a map with command posts), separated by spaces or commas. A duel arena
 says `Modes=Versus`, a large map `Modes=HvV Battlefront`. The console's `devmap`, `hvv map` and `versus ... map` take

@@ -77,6 +77,9 @@ TNT=luk101 luk102
 LUK001=For the Rebellion!
 ```
 
+The notes after `;` above explain each key. In a real file, put a comment on a line of its own: text after a value
+is read as part of it.
+
 ## Player 2's look
 
 The game's fighters have a second look for player 2 in Versus (dark Anakin, Jedi Vader): the duel gives player 2's
