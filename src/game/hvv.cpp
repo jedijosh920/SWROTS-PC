@@ -62,6 +62,7 @@ constexpr float kFloorMargin = 600.0f;
 constexpr float kRespawnReach = 950.0f;  // from the fight's middle, at most
 constexpr float kRespawnClear = 380.0f;  // from every fighter, at least (when it can)
 constexpr int kRespawnTries = 32;
+constexpr float kSpawnNear = 350.0f; // a custom map's own clear places this near a post stand for it
 constexpr float kSpawnLift = 25.0f;  // above a custom map's floor (under its low ceilings)
 // The intro (ms): for each side a frontal shot of its line playing its Versus intros, then a close shot along the
 // line; the camera back behind the player; "FIGHT!" shows a while after.
@@ -87,6 +88,15 @@ constexpr const char* kDefaultLineup[] = { "IObiwan", "IYoda", "IMace", "ISerra"
 // side's posts) and heroes: points buy one (the player's, a press of B) and the AI's sides call theirs too, one hero a
 // side at a time.
 constexpr float kPostRadius = 240.0f;      // a fighter this near a post counts for it
+constexpr float kPostHeightReach = 180.0f; // ... and this near its floor's height (not one on a floor under or over it)
+// A post on a floor of its own above (a bridge, a pad: CommandPosts= with a height): the AI walks straight to a post's
+// marker, under that floor from a lower one, into what lies under it (a pad's pit). A trooper going for it from more
+// than kRaisedBy below is brought up onto it once within kRaisedReach. Not again within kBringAgainMs, and after
+// kMostBrings in a row that did not keep it there (a floor the game's collision does not hold it on, a lower floor it
+// falls back to) it walks as the others do until it reaches a post.
+constexpr float kRaisedBy = 100.0f, kRaisedReach = 700.0f;
+constexpr ULONGLONG kBringAgainMs = 8000;
+constexpr int kMostBrings = 3;
 constexpr float kCaptureMs = 7000.0f;      // one fighter alone turns a post (neutral to its side) in this long
 constexpr int kMostCapturers = 3;          // more fighters turn it faster, up to this many
 constexpr ULONGLONG kBleedMs = 5000;       // a side holding fewer posts loses a ticket this often
@@ -151,6 +161,8 @@ struct Fighter {
     float stillAt[3] = {};   // where it was when it last moved on (stuck: see Unstick)
     int post = -1;           // Battlefront: the post it walks to (-1: none, fighting or there)
     ULONGLONG stillSince = 0;
+    ULONGLONG broughtAt = 0; // Battlefront: when it was last brought up onto a post (BringOnto)
+    int brought = 0;         // ... times in a row, since it last reached a post
     ULONGLONG lastBlow = 0;  // when it last dealt or took an enemy's hit (idle beside its target: see Unstick)
     std::string troopClass;  // Battlefront: its trooper's class (it is a hero while `hero`)
     bool hero = false;
@@ -486,7 +498,7 @@ void SafePlace(int except, float (&m)[16])
             bestZ = z;
         }
     }
-    Transform(bestX, bestZ, std::atan2(cx - bestX, cz - bestZ), m);
+    Transform(bestX, bestZ, std::atan2(cx - bestX, cz - bestZ), m, DevMapCustomMap() ? kSpawnLift : 60.0f);
 }
 
 // Where the player waits out of the fight (between its fall and its comeback, or out of lives): far off on the dev
@@ -523,6 +535,24 @@ void Shield(Fighter& f, ULONGLONG now)
 }
 
 // --- Fighting ----------------------------------------------------------------------------------------------------
+
+std::string PostName(size_t k);
+
+// A trooper going for a post on a floor above its own (see kRaisedBy): set on that floor beside the post, on the side it
+// came from (a bridge's narrow deck holds it).
+void BringOnto(int i, size_t post)
+{
+    Fighter& f = g_Fighters[i];
+    const Post& target = g_Posts[post];
+    const float* p = Position(f.object);
+    const float angle = std::atan2(p[0] - target.x, p[2] - target.z);
+    const float x = target.x + std::sin(angle) * 40.0f, z = target.z + std::cos(angle) * 40.0f;
+    float m[16];
+    Transform(x, z, angle + kPi, m, target.y - kDevMapFloorY + kSpawnLift);
+    VirtualOf<void(__fastcall*)(uint8_t*, void*, const float*)>(f.object, kPlace)(f.object, nullptr, m);
+    f.stillSince = 0;
+    LOG_INFO("Battlefront: %s brought up onto command post %s", ShownName(i).c_str(), PostName(post).c_str());
+}
 
 // Battlefront's troopers have a post to see to: one in three of a side holds one of its posts (a defender), the rest
 // go for the nearest post their side does not hold (attackers; defending when it holds them all, attacking when it
@@ -573,9 +603,22 @@ bool SeeToPost(int i)
             if (std::hypot(g_Posts[k].x - p[0], g_Posts[k].z - p[2]) < std::hypot(g_Posts[goal].x - p[0], g_Posts[goal].z - p[2]))
                 goal = k;
     }
-    if (std::hypot(g_Posts[goal].x - p[0], g_Posts[goal].z - p[2]) <= kMarkerReach)
+    const Post& target = g_Posts[goal];
+    if (std::hypot(target.x - p[0], target.z - p[2]) <= kMarkerReach && std::abs(target.y - p[1]) <= kPostHeightReach) {
+        f.brought = 0;
         return true; // there: holds it
+    }
     f.post = int(goal);
+    if (target.y - p[1] > kRaisedBy && std::hypot(target.x - p[0], target.z - p[2]) < kRaisedReach) {
+        const ULONGLONG now = GetTickCount64();
+        if (f.brought < kMostBrings && (!f.broughtAt || now - f.broughtAt >= kBringAgainMs)) {
+            BringOnto(i, goal);
+            f.broughtAt = now;
+            if (++f.brought == kMostBrings)
+                LOG_INFO("Battlefront: %s not brought up again before it reaches a post", ShownName(i).c_str());
+            return true;
+        }
+    }
     uint8_t* marker = g_PostMarkers[goal];
     if (!reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint8_t*)>(uintptr_t(kExecutingGoto))(f.object, nullptr, marker))
         reinterpret_cast<void(__fastcall*)(uint8_t*, void*, uint8_t*, bool)>(uintptr_t(kCharacterGoto))(
@@ -649,9 +692,9 @@ void Unstick(int i, ULONGLONG now)
     if (!toPost && (target < 0 || !Standing(g_Fighters[target])))
         return;
     float t[3];
-    if (toPost) {
+    if (toPost) { // on its post's floor
         t[0] = g_Posts[f.post].x;
-        t[1] = p[1];
+        t[1] = g_Posts[f.post].y;
         t[2] = g_Posts[f.post].z;
     } else {
         std::memcpy(t, Position(g_Fighters[target].object), sizeof t);
@@ -719,7 +762,8 @@ void Unstick(int i, ULONGLONG now)
         return;
     }
     float m[16];
-    Transform(bestX, bestZ, std::atan2(t[0] - bestX, t[2] - bestZ), m);
+    Transform(bestX, bestZ, std::atan2(t[0] - bestX, t[2] - bestZ), m,
+        DevMapCustomMap() ? (toPost ? t[1] - kDevMapFloorY : 0.0f) + kSpawnLift : 60.0f);
     VirtualOf<void(__fastcall*)(uint8_t*, void*, const float*)>(f.object, kPlace)(f.object, nullptr, m);
     setTarget(); // its walk was cut short: set on the target anew
     LOG_INFO("HvV: %s could not reach %s; brought nearer", ShownName(i).c_str(), goal.c_str());
@@ -1469,15 +1513,42 @@ void ConquestPlace(int side, float (&m)[16])
     }
     const size_t pick = clear.empty() ? furthest : clear[size_t(std::rand()) % clear.size()];
     float x = places[pick].first, z = places[pick].second;
-    const float angle = float(std::rand()) / RAND_MAX * 2 * kPi, reach = 60.0f + float(std::rand()) / RAND_MAX * 140.0f;
-    x = std::clamp(x + std::sin(angle) * reach, g_Bounds[0] + g_Margin, g_Bounds[2] - g_Margin);
-    z = std::clamp(z + std::cos(angle) * reach, g_Bounds[1] + g_Margin, g_Bounds[3] - g_Margin);
+    float lift = 60.0f;
+    if (DevMapCustomMap()) {
+        // a custom map's ground is not flat around a post (walls, steps, low ceilings): one of the map's own clear
+        // places near it (Spawns=, open floor checked by its converter), else the post itself; set down from lower
+        // (a low ceiling over the floor: a body dropped from 60 above it met the ceiling and stayed stuck)
+        std::vector<size_t> picks;
+        size_t nearest = g_Spawns.size();
+        float nearestDistance = 1e9f;
+        for (size_t k = 0; k < g_Spawns.size(); ++k) {
+            const float d = std::hypot(g_Spawns[k].first - x, g_Spawns[k].second - z);
+            if (d < kSpawnNear)
+                picks.push_back(k);
+            if (d < nearestDistance) {
+                nearestDistance = d;
+                nearest = k;
+            }
+        }
+        if (picks.empty() && nearest < g_Spawns.size())
+            picks.push_back(nearest); // none that near: the nearest
+        if (!picks.empty()) {
+            const auto& s = g_Spawns[picks[size_t(std::rand()) % picks.size()]];
+            x = s.first;
+            z = s.second;
+        }
+        lift = kSpawnLift;
+    } else {
+        const float angle = float(std::rand()) / RAND_MAX * 2 * kPi, reach = 60.0f + float(std::rand()) / RAND_MAX * 140.0f;
+        x = std::clamp(x + std::sin(angle) * reach, g_Bounds[0] + g_Margin, g_Bounds[2] - g_Margin);
+        z = std::clamp(z + std::cos(angle) * reach, g_Bounds[1] + g_Margin, g_Bounds[3] - g_Margin);
+    }
     float cx = 0, cz = 0;
     for (const Post& post : g_Posts) {
         cx += post.x / float(g_Posts.size());
         cz += post.z / float(g_Posts.size());
     }
-    Transform(x, z, std::atan2(cx - x, cz - z), m);
+    Transform(x, z, std::atan2(cx - x, cz - z), m, lift);
 }
 
 // A post's letter (A, B, C...).
@@ -1501,7 +1572,7 @@ void UpdatePosts(ULONGLONG now)
             if (f.out || !Standing(f) || (i == g_Player && g_PlayerFell))
                 continue;
             const float* p = Position(f.object);
-            if (std::hypot(p[0] - post.x, p[2] - post.z) > kPostRadius)
+            if (std::hypot(p[0] - post.x, p[2] - post.z) > kPostRadius || std::abs(p[1] - post.y) > kPostHeightReach)
                 continue;
             ++count[SideOf(i)];
             inside[SideOf(i)].push_back(i);
@@ -1694,13 +1765,15 @@ void InstallHvv()
         if (map && !map->commandPosts.empty()) {
             for (const auto& c : map->commandPosts) {
                 Post post;
-                CustomMapToWorld(*map, c.first, c.second, post.x, post.z);
+                CustomMapToWorld(*map, c[0], c[1], post.x, post.z);
+                post.y = kDevMapFloorY + c[2] - map->floor;
                 g_Posts.push_back(post);
             }
         } else {
             for (const auto& c : kDevPosts) {
                 Post post;
                 post.x = c[0];
+                post.y = kDevMapFloorY;
                 post.z = c[1];
                 g_Posts.push_back(post);
             }
@@ -1714,8 +1787,6 @@ void InstallHvv()
         } else {
             std::memcpy(g_TeamStart, kDevStarts, sizeof g_TeamStart);
         }
-        for (Post& post : g_Posts)
-            post.y = kDevMapFloorY;
         // each side starts with the post nearest its start
         for (int side = 0; side < 2; ++side) {
             Post* nearest = nullptr;
@@ -1762,8 +1833,10 @@ void InstallHvv()
             for (const std::string& hero : g_HeroPool[side])
                 layout.characters.push_back({ hero, kDevMapFirstId + kLoaderIds + loader++,
                     kDevMapMiddleX + 7000.0f + 200.0f * float(loader), kDevMapMiddleZ - 4500.0f, 0.0f });
-        for (const Post& post : g_Posts) // the posts' goto markers
+        for (const Post& post : g_Posts) { // the posts' goto markers, on their floors
             layout.markers.push_back({ post.x, post.z });
+            layout.markerLifts.push_back(post.y - kDevMapFloorY);
+        }
         layout.markerReach = kMarkerReach;
     }
     SetDevMapLayout(layout);
@@ -2249,6 +2322,8 @@ void HvvFrame()
         }
         --g_Lives[side];
         Track(f, back);
+        f.brought = 0;
+        f.broughtAt = 0;
         FullHealth(back);
         Shield(f, now);
         Engage(i);

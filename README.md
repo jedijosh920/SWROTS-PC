@@ -239,6 +239,8 @@ The game itself is not included and is not distributed by this project; you must
 - [@firestar300](https://github.com/firestar300): custom character fixes found while building a character pack
   ([#60](../../pull/60)): any number of custom voice lines, a pack's own dialogue archive and saber hilts, and live
   swaps to a mod's character; and custom maps' own collision, sky and deadly falls, more Versus slots for custom
-  characters and Vader's breathing off for his class ([#61](../../pull/61)).
+  characters and Vader's breathing off for his class ([#61](../../pull/61)); and characters set up late coming
+  alive, Battlefront comebacks at clear places and raised command posts on custom maps, `Modes=`, and player 2's own
+  body and voice in a custom character mirror ([#66](../../pull/66)).
 - [@QTG128](https://github.com/QTG128): the first bug report, which found the missing sound at startup
   ([#1](../../issues/1)).

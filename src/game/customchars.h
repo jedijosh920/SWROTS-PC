@@ -20,6 +20,7 @@ struct CustomCharacter {
     std::string base;        // the class whose moves it has, e.g. "IAnakin"
     std::string costume;     // its costume's name, e.g. "Luke"
     std::string mesh;        // its body under meshes\chars ("folder\file"), e.g. "luke\luke"
+    std::string mesh2;       // player 2's body in a Versus mirror (Mesh2=), the same skeleton; empty: its own
     std::string code;        // its dialogue speaker code (three letters: whose lines it says, e.g. "AKN"); empty: the
                              // base's
     std::string speaker;     // its name in subtitles, e.g. "Luke"
@@ -27,6 +28,8 @@ struct CustomCharacter {
     // its own voice ([Voice]): for a dialogue event (BAT battle cry, TNT taunt, KIL kill, FSE first sight, HIT hit or
     // saber lock, ...), the lines it says instead of the base's (their ids, upper case, e.g. "LUK003")
     std::vector<std::pair<std::string, std::vector<std::string>>> voice;
+    // player 2's in a Versus mirror (both chose it; [Voice2], the same events), e.g. another JK2 Jedi's; empty: its own
+    std::vector<std::pair<std::string, std::vector<std::string>>> voice2;
     bool hasSaber = false;
     float saber[3] = {};     // its saber's colour (0-1), when it has one of its own
     bool hasSaber2 = false;
@@ -60,6 +63,7 @@ struct CustomCharacter {
     bool forceStorm = false;
     std::string hudFace;     // the HUD portrait shown for it (a donor's path, its picture served: see customchars.cpp)
     std::string face;        // its HUD portrait's path (interfc\hud_b\hud_face_<costume>01), when the mod has one
+    std::string duelFace;    // player 2's HUD portrait in Versus (<face>_duel, beside its <texture>_duel look), if any
     std::string source;      // the file it came from
     // a fighter of the port's own, made from the game's assets (no files: Commander Cody): its Versus pictures are the
     // disc's (selectBust, a picture the menus' PAK has) and copies of disc pictures the port writes (generated)
@@ -90,6 +94,10 @@ void CustomCharactersFrame();
 
 // The custom character a character is (recognised by its costume list, the port's own), or null.
 const CustomCharacter* CustomCharacterOf(const uint8_t* character);
+// True for Versus player 2 when both players chose the same fighter (its look's texture suffix "_duel").
+bool IsMirrorPlayer2(const uint8_t* character);
+// The HUD portrait a custom character shows now (player 2's in a Versus mirror, else its own).
+const std::string& CustomFaceOf(const uint8_t* character, const CustomCharacter& custom);
 // The next line `speaker` starts for `event` (three letters, e.g. "TKE": an event its speaker code has entries for)
 // says `lineId` instead (a line of the mounted dialogue archives, e.g. "CLC013"), for the next few seconds; the event is
 // then asked as usual (the script's SayEvent, 0x17ACC0, in the character's script turn).
