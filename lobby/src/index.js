@@ -100,7 +100,8 @@ export class Lobby {
       const players = Math.max(1, Math.min(2, Number(body.players) | 0));
       const room = {
         code,
-        name: clean(body.name, 16) || "NONAME",
+        name: clean(body.name, 24) || "PUBLIC ROOM",
+        host: clean(body.host, 16),
         mode: clean(body.mode, 16) || "VERSUS",
         arena: clean(body.arena, 24),
         players,
@@ -127,7 +128,7 @@ export class Lobby {
     if (request.method === "GET" && url.pathname === "/rooms.txt") {
       const version = Number(url.searchParams.get("version")) | 0;
       const lines = this.list(version).map((r) =>
-        [r.code, r.name, r.mode, r.arena, r.players, r.slots].join("\t"));
+        [r.code, r.name, r.mode, r.arena, r.players, r.slots, r.host || ""].join("\t"));
       return new Response(lines.join("\n"), { headers: { ...headers, "Content-Type": "text/plain; charset=utf-8" } });
     }
 
@@ -139,7 +140,7 @@ export class Lobby {
 
     if (request.method === "GET" && url.pathname === "/") {
       const rows = this.list(0)
-        .map((r) => `<tr><td>${escapeHtml(r.name)}</td><td>${r.players}/${r.slots}</td><td>${escapeHtml(r.mode)}</td>` +
+        .map((r) => `<tr><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.host || "")}</td><td>${r.players}/${r.slots}</td><td>${escapeHtml(r.mode)}</td>` +
           `<td>${escapeHtml(r.arena)}</td></tr>`)
         .join("");
       const page = `<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -149,8 +150,8 @@ export class Lobby {
 h1{font-size:20px}table{border-collapse:collapse;width:100%;max-width:720px}
 td,th{padding:8px 12px;border-bottom:1px solid #30363d;text-align:left}th{color:#8b949e;font-weight:600}</style>
 </head><body><h1>SWROTS-PC public rooms</h1>
-<table><tr><th>Host</th><th>Players</th><th>Mode</th><th>Arena</th></tr>${rows ||
-        '<tr><td colspan="4">No public room right now.</td></tr>'}</table>
+<table><tr><th>Room</th><th>Host</th><th>Players</th><th>Mode</th><th>Arena</th></tr>${rows ||
+        '<tr><td colspan="5">No public room right now.</td></tr>'}</table>
 <p style="color:#8b949e">Join from the game: Online &gt; Public Rooms.</p></body></html>`;
       return new Response(page, { headers: { ...headers, "Content-Type": "text/html; charset=utf-8" } });
     }

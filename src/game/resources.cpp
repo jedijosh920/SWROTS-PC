@@ -493,6 +493,22 @@ DWORD WINAPI WatchDecodingThread(void*)
     return 0;
 }
 
+// A patched or generated resource's decoding, watched while it lasts.
+struct DecodeWatch {
+    explicit DecodeWatch(const std::string& name)
+    {
+        bool expected = false;
+        if (g_WatchStarted.compare_exchange_strong(expected, true))
+            CloseHandle(CreateThread(nullptr, 0, &WatchDecodingThread, nullptr, 0, nullptr));
+        strncpy_s(g_DecodingName, name.c_str(), _TRUNCATE);
+        g_DecodingSince = GetTickCount64();
+        g_DecodingThread = GetCurrentThreadId();
+    }
+    ~DecodeWatch() { g_DecodingThread = 0; }
+    DecodeWatch(const DecodeWatch&) = delete;
+    DecodeWatch& operator=(const DecodeWatch&) = delete;
+};
+
 std::mutex g_PatchLock;
 std::unordered_map<std::string, ResourcePatch> g_Patches;
 
@@ -568,9 +584,10 @@ struct GameBuffer {
 };
 
 // Decodes a generated resource as a non-PAK read (t_Top set by the caller).
-int DecodeGenerated(uint8_t* packer, const std::vector<uint8_t>& data, EnginePath* path, int typeId, void* record,
-    int extra, int context)
+int DecodeGenerated(const std::string& name, uint8_t* packer, const std::vector<uint8_t>& data, EnginePath* path,
+    int typeId, void* record, int extra, int context)
 {
+    DecodeWatch watch(name);
     EngineObject* file = FileMemoryCtor(EngineAlloc()(kFileMemorySize), nullptr);
     GameBuffer buffer(data);
     VirtualAt<FileMemoryOpenFn>(file, kFileMemoryOpenSlot)(file, nullptr, buffer.data, uint32_t(data.size()));
@@ -622,18 +639,12 @@ bool ReadElsewhere(uint8_t* packer, const PakIndex* owner, const PakIndex::Entry
         VirtualAt<FileMemoryOpenFn>(file, kFileMemoryOpenSlot)(file, nullptr, buffer.data, uint32_t(data.size()));
         packer[kPackerLastWasImage] = 0;
         ReadSource source = { nullptr, path, 0, {}, record };
-        const bool patched = PatchFor(entry.name) != nullptr;
-        if (patched) {
-            bool expected = false;
-            if (g_WatchStarted.compare_exchange_strong(expected, true))
-                CloseHandle(CreateThread(nullptr, 0, &WatchDecodingThread, nullptr, 0, nullptr));
-            strncpy_s(g_DecodingName, entry.name.c_str(), _TRUNCATE);
-            g_DecodingSince = GetTickCount64();
-            g_DecodingThread = GetCurrentThreadId();
+        if (PatchFor(entry.name)) {
+            DecodeWatch watch(entry.name);
+            result = DecodeFromFile(file, uint32_t(data.size()), context, &source, typeId, extra);
+        } else {
+            result = DecodeFromFile(file, uint32_t(data.size()), context, &source, typeId, extra);
         }
-        result = DecodeFromFile(file, uint32_t(data.size()), context, &source, typeId, extra);
-        if (patched)
-            g_DecodingThread = 0;
     }
     LOG_INFO("PAK: %s loaded from %ls", entry.name.c_str(), owner->Path().c_str());
     return true;
@@ -717,7 +728,7 @@ int __fastcall ReadHook(void* packer, void* edx, DecodeFn decode, EnginePath* pa
                     return result;
             } else if (const std::vector<uint8_t>* generated = Generated(wanted)) {
                 t_Top = &pending;
-                int result = DecodeGenerated(p, *generated, path, typeId, record, extra, context);
+                int result = DecodeGenerated(wanted, p, *generated, path, typeId, record, extra, context);
                 t_Top = pending.outer;
                 return result;
             }
@@ -766,7 +777,7 @@ int __fastcall ReadHook(void* packer, void* edx, DecodeFn decode, EnginePath* pa
                             return result;
                     } else if (const std::vector<uint8_t>* generated = Generated(wanted)) {
                         t_Top = &pending;
-                        int result = DecodeGenerated(p, *generated, path, typeId, record, extra, context);
+                        int result = DecodeGenerated(wanted, p, *generated, path, typeId, record, extra, context);
                         t_Top = pending.outer;
                         return result;
                     } else {

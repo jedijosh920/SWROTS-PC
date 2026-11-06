@@ -26,5 +26,9 @@ bool OnlineStartVersus();
 bool OnlineShowLost(const std::string& why);
 // The room code's keyboard is on screen (its legend for pasting: the online HUD).
 bool OnlineCodeKeyboardShown();
+// The code screen has the game's own Paste prompt (Y; Ctrl+V too).
+bool OnlinePastePromptBuilt();
+// The room code's keyboard opened (tests: the console's online keyboard).
+void OnlineOpenCodeKeyboard();
 
 } // namespace swrots::game

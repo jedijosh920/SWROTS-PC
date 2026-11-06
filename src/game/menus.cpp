@@ -419,8 +419,9 @@ bool MakeRow(std::vector<uint8_t>& row, const std::string& templateName, const s
 } // namespace
 
 bool BuildSettingsScreen(std::vector<uint8_t>& data, const char* screenName, const std::vector<ShellScreenRow>& rows,
-    const char* titleId, const char* valueAction, const char* buttonAction)
+    const char* titleId, const char* valueAction, const char* buttonAction, const char* focus)
 {
+    const std::string first = focus ? focus : rows[0].name;
     if (!ReadDiscResource(kSettingsFile, data))
         return false;
     size_t valueBegin, valueEnd, buttonBegin, buttonEnd, veilBegin, veilEnd;
@@ -515,11 +516,11 @@ bool BuildSettingsScreen(std::vector<uint8_t>& data, const char* screenName, con
     // the screen's name and its first item, then its number of items (after them), then the title
     size_t end = 64;
     if (!MenuReplaceString(data, 0, end, "settings", screenName) ||
-        !MenuReplaceString(data, 0, end, "controller", rows[0].name)) {
+        !MenuReplaceString(data, 0, end, "controller", first)) {
         LOG_WARN("Menus: the Settings screen's header is not as expected; no %s screen", screenName);
         return false;
     }
-    const size_t countAt = 4 + MenuString(screenName).size() + MenuString(rows[0].name).size();
+    const size_t countAt = 4 + MenuString(screenName).size() + MenuString(first).size();
     uint32_t items;
     std::memcpy(&items, data.data() + countAt, 4);
     items = uint32_t(int(items) + itemDelta);

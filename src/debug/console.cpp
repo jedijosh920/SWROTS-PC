@@ -1054,12 +1054,16 @@ void Online(const std::vector<std::string>& words)
     } else if (_stricmp(what.c_str(), "leave") == 0) {
         net::OnlineLeave();
     } else if (_stricmp(what.c_str(), "set") == 0 && words.size() >= 5) { // online set <rounds> <arena 0|1> <rematch 0|1>
-        net::OnlineRoomSettings room;
+        net::OnlineRoomSettings room = net::OnlineStatus().room; // its name kept
         room.rounds = uint8_t(std::clamp(std::atoi(words[2].c_str()), 1, 5));
         room.arena = uint8_t(std::clamp(std::atoi(words[3].c_str()), 0, 3));
         room.rematch = uint8_t(std::atoi(words[4].c_str()) ? 1 : 0);
         room.open = uint8_t(words.size() > 5 && std::atoi(words[5].c_str()) ? 1 : 0); // [public 0|1]
         net::SetOnlineRoom(room);
+    } else if (_stricmp(what.c_str(), "keyboard") == 0) { // online keyboard: the room code's keyboard (tests)
+        game::OnlineOpenCodeKeyboard();
+    } else if (_stricmp(what.c_str(), "ready") == 0) { // online ready [0|1]: this player's Ready in the room
+        net::SetOnlineReady(words.size() < 3 || std::atoi(words[2].c_str()) != 0);
     } else if (_stricmp(what.c_str(), "arena") == 0 && words.size() >= 6) {
         // online arena <class 1> <class 2> <map> <arena number>: a Versus duel as the select screens start one (tests)
         kernel::LaunchGame("v_sessionCreated:1 v_ch01:0 v_ch02:0 v_ch03:0 v_ch04:0 v_ch05:0 v_ch06:0 v_c1:" + words[2] +

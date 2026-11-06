@@ -9,6 +9,8 @@
 #include <cfloat>
 #include <string>
 
+#include "core/settings.h"
+#include "d3d/d3d.h"
 #include "debug/gamefont.h"
 #include "game/characters.h"
 #include "game/coop.h"
@@ -151,21 +153,33 @@ void VersusNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float 
     name(vp->Pos.x + vp->Size.x * 0.836f, p2, 1.0f);
 }
 
-// The room code's keyboard: under its legends (Scroll, Select, Back), one more for pasting, as theirs: a key's picture
-// (a dark rounded key with its name) and the action in the menus' font.
+// The room code's keyboard: a fourth legend among its own (Scroll, Select, Paste, Back: the code screen spreads them,
+// onlinemenu.cpp), in the third place: the key's picture as the keyboard prompts draw one (a dark key with a frosty
+// blue rim) and the action in the menus' font, on their line (the screen's 640 x 480: icons at y 333, 32 high; the
+// Paste picture at x 375, its text at 408).
 void PasteLegend(const ImGuiViewport* vp, float u)
 {
     const std::string key = "CTRL+V", action = "PASTE";
-    const float keyH = 15 * u, h = 26 * u, padX = 8 * u, gap = 14 * u;
+    // the game's picture in the window (as d3d's PresentFrame fits it: 16:9 or 4:3, black bars)
+    float w = vp->Size.x, hh = vp->Size.y;
+    if (!GetSettings().stretch) {
+        const float aspect = GetSettings().widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
+        if (w > hh * aspect)
+            w = hh * aspect;
+        else
+            hh = w / aspect;
+    }
+    const float left = vp->Pos.x + (vp->Size.x - w) / 2, top = vp->Pos.y + (vp->Size.y - hh) / 2;
+    const float sx = w / 640.0f, sy = hh / 480.0f;
+    const float cy = top + (333.0f + 16.0f) * sy;
+    const float keyH = 13 * u, h = 26 * u, padX = 6 * u, boxH = 28 * u;
     const float keyW = ImGui::GetFont()->CalcTextSizeA(keyH, FLT_MAX, 0, key.c_str()).x + 2 * padX;
-    const float actionW = GameFontWidthOf(GameFont::Menu, h, action);
-    const float boxH = 30 * u, total = keyW + gap + actionW;
-    const float x = vp->Pos.x + (vp->Size.x - total) / 2, cy = vp->Pos.y + vp->Size.y * 0.80f;
-    const ImVec2 a(x, cy - boxH / 2), b(x + keyW, cy + boxH / 2);
-    g_Draw->AddRectFilled(a, b, IM_COL32(16, 18, 24, 235), 6 * u);
-    g_Draw->AddRect(a, b, IM_COL32(150, 175, 220, 255), 6 * u, 0, 1.5f * u);
-    g_Draw->AddText(ImGui::GetFont(), keyH, ImVec2(x + padX, cy - keyH / 2), IM_COL32(235, 235, 235, 255), key.c_str());
-    const ImVec2 at(x + keyW + gap, cy - h / 2);
+    const float textX = left + 408.0f * sx, iconRight = textX - 4 * u;
+    const ImVec2 a(iconRight - keyW, cy - boxH / 2), b(iconRight, cy + boxH / 2);
+    g_Draw->AddRectFilled(a, b, IM_COL32(12, 14, 20, 240), 5 * u);
+    g_Draw->AddRect(a, b, IM_COL32(150, 190, 235, 255), 5 * u, 0, 1.5f * u);
+    g_Draw->AddText(ImGui::GetFont(), keyH, ImVec2(a.x + padX, cy - keyH / 2), IM_COL32(235, 235, 235, 255), key.c_str());
+    const ImVec2 at(textX + 6 * u, cy - h / 2);
     if (!GameFontTextOf(GameFont::Menu, g_Draw, at, h, IM_COL32(205, 220, 245, 255), action))
         Text(at.x, at.y, h, kWhite, action, 0.0f);
 }
@@ -208,19 +222,20 @@ void DrawOnlineHud()
     g_Draw = ImGui::GetForegroundDrawList();
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float u = std::max(0.5f, vp->Size.y / 720.0f);
-    if (game::OnlineCodeKeyboardShown())
+    if (game::OnlineCodeKeyboardShown() && !game::OnlinePastePromptBuilt())
         PasteLegend(vp, u);
+    // Across the restarts to the room and back: the menus' last picture (with the game's popup) held on screen
+    // (d3d::SetFrameHold); a black cover only if it could not be kept and the game's restart shows.
+    static uint32_t coverFrom = 0;
     if (s.entering || s.leaving) {
-        EnteringCover(s, vp, u);
+        if (!coverFrom)
+            coverFrom = d3d::DeviceGeneration();
+        if (!d3d::FrameHeld() && d3d::DeviceGeneration() != coverFrom)
+            EnteringCover(s, vp, u);
         return;
     }
+    coverFrom = 0;
     switch (s.phase) {
-    case net::OnlinePhase::Preparing:
-        Banner(vp, u, 0.12f, kGold, "Online", s.host ? "Sending the profile to your friend..." : "Getting the host's profile...");
-        break;
-    case net::OnlinePhase::Starting:
-        Banner(vp, u, 0.12f, kGold, "Online", "Starting the match...");
-        break;
     case net::OnlinePhase::Playing: {
         if (s.pingMs >= 0)
             Text(vp->Pos.x + vp->Size.x - 16 * u, vp->Pos.y + 10 * u, 14 * u, kDim, std::to_string(s.pingMs) + " ms", 1.0f);

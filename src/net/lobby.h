@@ -11,7 +11,8 @@ namespace swrots::net {
 
 struct PublicRoom {
     std::string code;  // the room code (what joining takes)
-    std::string name;  // the host's name
+    std::string name;  // the room's name
+    std::string host;  // the host's name
     std::string mode;  // VERSUS
     std::string arena; // the room's arena setting, or the arena played
     int players = 0, slots = 2;

@@ -42,7 +42,8 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr uint32_t kMagic = 0x4E525753; // 'SWRN'
-constexpr uint16_t kProtocol = 6; // 2: the players' names; 3: client/server matches; 4: the arena's picker; 5: props; 6: a public room
+constexpr uint16_t kProtocol = 7; // 2: the players' names; 3: client/server matches; 4: the arena's picker; 5: props; 6: a public room;
+                                  // 7: the room's name, the players' Ready
 constexpr uint16_t kDefaultPort = 27960;
 constexpr uint32_t kHistory = 512;      // frames of inputs kept (a power of two)
 constexpr uint32_t kMaxSend = 48;       // inputs in one packet at most
@@ -83,6 +84,7 @@ constexpr int kConnectMs = 20000;       // the guest gives up calling after that
 enum class Msg : uint8_t {
     Hello = 1, Welcome, Reject, Chunk, ChunkAck, Ready, Start, Started, Input, Ping, Pong, Bye, Pages,
     Pad, Launch, State, Room, Props, // client/server
+    Seat, // the guest's Ready in the room
 };
 
 constexpr uint32_t kPage = 1024;      // a desync's report: the data checked, hashed by 1 KiB pages
@@ -159,10 +161,19 @@ struct PadMsg {
     uint8_t inDuel;   // the sender's game is in a duel (the host waits for the guest's at a duel's start)
     uint32_t screen;  // the front-end screen the sender's game shows (the guest's follows the host's), 0 none
 };
-// Client/server: the host's room (its settings), a few times a second.
+// Client/server: the host's room (its settings, the players' Ready), a few times a second.
 struct RoomMsg {
     Header h;
     OnlineRoomSettings room;
+    uint8_t hostReady, guestReady;
+    uint16_t starts; // the matches started from the room so far (a Ready counts for the next one only)
+};
+// Client/server: the guest's Ready in the room, a few times a second.
+struct SeatMsg {
+    Header h;
+    uint8_t ready;
+    uint8_t reserved;
+    uint16_t starts; // the host's count it is for
 };
 // Client/server: the host's game starts a level (or the menus): the guest's follows.
 struct LaunchMsg {
@@ -517,6 +528,8 @@ struct Session {
     uint32_t remoteReads = 0, remoteChanges = 0;
     bool remoteInDuel = false, duelStartWaited = false;
     OnlineRoomSettings room;            // the host's (the guest: as it last came)
+    bool localReady = false, remoteReady = false; // the players' Ready in the room (this PC's, the other's)
+    uint16_t starts = 0;                // the matches started from the room (the host's count; the guest's as it came)
     uint32_t remoteScreen = 0;          // the other's front-end screen (the guest follows the host's)
     uint32_t screen = 0, screenSince = 0; // this game's, and the frame it came
     bool toRoom = false;                // to the room's screen once the front end is up
@@ -1134,7 +1147,23 @@ void OnServerMsgLocked(Msg type, const uint8_t* data, size_t size)
         if (!g_S.host && size >= sizeof(RoomMsg)) {
             RoomMsg m;
             std::memcpy(&m, data, sizeof(m));
+            m.room.name[sizeof(m.room.name) - 1] = 0;
             g_S.room = m.room;
+            if (m.starts != g_S.starts) { // a match started from the room: Ready is for the next one
+                g_S.starts = m.starts;
+                g_S.localReady = false;
+            }
+            g_S.remoteReady = m.hostReady != 0;
+        }
+        break;
+    case Msg::Seat:
+        if (g_S.host && size >= sizeof(SeatMsg)) {
+            SeatMsg m;
+            std::memcpy(&m, data, sizeof(m));
+            if (m.starts == g_S.starts && g_S.remoteReady != (m.ready != 0)) {
+                g_S.remoteReady = m.ready != 0;
+                LOG_INFO("Online: the guest is %s", g_S.remoteReady ? "ready" : "no longer ready");
+            }
         }
         break;
     case Msg::Props:
@@ -1697,8 +1726,9 @@ void HandleLocked(const uint8_t* data, size_t size, const Endpoint& from)
         }
     }
     // Both ways.
-    if (type == Msg::Pad || type == Msg::Launch || type == Msg::State || type == Msg::Room || type == Msg::Props) {
-        if (g_S.server && (g_S.armed || g_S.bootPending || type == Msg::Room))
+    if (type == Msg::Pad || type == Msg::Launch || type == Msg::State || type == Msg::Room || type == Msg::Props ||
+        type == Msg::Seat) {
+        if (g_S.server && (g_S.armed || g_S.bootPending || type == Msg::Room || type == Msg::Seat))
             OnServerMsgLocked(type, data, size);
         return;
     }
@@ -1800,7 +1830,17 @@ void TickLocked()
         RoomMsg r = {};
         r.h = MakeHeader(Msg::Room, g_S.token);
         r.room = g_S.room;
+        r.hostReady = g_S.localReady ? 1 : 0;
+        r.guestReady = g_S.remoteReady ? 1 : 0;
+        r.starts = g_S.starts;
         SendLocked(r);
+    }
+    if (!g_S.host && g_S.server && g_S.peer.Valid() && g_S.welcomed) {
+        SeatMsg m = {};
+        m.h = MakeHeader(Msg::Seat, g_S.token);
+        m.ready = g_S.localReady ? 1 : 0;
+        m.starts = g_S.starts;
+        SendLocked(m);
     }
     if (g_S.peer.Valid()) {
         PingMsg p = {};
@@ -1938,6 +1978,8 @@ void ResetSessionLocked(bool host)
     g_S.remoteInDuel = g_S.duelStartWaited = false;
     g_S.remoteScreen = g_S.screen = g_S.screenSince = g_S.followTried = 0;
     g_S.toRoom = g_S.lost = false;
+    g_S.localReady = g_S.remoteReady = false;
+    g_S.starts = 0;
     g_S.joinAt = g_S.arenaAt = ~0u;
     g_S.started = g_S.lastHeard = Clock::now();
     LARGE_INTEGER counter;
@@ -2069,6 +2111,8 @@ OnlineStatusInfo OnlineStatus()
     i.guestHere = g_S.host && g_S.peer.Valid();
     i.lost = g_S.lost;
     i.room = g_S.room;
+    i.localReady = g_S.localReady;
+    i.remoteReady = g_S.remoteReady;
     i.entering = g_S.entering && (g_S.phase == OnlinePhase::Starting || g_S.phase == OnlinePhase::Playing);
     i.leaving = g_S.leaving && g_S.phase == OnlinePhase::Ended;
     if (g_S.inLevel && !g_S.lastMap.empty()) { // U170_EP4_Deathstar_02: EP4 DEATHSTAR 02
@@ -2116,11 +2160,32 @@ void SetOnlineRoom(const OnlineRoomSettings& room)
     std::lock_guard<std::mutex> lock(g_S.lock);
     if (!g_S.host && g_S.phase != OnlinePhase::Off && g_S.phase != OnlinePhase::Ended)
         return; // the host's to set
-    if (room.rounds != g_S.room.rounds || room.arena != g_S.room.arena || room.rematch != g_S.room.rematch ||
-        room.open != g_S.room.open)
-        LOG_INFO("Online: room settings: %d rounds, arena %d, rematch %s, %s", room.rounds, room.arena,
-            room.rematch ? "on" : "off", room.open ? "public" : "private");
-    g_S.room = room;
+    OnlineRoomSettings r = room;
+    r.name[sizeof(r.name) - 1] = 0;
+    if (r.rounds != g_S.room.rounds || r.arena != g_S.room.arena || r.rematch != g_S.room.rematch ||
+        r.open != g_S.room.open || std::strcmp(r.name, g_S.room.name) != 0)
+        LOG_INFO("Online: room settings: '%s', %d rounds, arena %d, rematch %s, %s", r.name, r.rounds, r.arena,
+            r.rematch ? "on" : "off", r.open ? "public" : "private");
+    g_S.room = r;
+}
+
+void SetOnlineReady(bool ready)
+{
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    if (g_S.localReady != ready)
+        LOG_INFO("Online: %s", ready ? "ready" : "no longer ready");
+    g_S.localReady = ready;
+}
+
+bool OnlineTakeStart()
+{
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    if (!g_S.host || !g_S.localReady || !g_S.remoteReady || !g_S.peer.Valid())
+        return false;
+    g_S.localReady = g_S.remoteReady = false;
+    ++g_S.starts;
+    LOG_INFO("Online: both players ready: the match starts (%u)", unsigned(g_S.starts));
+    return true;
 }
 
 bool OnlineActive()

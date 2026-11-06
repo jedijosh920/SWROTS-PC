@@ -37,6 +37,7 @@ struct OnlineRoomSettings {
     uint8_t rematch = 0;  // after a match: 0 back to the room, 1 the fighters' select again
     uint8_t picker = 0;   // who picks on the arena screen now (the host sets it): 0 the host, 1 the guest
     uint8_t open = 0;     // a public room: listed in every player's Public Rooms
+    char name[24] = {};   // the room's name (Room Settings; never empty once the room is open)
 };
 #pragma pack(pop)
 
@@ -58,6 +59,7 @@ struct OnlineStatusInfo {
     bool entering = false;  // the match's start until its room shows (the game's restart, its main menu: covered)
     bool leaving = false;   // the match's end until the Online screen shows (the same)
     std::string arenaPlayed; // the host in a duel: its arena (from its map)
+    bool localReady = false, remoteReady = false; // in the room: each player's Ready (both: the host starts the match)
 };
 
 // The protocol's version (two PCs play together only on the same one; Public Rooms lists those).
@@ -68,6 +70,11 @@ std::string OnlinePlayerName();
 void SetOnlinePlayerName(const std::string& name);
 // The host's room settings (sent to the guest).
 void SetOnlineRoom(const OnlineRoomSettings& room);
+
+// In the room: this player's Ready (both players ready: the host's game starts the match, OnlineTakeStart).
+void SetOnlineReady(bool ready);
+// The host: true once (both cleared for the next time) when both players are ready in the room.
+bool OnlineTakeStart();
 
 // The host opens a room. False when it could not (the message says why).
 bool OnlineHost();

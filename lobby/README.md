@@ -8,9 +8,9 @@ disappears, and a host that closes its room takes it away.
 
 | Request | What |
 | --- | --- |
-| `POST /rooms` | announce or refresh a room: JSON `{code, name, mode, arena, players, version}` |
+| `POST /rooms` | announce or refresh a room: JSON `{code, name, host, mode, arena, players, version}` (name: the room's) |
 | `DELETE /rooms/<code>` | take a room away (only from the address that announced it) |
-| `GET /rooms.txt?version=N` | the rooms of protocol `N`, one a line: code, name, mode, arena, players, slots (tab-separated) |
+| `GET /rooms.txt?version=N` | the rooms of protocol `N`, one a line: code, name, mode, arena, players, slots, host (tab-separated) |
 | `GET /rooms` | the same as JSON |
 | `GET /` | a page listing the rooms |
 

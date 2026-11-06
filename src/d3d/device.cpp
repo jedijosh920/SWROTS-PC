@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <vector>
 
 #include "core/crash.h"
 #include "core/log.h"
@@ -82,6 +83,142 @@ static Surface* CreateXboxSurface(UINT width, UINT height, DWORD format, UINT by
 }
 
 // ---------------------------------------------------------------------------
+// The held picture (SetFrameHold)
+// ---------------------------------------------------------------------------
+static int g_HoldMode = 0;
+static uint32_t g_DeviceGeneration = 0;
+static IDirect3DTexture9* g_LastTexture = nullptr; // the game's last frame, copied each frame while kept
+static IDirect3DSurface9* g_LastFrame = nullptr;
+static std::vector<uint32_t> g_HeldPixels;         // the last frame, read as the device went
+static UINT g_HeldWidth = 0, g_HeldHeight = 0;
+static IDirect3DTexture9* g_HeldTexture = nullptr; // the held pixels on the new device
+static IDirect3DSurface9* g_HeldFrame = nullptr;
+
+static void ReleaseHeldSurfaces()
+{
+    if (g_LastFrame) g_LastFrame->Release();
+    if (g_LastTexture) g_LastTexture->Release();
+    if (g_HeldFrame) g_HeldFrame->Release();
+    if (g_HeldTexture) g_HeldTexture->Release();
+    g_LastFrame = g_HeldFrame = nullptr;
+    g_LastTexture = g_HeldTexture = nullptr;
+}
+
+void SetFrameHold(int mode)
+{
+    if (mode != 2 && !g_HeldPixels.empty()) {
+        g_HeldPixels.clear();
+        g_HeldPixels.shrink_to_fit();
+        if (g_HeldFrame) g_HeldFrame->Release();
+        if (g_HeldTexture) g_HeldTexture->Release();
+        g_HeldFrame = nullptr;
+        g_HeldTexture = nullptr;
+    }
+    if (mode == 0 && g_LastFrame) {
+        g_LastFrame->Release();
+        g_LastTexture->Release();
+        g_LastFrame = nullptr;
+        g_LastTexture = nullptr;
+    }
+    g_HoldMode = mode;
+}
+
+bool FrameHeld()
+{
+    return g_HoldMode == 2 && g_HeldFrame != nullptr;
+}
+
+uint32_t DeviceGeneration()
+{
+    return g_DeviceGeneration;
+}
+
+// The game's frame copied (kept for the device's end).
+static void KeepLastFrame(IDirect3DSurface9* frame)
+{
+    D3DSURFACE_DESC desc, have;
+    if (!frame || FAILED(frame->GetDesc(&desc)))
+        return;
+    if (g_LastFrame && (FAILED(g_LastFrame->GetDesc(&have)) || have.Width != desc.Width || have.Height != desc.Height)) {
+        g_LastFrame->Release();
+        g_LastTexture->Release();
+        g_LastFrame = nullptr;
+        g_LastTexture = nullptr;
+    }
+    if (!g_LastFrame) {
+        if (FAILED(g_Device->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8,
+                D3DPOOL_DEFAULT, &g_LastTexture, nullptr)))
+            return;
+        g_LastTexture->GetSurfaceLevel(0, &g_LastFrame);
+    }
+    g_Device->StretchRect(frame, nullptr, g_LastFrame, nullptr, D3DTEXF_NONE);
+}
+
+// As the device goes: the kept frame read back (its pixels outlive the device).
+static void ReadLastFrame()
+{
+    if (!g_LastFrame || g_HoldMode == 0)
+        return;
+    D3DSURFACE_DESC desc;
+    IDirect3DSurface9* staging = nullptr;
+    D3DLOCKED_RECT lr;
+    if (FAILED(g_LastFrame->GetDesc(&desc)) ||
+        FAILED(g_Device->CreateOffscreenPlainSurface(desc.Width, desc.Height, desc.Format, D3DPOOL_SYSTEMMEM, &staging,
+            nullptr)) ||
+        FAILED(g_Device->GetRenderTargetData(g_LastFrame, staging)) || FAILED(staging->LockRect(&lr, nullptr,
+            D3DLOCK_READONLY))) {
+        if (staging) staging->Release();
+        LOG_WARN("Held picture: the last frame could not be read");
+        return;
+    }
+    g_HeldWidth = desc.Width;
+    g_HeldHeight = desc.Height;
+    g_HeldPixels.resize(size_t(desc.Width) * desc.Height);
+    for (UINT y = 0; y < desc.Height; ++y)
+        std::memcpy(g_HeldPixels.data() + size_t(y) * desc.Width, static_cast<const uint8_t*>(lr.pBits) + size_t(y) *
+            lr.Pitch, size_t(desc.Width) * 4);
+    staging->UnlockRect();
+    staging->Release();
+    LOG_INFO("Held picture: the last frame kept (%ux%u)", desc.Width, desc.Height);
+}
+
+// The held pixels as a surface of the new device.
+static IDirect3DSurface9* HeldSurface()
+{
+    if (g_HeldFrame || g_HeldPixels.empty())
+        return g_HeldFrame;
+    IDirect3DSurface9* staging = nullptr;
+    D3DLOCKED_RECT lr;
+    if (FAILED(g_Device->CreateTexture(g_HeldWidth, g_HeldHeight, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8,
+            D3DPOOL_DEFAULT, &g_HeldTexture, nullptr))) {
+        g_HeldPixels.clear();
+        return nullptr;
+    }
+    g_HeldTexture->GetSurfaceLevel(0, &g_HeldFrame);
+    if (FAILED(g_Device->CreateOffscreenPlainSurface(g_HeldWidth, g_HeldHeight, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM,
+            &staging, nullptr)) || FAILED(staging->LockRect(&lr, nullptr, 0))) {
+        if (staging) staging->Release();
+        g_HeldPixels.clear();
+        return nullptr;
+    }
+    for (UINT y = 0; y < g_HeldHeight; ++y)
+        std::memcpy(static_cast<uint8_t*>(lr.pBits) + size_t(y) * lr.Pitch, g_HeldPixels.data() + size_t(y) *
+            g_HeldWidth, size_t(g_HeldWidth) * 4);
+    staging->UnlockRect();
+    const bool ok = SUCCEEDED(g_Device->UpdateSurface(staging, nullptr, g_HeldFrame, nullptr));
+    staging->Release();
+    if (!ok) {
+        g_HeldFrame->Release();
+        g_HeldTexture->Release();
+        g_HeldFrame = nullptr;
+        g_HeldTexture = nullptr;
+        g_HeldPixels.clear();
+        LOG_WARN("Held picture: it could not be shown");
+    }
+    return g_HeldFrame;
+}
+
+// ---------------------------------------------------------------------------
 // Device
 // ---------------------------------------------------------------------------
 // Releases the host device and everything created on it.
@@ -89,6 +226,8 @@ static void ReleaseDevice()
 {
     if (!g_Device)
         return;
+    ReadLastFrame();
+    ReleaseHeldSurfaces();
     debug::MenuDeviceReleasing();
     ReleaseHostResources();
     FlightReleaseResources();
@@ -183,6 +322,7 @@ static HRESULT __stdcall XbCreateDevice(UINT adapter, DWORD deviceType, HWND foc
             &g_HostDepth, nullptr)))
         Fatal("Could not create the %ux%u frame buffer. Lower ResolutionScale in settings.ini.", hostWidth, hostHeight);
     g_HostBackTexture->GetSurfaceLevel(0, &g_HostBackBuffer);
+    ++g_DeviceGeneration;
     LOG_INFO("Rendering at %ux%u (%ux)", hostWidth, hostHeight, g_RenderScale);
     debug::MenuDeviceCreated(g_Device, GameWindow());
 
@@ -612,7 +752,18 @@ static void PresentFrame()
     dest.bottom = dest.top + h;
     if (w != LONG(out.Width) || h != LONG(out.Height))
         g_Device->ColorFill(g_SwapChainBuffer, nullptr, D3DCOLOR_XRGB(0, 0, 0));
-    g_Device->StretchRect(g_HostBackBuffer, nullptr, g_SwapChainBuffer, &dest, D3DTEXF_LINEAR);
+    { // online play: the last picture kept while in a session, shown across the restarts (to the room and back)
+        const net::OnlineStatusInfo online = net::OnlineStatus();
+        SetFrameHold(online.entering || online.leaving ? 2 : online.phase != net::OnlinePhase::Off ? 1 : 0);
+    }
+    IDirect3DSurface9* source = g_HostBackBuffer;
+    if (g_HoldMode == 2 && !g_HeldPixels.empty()) {
+        if (IDirect3DSurface9* held = HeldSurface())
+            source = held;
+    } else if (g_HoldMode != 0) {
+        KeepLastFrame(g_HostBackBuffer);
+    }
+    g_Device->StretchRect(source, nullptr, g_SwapChainBuffer, &dest, D3DTEXF_LINEAR);
     // an overlay (with the menu closed) is part of the picture, screenshots too; the menu is not
     const bool menu = debug::MenuOpen();
     if (!menu && debug::OverlayShown())

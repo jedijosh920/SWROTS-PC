@@ -68,7 +68,8 @@ struct ShellScreenRow {
     std::string name, textId;
     bool button;
 };
+// `focus`: the row the screen opens on (by default its first).
 bool BuildSettingsScreen(std::vector<uint8_t>& data, const char* screenName, const std::vector<ShellScreenRow>& rows,
-    const char* titleId, const char* valueAction, const char* buttonAction);
+    const char* titleId, const char* valueAction, const char* buttonAction, const char* focus = nullptr);
 
 } // namespace swrots::game

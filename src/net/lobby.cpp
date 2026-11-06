@@ -151,7 +151,8 @@ std::string Announcement(std::string& code)
         return {};
     static const char* const kArenas[] = { "HOST PICKS", "RANDOM", "LOSER PICKS", "WINNER PICKS" };
     const std::string arena = !s.arenaPlayed.empty() ? s.arenaPlayed : kArenas[s.room.arena < 4 ? s.room.arena : 0];
-    return "{\"code\":" + Json(code) + ",\"name\":" + Json(s.localName) + ",\"mode\":\"VERSUS\",\"arena\":" +
+    const std::string name = s.room.name[0] ? std::string(s.room.name) : s.localName + "'S ROOM";
+    return "{\"code\":" + Json(code) + ",\"name\":" + Json(name) + ",\"host\":" + Json(s.localName) + ",\"mode\":\"VERSUS\",\"arena\":" +
         Json(arena) + ",\"players\":" + std::to_string(s.guestHere ? 2 : 1) + ",\"version\":" +
         std::to_string(OnlineProtocol()) + "}";
 }
@@ -229,6 +230,8 @@ void Run()
                     r.arena = f[3];
                     r.players = atoi(f[4].c_str());
                     r.slots = atoi(f[5].c_str());
+                    if (f.size() > 6)
+                        r.host = f[6];
                     if (r.code != code) // not this PC's own room
                         rooms.push_back(r);
                 }
