@@ -1078,7 +1078,7 @@ void Online(const std::vector<std::string>& words)
         Print(LineKind::Output, game::OnlineStartVersus() ? "  to the Versus select" : "  not in the front end");
         return;
     } else if (_stricmp(what.c_str(), "menu") == 0) { // the Online screen (from any front-end screen; tests)
-        Print(LineKind::Output, game::GoToShellScreen("online") ? "  to the Online screen" : "  not in the front end");
+        Print(LineKind::Output, game::GoToShellScreen("main_menu") ? "  to the main menu" : "  not in the front end");
         return;
     } else if (!what.empty()) {
         Print(LineKind::Output, "  online host | online join <room code or host[:port]> | online leave | online menu | online");

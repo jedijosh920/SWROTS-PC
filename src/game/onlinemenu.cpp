@@ -29,6 +29,7 @@
 #include "core/log.h"
 #include "core/patch.h"
 #include "core/window.h"
+#include "game/hvvmenu.h"
 #include "game/menus.h"
 #include "game/resources.h"
 #include "net/session.h"
@@ -40,8 +41,6 @@ namespace {
 
 constexpr const char* kRowName = "online";
 constexpr const char* kRowText = "IDS_PORT_ONLINE";
-constexpr const char* kScreen = "online";
-constexpr const char* kScreenFile = "interfc\\front_end\\xml\\online.xml";
 constexpr const char* kCodeScreen = "online_code";
 constexpr const char* kCodeFile = "interfc\\front_end\\xml\\online_code.xml";
 constexpr const char* kCodesFile = "interfc\\front_end\\xml\\codes.xml";
@@ -65,6 +64,32 @@ void MoveItem(std::vector<uint8_t>& data, size_t item, float by)
     std::memcpy(data.data() + at, &y, 4);
 }
 
+// A copy of a submenu entry (MainMenuSwitchScreenButton and its bar) as another: its name, text, links and screen
+// (in that order after its name), and its y in the submenu.
+bool MakeEntry(std::vector<uint8_t> entry, const char* const (&from)[5], const char* const (&to)[5], float y,
+    std::vector<uint8_t>& out)
+{
+    const size_t nameAt = MenuString("screenItem").size();
+    size_t end = entry.size();
+    if (!MenuReplaceString(entry, 0, end, from[0], to[0]) || !MenuReplaceString(entry, nameAt + 4, end, from[1], to[1]))
+        return false;
+    const std::vector<uint8_t> text = MenuString(to[1]);
+    const size_t textAt = MenuFind(entry, text, nameAt, end);
+    if (textAt == std::string::npos)
+        return false;
+    for (int i = 2; i < 5; ++i) // down, up, screen: each after the one before (the same text may come twice)
+        if (!MenuReplaceString(entry, textAt + text.size(), end, from[i], std::string("\x01") + to[i]))
+            return false;
+    for (int i = 2; i < 5; ++i)
+        MenuReplaceString(entry, textAt + text.size(), end, std::string("\x01") + to[i], to[i]);
+    float x, oldY;
+    if (!MenuItemPosition(entry, &x, &oldY, false))
+        return false;
+    MenuItemPosition(entry, &x, &y, true);
+    out.insert(out.end(), entry.begin(), entry.end());
+    return true;
+}
+
 bool PatchRows(std::vector<uint8_t>& data)
 {
     size_t settings, settingsEnd, multi, multiEnd, features, featuresEnd, existing, existingEnd;
@@ -75,20 +100,52 @@ bool PatchRows(std::vector<uint8_t>& data)
         return false;
     }
     const size_t nameAt = MenuString("screenItem").size();
-    // the new row: Settings' (name, text, down features, up multiplayer, screen settings), its screen ours, down Settings
-    std::vector<uint8_t> row(data.begin() + settings, data.begin() + settingsEnd);
-    size_t rowEnd = row.size();
-    bool ok = MenuReplaceString(row, 0, rowEnd, "settings", kRowName) &&
-              MenuReplaceString(row, nameAt + 4, rowEnd, "IDS_SETTINGS", kRowText);
-    const std::vector<uint8_t> text = MenuString(kRowText);
-    const size_t textAt = ok ? MenuFind(row, text, nameAt, rowEnd) : std::string::npos;
-    ok = textAt != std::string::npos &&
-         MenuReplaceString(row, textAt + text.size(), rowEnd, "settings", kScreen) && // the screen (after the links)
-         MenuReplaceString(row, textAt + text.size(), rowEnd, "features", "settings");  // down
-    if (!ok) {
-        LOG_WARN("Online menu: the Settings row is not as expected; no Online entry");
+    // The new row: Multi Player's whole (its row, bar, submenu and two entries, up to Settings), as Online with a
+    // submenu of four: Host Game, Join Game, Public Rooms, Online Settings (each opens a screen of the port's; the
+    // entries' choice is the port's own: MainMenuSwitchEvent).
+    std::vector<uint8_t> tree(data.begin() + multi, data.begin() + settings);
+    size_t versus, versusEnd, coop, coopEnd, sub, subEnd;
+    if (!MenuRowBlock(tree, "versus", versus, versusEnd) || !MenuRowBlock(tree, "cooperative", coop, coopEnd) ||
+        !MenuRowBlock(tree, "multiplayersubmenu", sub, subEnd) || !(sub < versus && versus < coop)) {
+        LOG_WARN("Online menu: the Multi Player row is not as expected; no Online entry");
         return false;
     }
+    float x, y0, y1;
+    std::vector<uint8_t> versusBlock(tree.begin() + versus, tree.begin() + coop), coopBlock(tree.begin() + coop, tree.end());
+    if (!MenuItemPosition(versusBlock, &x, &y0, false) || !MenuItemPosition(coopBlock, &x, &y1, false))
+        return false;
+    const float step = y1 - y0;
+    static const char* const kFrom[5] = { "versus", "IDS_VERSUS", "cooperative", "cooperative", "select_jedi" };
+    static const char* const kEntries[4][5] = {
+        { "mmonlinehost", "IDS_PORT_ONLINE_HOST", "mmonlinejoin", "mmonlinesettings", "online_room" },
+        { "mmonlinejoin", "IDS_PORT_ONLINE_JOIN", "mmonlinepublic", "mmonlinehost", "online_code" },
+        { "mmonlinepublic", "IDS_PORT_ONLINE_PUBLIC", "mmonlinesettings", "mmonlinejoin", "online_public" },
+        { "mmonlinesettings", "IDS_PORT_ONLINE_SETTINGS", "mmonlinehost", "mmonlinepublic", "online_settings" },
+    };
+    std::vector<uint8_t> entries;
+    for (int i = 0; i < 4; ++i)
+        if (!MakeEntry(versusBlock, kFrom, kEntries[i], y0 + step * float(i), entries)) {
+            LOG_WARN("Online menu: the Versus entry is not as expected; no Online entry");
+            return false;
+        }
+    std::vector<uint8_t> row(tree.begin(), tree.begin() + versus);
+    // the submenu's children: the u32 before its first one
+    uint32_t children;
+    std::memcpy(&children, row.data() + row.size() - 4, 4);
+    if (children != 2)
+        return false;
+    children = 4;
+    std::memcpy(row.data() + row.size() - 4, &children, 4);
+    size_t rowEnd = row.size();
+    bool ok = MenuReplaceString(row, 0, rowEnd, "multiplayer", kRowName) &&
+              MenuReplaceString(row, nameAt + 4, rowEnd, "IDS_MULTI_PLAYER", kRowText) &&
+              MenuReplaceString(row, nameAt + 4, rowEnd, "singleplayer", "multiplayer") && // up (down: Settings)
+              MenuReplaceString(row, nameAt + 4, rowEnd, "multiplayersubmenu", "onlinesubmenu");
+    if (!ok) {
+        LOG_WARN("Online menu: the Multi Player row's strings are not as expected; no Online entry");
+        return false;
+    }
+    row.insert(row.end(), entries.begin(), entries.end());
     // the edits from the last back (each moves only what follows it): Features one row lower; Settings one row lower,
     // up the new row; the new row before Settings; Multi Player's down the new row
     MoveItem(data, features, kRowStep);
@@ -115,7 +172,51 @@ bool PatchRows(std::vector<uint8_t>& data)
     std::memcpy(&items, data.data() + countAt, 4);
     ++items;
     std::memcpy(data.data() + countAt, &items, 4);
-    LOG_INFO("Online menu: the main menu has an Online entry");
+    LOG_INFO("Online menu: the main menu has an Online entry and its submenu");
+    return true;
+}
+
+// The game's own popup on the main menu (for "connection lost"): the Codes screen's DefaultPopup item (its last, just
+// before the screen's texture sets: their count, then each) and its two texture sets (KeySet, LongKeySet: the
+// screen's only ones), put in the main menu's (whose last item is its own YesNoPopup).
+bool AddMainMenuPopup(std::vector<uint8_t>& data)
+{
+    std::vector<uint8_t> codes;
+    if (!ReadDiscResource(kCodesFile, codes))
+        return false;
+    const std::vector<uint8_t> setTag = MenuString("textureSet");
+    std::vector<uint8_t> popupTag = MenuString("screenItem");
+    const std::vector<uint8_t> popupName = MenuString("popup");
+    popupTag.insert(popupTag.end(), popupName.begin(), popupName.end());
+    const size_t codesPopup = MenuFind(codes, popupTag, 0, codes.size());
+    const size_t codesSets = MenuFind(codes, setTag, 0, codes.size());
+    const size_t menuSets = MenuFind(data, setTag, 0, data.size());
+    if (codesPopup == std::string::npos || codesSets == std::string::npos || menuSets == std::string::npos ||
+        codesPopup + 4 > codesSets || menuSets < 4)
+        return false;
+    uint32_t codesSetCount, menuSetCount;
+    std::memcpy(&codesSetCount, codes.data() + codesSets - 4, 4);
+    std::memcpy(&menuSetCount, data.data() + menuSets - 4, 4);
+    if (codesSetCount != 2 || menuSetCount == 0 || menuSetCount > 32)
+        return false;
+    std::vector<uint8_t> popup(codes.begin() + codesPopup, codes.begin() + codesSets - 4);
+    size_t popupEnd = popup.size();
+    if (!MenuReplaceString(popup, 0, popupEnd, "popup", "DefaultPopup")) // found by name (kFindPopup)
+        return false;
+    const std::vector<uint8_t> sets(codes.begin() + codesSets, codes.end());
+    // the sets at the end, their count, the popup before the count (the last item)
+    data.insert(data.end(), sets.begin(), sets.end());
+    menuSetCount += codesSetCount;
+    std::memcpy(data.data() + menuSets - 4, &menuSetCount, 4);
+    data.insert(data.begin() + (menuSets - 4), popup.begin(), popup.end());
+    uint32_t nameLength, firstLength, items;
+    std::memcpy(&nameLength, data.data() + 4, 4);
+    std::memcpy(&firstLength, data.data() + 4 + 4 + nameLength, 4);
+    const size_t countAt = 4 + 4 + nameLength + 4 + firstLength;
+    std::memcpy(&items, data.data() + countAt, 4);
+    ++items;
+    std::memcpy(data.data() + countAt, &items, 4);
+    LOG_INFO("Online menu: the main menu has the game's popup");
     return true;
 }
 
@@ -218,14 +319,15 @@ std::string Shorten(std::string text, size_t most)
 // "online_room" (both players, from Host Game or a join on): the host's settings, the two players, the room code,
 // Start (the host) and Leave.
 enum Screen { kOnline, kSettingsScreen, kRoom, kScreenCount };
-constexpr const char* kScreenNames[kScreenCount] = { "online", "online_settings", "online_room" };
+// (The Online screen is gone: Online is the main menu's submenu; its back and its popups are the main menu's.)
+constexpr const char* kScreenNames[kScreenCount] = { "main_menu", "online_settings", "online_room" };
 constexpr const char* kSettingsFileName = "interfc\\front_end\\xml\\online_settings.xml";
 constexpr const char* kRoomFileName = "interfc\\front_end\\xml\\online_room.xml";
 
 enum Row {
     kHost, kJoin, kSettings, kStatus,
     kName,
-    kMode, kRounds, kArena, kRematch, kPlayer1, kPlayer2, kCode, kStart, kLeave,
+    kMode, kRounds, kArena, kRematch, kPublic, kPlayer1, kPlayer2, kCode, kStart, kLeave,
     kRowCount
 };
 struct RowDef {
@@ -244,6 +346,7 @@ constexpr RowDef kRowDefs[kRowCount] = {
     { "roomrounds", "IDS_PORT_ROOM_ROUNDS", false, kRoom },
     { "roomarena", "IDS_PORT_ROOM_ARENA", false, kRoom },
     { "roomrematch", "IDS_PORT_ROOM_REMATCH", false, kRoom },
+    { "roompublic", "IDS_PORT_ROOM_PUBLIC", false, kRoom },
     { "roomp1", "IDS_PORT_ROOM_P1", false, kRoom },
     { "roomp2", "IDS_PORT_ROOM_P2", false, kRoom },
     { "roomcode", "IDS_PORT_ROOM_CODE", false, kRoom },
@@ -308,6 +411,7 @@ void UpdateTexts()
     static const wchar_t* const kArenaTexts[] = { L"HOST PICKS", L"RANDOM", L"LOSER PICKS", L"WINNER PICKS" };
     SetMenuText(ValueId(kArena).c_str(), kArenaTexts[s.room.arena < std::size(kArenaTexts) ? s.room.arena : 0]);
     SetMenuText(ValueId(kRematch).c_str(), s.room.rematch ? L"ON" : L"OFF");
+    SetMenuText(ValueId(kPublic).c_str(), s.room.open ? L"YES" : L"NO");
     const std::string me = Shorten(s.localName.empty() ? net::OnlinePlayerName() : s.localName, 15);
     const std::string other = Shorten(s.remoteName, 15);
     std::string p1, p2;
@@ -346,7 +450,7 @@ bool RowDisabled(int row)
     case kStatus: return true;
     case kName: return !idle;
     case kMode: return true; // Versus only for now
-    case kRounds: case kArena: case kRematch: return !s.host || idle;
+    case kRounds: case kArena: case kRematch: case kPublic: return !s.host || idle;
     case kPlayer1: case kPlayer2: return true;
     case kCode: return !(s.host && !idle && !s.roomCode.empty());
     case kStart: return !(s.host && s.matchOn && s.phase == net::OnlinePhase::Playing);
@@ -358,7 +462,7 @@ bool RowDisabled(int row)
 // Rows shown dimmed: the disabled ones, but not the rows that only tell.
 bool RowDimmed(int row)
 {
-    if (row == kRounds || row == kArena || row == kRematch) { // the guest sees the host's settings, not dimmed
+    if (row == kRounds || row == kArena || row == kRematch || row == kPublic) { // the guest sees the host's settings, not dimmed
         const net::OnlineStatusInfo s = net::OnlineStatus();
         if (!s.host && !Idle(s))
             return false;
@@ -456,9 +560,12 @@ void KeepOnRightScreen(int row)
     if (screen == kOnline && inRoom) {
         g_LastRedirect = GetTickCount64();
         GoToShellScreen(kScreenNames[kRoom]);
-    } else if (screen == kRoom && !inRoom) {
+    } else if (screen == kRoom && !inRoom) { // the room is over: the main menu (the game's popup when the other left)
         g_LastRedirect = GetTickCount64();
-        GoToShellScreen(kScreenNames[kOnline]);
+        if (s.phase == net::OnlinePhase::Ended && s.lost && !s.matchOn)
+            OnlineShowLost(s.message);
+        else
+            GoToShellScreen(kScreenNames[kOnline]);
     }
 }
 
@@ -486,14 +593,14 @@ const void* GameText(const char* id)
     return got ? *got : nullptr;
 }
 
-bool ShowPopup(uint8_t* owner, const char* titleId, const char* messageId)
+bool ShowPopup(uint8_t* owner, const char* titleId, const char* messageId, const char* name = "DefaultPopup")
 {
     __try {
         uint8_t* shell = *reinterpret_cast<uint8_t**>(uintptr_t(kShellObject));
         if (!shell)
             return false;
         uint8_t* popup = reinterpret_cast<uint8_t*(__fastcall*)(uint8_t*, void*, const char*, void*, int)>(
-            uintptr_t(kFindPopup))(shell, nullptr, "DefaultPopup", nullptr, 0);
+            uintptr_t(kFindPopup))(shell, nullptr, name, nullptr, 0);
         if (!popup)
             return false;
         reinterpret_cast<void(__fastcall*)(uint8_t*, void*, const void*)>(uintptr_t(kPopupTitle))(popup, nullptr,
@@ -507,6 +614,13 @@ bool ShowPopup(uint8_t* owner, const char* titleId, const char* messageId)
         LOG_WARN("Online menu: the popup could not be shown");
         return false;
     }
+}
+
+// A note of the menu's own (a code refused, a room that could not be made) in the game's popup.
+bool ShowNotice(uint8_t* owner, const std::string& text, const char* name = "DefaultPopup")
+{
+    SetMenuText("IDS_PORT_NOTICE_TEXT", Wide(text));
+    return ShowPopup(owner, "IDS_PORT_NOTICE_TITLE", "IDS_PORT_NOTICE_TEXT", name);
 }
 
 // A value row shows its text as the control's On text (the control shows On for the profile's subtitles setting,
@@ -598,6 +712,8 @@ char __fastcall ValueEvent(uint8_t* handler, void*, int event, int value)
         room.arena = uint8_t((room.arena + step + 4) % 4); // the host, random, the loser, the winner
     } else if (row == kRematch) {
         room.rematch = room.rematch ? 0 : 1;
+    } else if (row == kPublic) {
+        room.open = room.open ? 0 : 1; // listed in Public Rooms
     } else {
         return 1;
     }
@@ -888,6 +1004,15 @@ bool IsCodeLetterRefused(wchar_t c)
 template <int I>
 char __fastcall KeyEvent(uint8_t* key, void*, int event, int value)
 {
+    if (event == kB) { // back: to the main menu (a code) or Online Settings (a name), not to the Codes screen's own
+        const uint8_t* item = *reinterpret_cast<uint8_t**>(key + 8);
+        const uint8_t* parent = item ? *reinterpret_cast<uint8_t* const*>(item + 0x28) : nullptr;
+        uint8_t* keyboard = parent ? *reinterpret_cast<uint8_t* const*>(parent + 0x80) : nullptr;
+        if (keyboard && *reinterpret_cast<uint32_t**>(keyboard) == g_KeyboardVtable) {
+            GoToShellScreen(kScreenNames[g_KeyboardForName ? kSettingsScreen : kOnline]);
+            return 1;
+        }
+    }
     if (event == kY) {
         const uint8_t* item = *reinterpret_cast<uint8_t**>(key + 8);
         const uint8_t* parent = item ? *reinterpret_cast<uint8_t* const*>(item + 0x28) : nullptr;
@@ -942,10 +1067,13 @@ void __fastcall KeyboardDone(uint8_t* keyboard, void*)
     g_Note.clear();
     LOG_INFO("Online menu: joining with %s", g_Typed.c_str());
     if (!net::OnlineJoin(code))
-        g_Note = Shorten(net::OnlineStatus().message, 40);
+        g_Note = Shorten(net::OnlineStatus().message, 60);
     reinterpret_cast<void(__fastcall*)(uint8_t*, void*)>(uintptr_t(kKeyboardClear))(keyboard, nullptr);
     UpdateTexts();
-    GoToShellScreen(kScreenNames[g_Note.empty() ? kRoom : kOnline]);
+    if (g_Note.empty())
+        GoToShellScreen(kScreenNames[kRoom]);
+    else
+        ShowNotice(keyboard, g_Note, "popup"); // the code screen's own popup (its item "popup")
 }
 
 void OpenKeyboard(bool forName)
@@ -1051,8 +1179,6 @@ bool BuildCodeScreen(std::vector<uint8_t>& data)
 
 bool GenerateScreens(const std::string& lowerName, std::vector<uint8_t>& data)
 {
-    if (lowerName == kScreenFile)
-        return BuildSettingsScreen(data, kScreen, Rows(kOnline), "IDS_PORT_ONLINE_TITLE", "OnlineValue", "OnlineButton");
     if (lowerName == kSettingsFileName)
         return BuildSettingsScreen(data, kScreenNames[kSettingsScreen], Rows(kSettingsScreen), "IDS_PORT_ONLINE_SETTINGS",
             "OnlineValue", "OnlineButton");
@@ -1103,7 +1229,9 @@ bool OnlineShowLost(const std::string& why)
     const bool left = why.find("left") != std::string::npos;
     SetMenuText("IDS_PORT_LOST_TEXT", left ? L"The other player left the room." :
         L"The connection to the other player was lost.");
-    g_LostPopup = true;
+    g_LostPopup = true; // shown by the Online row once the main menu is up (MainButtonDraw)
+    if (LastShellScreen() == MenuKey(kScreenNames[kOnline]))
+        return true;
     return GoToShellScreen(kScreenNames[kOnline]);
 }
 
@@ -1129,11 +1257,78 @@ bool OnlineGoToScreen(uint32_t key)
     return false;
 }
 
+// --- The main menu's Online submenu ----------------------------------------------------------------------------------
+// Its entries are MainMenuSwitchScreenButtons (vtable 0x5D5580; slot 4, 0x2CBEC0: thiscall (event, value), 0x23 A):
+// their A is the port's (Host Game makes the room, Join Game opens the code keyboard, Public Rooms, Online Settings).
+// The Online row (a MainMenuButton, vtable 0x5D5410; slot 3, 0x2CC550, its draw: thiscall (value)) shows the game's
+// popup pending once the main menu is up (the other player gone, the connection lost), as its owner.
+constexpr uint32_t kSwitchVtable = 0x005D5580, kSwitchEvent = 0x002CBEC0;
+constexpr uint32_t kMainButtonVtable = 0x005D5410, kMainButtonDraw = 0x002CC550;
+
+uint32_t ItemKey(uint8_t* handler)
+{
+    const uint8_t* item = handler ? *reinterpret_cast<uint8_t* const*>(handler + 8) : nullptr;
+    return item ? *reinterpret_cast<const uint32_t*>(item + 4) : 0;
+}
+
+void HostGame(uint8_t* owner)
+{
+    g_Note.clear();
+    g_Copied.clear();
+    g_Typed.clear();
+    LOG_INFO("Online menu: Host Game");
+    if (net::OnlineHost())
+        GoToShellScreen(kScreenNames[kRoom]);
+    else
+        ShowNotice(owner, Shorten(net::OnlineStatus().message, 60));
+    UpdateTexts();
+}
+
+char __fastcall SwitchEvent(uint8_t* handler, void*, int event, int value)
+{
+    if (event == kChosen) {
+        const uint32_t key = ItemKey(handler);
+        if (key == MenuKey("mmonlinehost")) {
+            HostGame(handler);
+            return 1;
+        }
+        if (key == MenuKey("mmonlinejoin")) {
+            LOG_INFO("Online menu: Join Game");
+            OpenKeyboard(false);
+            return 1;
+        }
+        if (key == MenuKey("mmonlinepublic")) {
+            ShowNotice(handler, "Public rooms are coming soon.");
+            return 1;
+        }
+        if (key == MenuKey("mmonlinesettings")) {
+            GoToShellScreen(kScreenNames[kSettingsScreen]);
+            return 1;
+        }
+    }
+    return reinterpret_cast<ItemEventFn>(uintptr_t(kSwitchEvent))(handler, nullptr, event, value);
+}
+
+char __fastcall MainButtonDraw(uint8_t* handler, void*, uint32_t value)
+{
+    if (g_LostPopup && ItemKey(handler) == MenuKey(kRowName) && LastShellScreen() == MenuKey(kScreenNames[kOnline])) {
+        g_LostPopup = false;
+        ShowPopup(handler, "IDS_PORT_LOST_TITLE", "IDS_PORT_LOST_TEXT");
+    }
+    return reinterpret_cast<DrawFn>(uintptr_t(kMainButtonDraw))(handler, nullptr, value);
+}
+
 void PatchMainMenuOnline(std::vector<uint8_t>& data)
 {
     std::vector<uint8_t> copy = data;
-    if (PatchRows(copy))
-        data.swap(copy);
+    if (!PatchRows(copy))
+        return;
+    std::vector<uint8_t> withPopup = copy;
+    if (AddMainMenuPopup(withPopup))
+        copy.swap(withPopup);
+    else
+        LOG_WARN("Online menu: no popup of the game's on the main menu");
+    data.swap(copy);
 }
 
 void InstallOnlineMenu()
@@ -1179,6 +1374,14 @@ void InstallOnlineMenu()
         const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(kKeyHooks[i]));
         PatchBytes(kKeyVtables[i] + 4 * kEventSlot, &hook, 4);
     }
+    if (SlotIs(kSwitchVtable, 4, kSwitchEvent) && SlotIs(kMainButtonVtable, 3, kMainButtonDraw)) {
+        const uint32_t event = uint32_t(reinterpret_cast<uintptr_t>(&SwitchEvent));
+        const uint32_t draw = uint32_t(reinterpret_cast<uintptr_t>(&MainButtonDraw));
+        PatchBytes(kSwitchVtable + 4 * 4, &event, 4);
+        PatchBytes(kMainButtonVtable + 4 * 3, &draw, 4);
+    } else {
+        LOG_WARN("Online menu: the main menu's buttons are not as expected; no Online submenu");
+    }
 
     SetMenuText(kRowText, L"Online");
     SetMenuText("IDS_PORT_ONLINE_TITLE", L"Online");
@@ -1192,6 +1395,7 @@ void InstallOnlineMenu()
     SetMenuText("IDS_PORT_ROOM_ROUNDS", L"Rounds to Win");
     SetMenuText("IDS_PORT_ROOM_ARENA", L"Arena");
     SetMenuText("IDS_PORT_ROOM_REMATCH", L"Auto Rematch");
+    SetMenuText("IDS_PORT_ROOM_PUBLIC", L"Public Room");
     SetMenuText("IDS_PORT_ROOM_P1", L"Player 1");
     SetMenuText("IDS_PORT_ROOM_P2", L"Player 2");
     SetMenuText("IDS_PORT_ROOM_CODE", L"Room Code");
@@ -1200,13 +1404,15 @@ void InstallOnlineMenu()
     SetMenuText("IDS_PORT_LOST_TITLE", L"Connection Lost");
     SetMenuText("IDS_PORT_LOST_TEXT", L"The connection to the other player was lost.");
     SetMenuText("IDS_PORT_ONLINE_PASTE", L"Paste");
+    SetMenuText("IDS_PORT_ONLINE_PUBLIC", L"Public Rooms");
+    SetMenuText("IDS_PORT_NOTICE_TITLE", L"Online");
+    SetMenuText("IDS_PORT_NOTICE_TEXT", L"");
     SetMenuText("IDS_PORT_ONLINE_ENTER_CODE", L"Enter the Room Code");
     g_PasteDown = false;
     UpdateTexts();
     AddShellHandler("OnlineValue", &MakeValue);
     AddShellHandler("OnlineButton", &MakeButton);
     AddShellHandler("OnlineKeyboard", &MakeKeyboard);
-    AddShellScreen(kScreenFile);
     AddShellScreen(kSettingsFileName);
     AddShellScreen(kRoomFileName);
     AddShellScreen(kCodeFile);

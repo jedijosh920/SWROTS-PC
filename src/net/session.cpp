@@ -42,7 +42,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr uint32_t kMagic = 0x4E525753; // 'SWRN'
-constexpr uint16_t kProtocol = 5; // 2: the players' names; 3: client/server matches; 4: the arena's picker; 5: props
+constexpr uint16_t kProtocol = 6; // 2: the players' names; 3: client/server matches; 4: the arena's picker; 5: props; 6: a public room
 constexpr uint16_t kDefaultPort = 27960;
 constexpr uint32_t kHistory = 512;      // frames of inputs kept (a power of two)
 constexpr uint32_t kMaxSend = 48;       // inputs in one packet at most
@@ -2140,12 +2140,12 @@ void OnlineFrame()
             uint8_t* f1 = nullptr;
             uint8_t* f2 = nullptr;
             const bool inShell = !DuelFighters(f1, f2) && !game::PlayerObject();
-            if (inShell && g_S.leaveSent && game::LastShellScreen() == game::MenuKey("online")) {
+            if (inShell && g_S.leaveSent && game::LastShellScreen() == game::MenuKey("main_menu")) {
                 if (g_S.leaveSeen == Clock::time_point{})
                     g_S.leaveSeen = now;
                 else if (now - g_S.leaveSeen > std::chrono::milliseconds(300)) {
                     g_S.leaving = false;
-                    LOG_INFO("Online: back at the Online screen");
+                    LOG_INFO("Online: back at the main menu");
                 }
             } else if (g_S.leaveSent && now - g_S.leaveTried > std::chrono::seconds(3)) {
                 g_S.leaveSent = false; // the move did not hold (the front end was still coming up): again
@@ -2155,7 +2155,9 @@ void OnlineFrame()
                 const std::string why = g_S.message;
                 g_S.lostPopup = false;
                 lock.unlock();
-                const bool ok = popup ? game::OnlineShowLost(why) : game::GoToShellScreen("online");
+                const bool ok = popup ? game::OnlineShowLost(why) // the main menu, the game's popup over it
+                                      : game::LastShellScreen() == game::MenuKey("main_menu") ||
+                                            game::GoToShellScreen("main_menu");
                 lock.lock();
                 if (ok)
                     g_S.leaveSent = true;
