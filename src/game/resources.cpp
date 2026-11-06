@@ -142,12 +142,15 @@ AllocFn EngineAlloc() { return *reinterpret_cast<AllocFn*>(Services() + 0x50); }
 
 // Mirrors the engine's direct I/O branch: wraps an opened engine file in a
 // PackFile reader, decodes it as a non-PAK read of `size` bytes, then closes and
+void* g_DecodingFile = nullptr; // the file object being decoded (its read position among its words: the watch)
+
 // deletes both.
 int DecodeFromFile(EngineObject* file, uint32_t size, int scene, ReadSource* pakSource, int typeId, int extra)
 {
     PendingRead* pending = t_Top;
     pending->used = true;
     EngineObject* reader = PackReaderCtor(EngineAlloc()(0x24), nullptr, file, 0);
+    g_DecodingFile = file; // the watch's report: where in the data the decoding is
     if (pakSource->record) // the decoder's size
         *reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(pakSource->record) + 0x10) = size;
 
@@ -461,14 +464,17 @@ void WatchDecoding()
             continue;
         CONTEXT context = {};
         context.ContextFlags = CONTEXT_FULL;
-        uint32_t stack[256] = {};
-        SIZE_T read = 0;
+        uint32_t stack[256] = {}, file[48] = {};
+        SIZE_T read = 0, fileRead = 0;
         bool got = false;
         if (SuspendThread(h) != DWORD(-1)) { // no allocation, no lock while it is held
             got = GetThreadContext(h, &context) != 0;
-            if (got)
+            if (got) {
                 ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(uintptr_t(context.Esp)), stack,
                     sizeof(stack), &read);
+                if (g_DecodingFile)
+                    ReadProcessMemory(GetCurrentProcess(), g_DecodingFile, file, sizeof(file), &fileRead);
+            }
             ResumeThread(h);
         }
         CloseHandle(h);
@@ -481,6 +487,14 @@ void WatchDecoding()
                 std::snprintf(w, sizeof(w), " %X@%zX", stack[i], i * 4);
                 words += w;
             }
+        std::string fileWords;
+        for (size_t i = 0; i < fileRead / 4; ++i) {
+            char w[12];
+            std::snprintf(w, sizeof(w), " %X", file[i]);
+            fileWords += w;
+        }
+        if (reports == 1)
+            LOG_WARN("PAK: %s: its file object's words:%s", g_DecodingName, fileWords.c_str());
         LOG_WARN("PAK: %s still decoding after %llu s: eip %08lX esp %08lX ebp %08lX eax %08lX ebx %08lX ecx %08lX "
                  "edx %08lX esi %08lX edi %08lX; stack:%s",
             g_DecodingName, (GetTickCount64() - since) / 1000, context.Eip, context.Esp, context.Ebp, context.Eax,
