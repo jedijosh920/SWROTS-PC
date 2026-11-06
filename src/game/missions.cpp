@@ -2138,9 +2138,11 @@ int L_line(lua_State* L)
         if (options)
             options[kOptionsAiDisabled] = aiOff;
         if (said > 0) {
-            LOG_INFO("Mission: %s says %s: %s", line.speaker.c_str(), line.lineId.c_str(), line.text.c_str());
+            LOG_INFO("Mission: %s %s %s: %s", line.speaker.c_str(), said == 2 ? "will say (queued)" : "says",
+                line.lineId.c_str(), line.text.c_str());
             lua_pushnumber(L, line.length);
-            return 1;
+            lua_pushboolean(L, said == 2); // queued: it starts when the line before it ends
+            return 2;
         }
         if (!lua_toboolean(L, 3)) {
             lua_pushnumber(L, -1);
@@ -2265,6 +2267,12 @@ int L_skipping(lua_State* L)
     return 1;
 }
 
+int L_forced_starts(lua_State* L)
+{
+    lua_pushinteger(L, ForcedLineStarts());
+    return 1;
+}
+
 // stop_lines(): the lines being said stop (their voices fade out, their subtitles go).
 int L_stop_lines(lua_State* L)
 {
@@ -2386,12 +2394,22 @@ function walk(c, where, timeout)
   return wait_until(function() return not going(c, where) end, timeout or 20)
 end
 function say(id, who)
-  local seconds, from = line(id, who), time()
+  local starts = _line_starts()
+  local seconds, queued = line(id, who)
+  local from = time()
   while seconds < 0 and time() - from < 4 do -- another line is being said: when it ends
     coroutine.yield()
-    seconds = line(id, who)
+    starts = _line_starts()
+    seconds, queued = line(id, who)
   end
-  if seconds < 0 then seconds = line(id, who, true) end
+  if seconds < 0 then
+    seconds = line(id, who, true)
+  elseif queued then -- the engine starts it when the line before it ends: its time counts from then
+    from = time()
+    while _line_starts() == starts and time() - from < 6 and not _skip_pressed() and not _advance() do
+      coroutine.yield()
+    end
+  end
   wait(seconds)
 end
 function speak(speaker, text, seconds) wait(subtitle(speaker, text, seconds)) end
@@ -2431,7 +2449,7 @@ void Register(lua_State* L)
         { "line", L_line }, { "timer", L_timer }, { "timer_value", L_timer_value }, { "timer_stop", L_timer_stop },
         { "counter", L_counter }, { "hud", L_hud }, { "set_var", L_set_var }, { "command", L_command },
         { "skipping", L_skipping }, { "complete", L_complete }, { "fail", L_fail }, { "thread", L_thread },
-        { "_cutscene_state", L_cutscene_state }, { "stop_lines", L_stop_lines }, { "_skip_pressed", L_skip_pressed }, { "_advance", L_advance },
+        { "_cutscene_state", L_cutscene_state }, { "stop_lines", L_stop_lines }, { "_line_starts", L_forced_starts }, { "_skip_pressed", L_skip_pressed }, { "_advance", L_advance },
     };
     for (const luaL_Reg& f : kFunctions) {
         lua_pushcfunction(L, f.func);

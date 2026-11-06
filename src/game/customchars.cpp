@@ -182,6 +182,7 @@ StartEntryFn g_StartEntry = nullptr;
 // BuildVoiceArchive) and the line's length all follow it. The entries: engine +0x118, 0x3C bytes each, +0x14 the
 // entry's name, its first three letters the event ("BATAKN___005GEN").
 constexpr uint32_t kDialogueEntries = 0x118;
+constexpr uint32_t kDialoguePlayingCount = 0x120; // the lines playing now ({capacity +0x11C, count, slots +0x124})
 constexpr uint32_t kDialogueEntrySize = 0x3C;
 bool g_VoiceServed = false; // this start serves the archive with the custom lines
 
@@ -249,6 +250,7 @@ void EndForcedLine()
 }
 
 bool g_OnlyForced = false; // a mission's cutscene: no line but the ones it asks for (SetDialogueQuiet)
+int g_ForcedStarts = 0;     // the forced lines that started playing
 int g_ForcedAsked = 0;      // the dialogue engine's starts of an entry for the forced speaker's event (SayLine)
 
 // The lines logged this start, by character and line (or event, for its base's): each once, or a long fight's grunts
@@ -310,10 +312,17 @@ int __fastcall StartEntryHook(uint8_t* engine, void*, uint8_t* speaker, int entr
                 g_Forced.own = *id;
                 *id = g_Forced.id;
             }
+            // (said once it plays: the playing list, +0x120, grew. A line taken while another is still on is queued and
+            // started later, through here again: the entry keeps the forced line until then)
+            const int playing = *reinterpret_cast<const int*>(engine + kDialoguePlayingCount);
             const int result = g_StartEntry(engine, nullptr, speaker, entry, a, b, c);
             if (result) {
-                LOG_INFO("Custom characters: says %s (%s)", g_Forced.id, name);
-                g_Forced.said = true;
+                const bool started = *reinterpret_cast<const int*>(engine + kDialoguePlayingCount) > playing;
+                LOG_INFO("Custom characters: %s %s (%s)", started ? "says" : "queues", g_Forced.id, name);
+                if (started) {
+                    g_Forced.said = true;
+                    ++g_ForcedStarts;
+                }
             }
             return result;
         }
@@ -1854,8 +1863,8 @@ int SayLine(uint8_t* speaker, const char* lineId)
         using SayFn = int(__fastcall*)(uint8_t*, void*, const char*, const char*, int, int, int);
         const int result = (*reinterpret_cast<SayFn* const*>(speaker))[0x458 / 4](speaker, nullptr, event, "", 1, 0, 0);
         asked += g_ForcedAsked;
-        if (result) // the line was said or queued (the forced line stays for its time)
-            return 1;
+        if (result) // the line was said, or queued (the forced line stays until it starts, or for its time)
+            return g_Forced.said ? 1 : 2;
     }
     EndForcedLine();
     return asked ? 0 : -1; // refused (another line on), or none of these events has an entry for its speaker
@@ -1895,6 +1904,11 @@ int StopDialogueLines()
     }
     EndForcedLine();
     return stopped;
+}
+
+int ForcedLineStarts()
+{
+    return g_ForcedStarts;
 }
 
 void SetDialogueQuiet(bool quiet)

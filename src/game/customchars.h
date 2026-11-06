@@ -114,9 +114,12 @@ struct VoiceLineSource {
     std::wstring text;
 };
 void AddVoiceLines(const std::vector<VoiceLineSource>& lines);
-// The character says a line of the archives now (its subtitle "SPEAKER: text" and its voice, the game's own): 1; 0
-// when the dialogue engine did not take it (another line playing); -1 when its speaker has no lines here at all.
+// The character says a line of the archives now (its subtitle "SPEAKER: text" and its voice, the game's own): 1; 2
+// when the dialogue engine queued it (another line still finishing: it starts a moment later, ForcedLineStarts then
+// counts it); 0 when the engine did not take it (another line playing); -1 when its speaker has no lines here at all.
 int SayLine(uint8_t* speaker, const char* lineId);
+// How many lines SayLine asked for have started playing (this boot).
+int ForcedLineStarts();
 // While quiet, the dialogue engine starts no line but the ones SayLine/ForceNextLine ask for (a mission's cutscene).
 void SetDialogueQuiet(bool quiet);
 // The lines being said now stop (fading out, their subtitles gone), as the dialogue engine interrupts a line for a more
