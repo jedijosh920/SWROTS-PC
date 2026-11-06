@@ -224,8 +224,9 @@ bool PatchRows(std::vector<uint8_t>& data)
 }
 
 // The game's own popup on the main menu (for "connection lost"): the Settings screen's DefaultPopup item (it uses no
-// texture set), put after the main menu's last item (its own YesNoPopup), before its texture sets' count. Settings'
-// file is of the main menu's own make (the Codes screen's is not: other header, a word after its texture sets).
+// texture set), put after the main menu's last item (its own YesNoPopup). A screen: its name, its default focus, its
+// items (their count, then each), its transition controllers (the same; none on the main menu), its texture sets
+// (the same): the item goes before the transition controllers' count, the word before the texture sets' count.
 bool AddMainMenuPopup(std::vector<uint8_t>& data)
 {
     std::vector<uint8_t> settings;
@@ -238,7 +239,10 @@ bool AddMainMenuPopup(std::vector<uint8_t>& data)
     const size_t popup = MenuFind(settings, popupTag, 0, settings.size());
     const size_t popupEnd = popup == std::string::npos ? popup : MenuFind(settings, item, popup + 1, settings.size());
     const size_t menuSets = MenuFind(data, MenuString("textureSet"), 0, data.size());
-    if (popupEnd == std::string::npos || menuSets == std::string::npos || menuSets < 4 ||
+    uint32_t transitions = 1;
+    if (menuSets != std::string::npos && menuSets >= 8)
+        std::memcpy(&transitions, data.data() + menuSets - 8, 4);
+    if (popupEnd == std::string::npos || menuSets == std::string::npos || menuSets < 8 || transitions != 0 ||
         MenuFind(data, popupTag, 0, data.size()) != std::string::npos ||
         std::memcmp(settings.data(), data.data(), 4) != 0) // the same make: the same first word
         return false;
@@ -246,7 +250,7 @@ bool AddMainMenuPopup(std::vector<uint8_t>& data)
     if (popupEnd - popup > 400 || MenuFind(settings, MenuString("textureSet"), popup, popupEnd) != std::string::npos)
         return false;
     const std::vector<uint8_t> block(settings.begin() + popup, settings.begin() + popupEnd);
-    data.insert(data.begin() + (menuSets - 4), block.begin(), block.end());
+    data.insert(data.begin() + (menuSets - 8), block.begin(), block.end());
     uint32_t nameLength, firstLength, items;
     std::memcpy(&nameLength, data.data() + 4, 4);
     std::memcpy(&firstLength, data.data() + 4 + 4 + nameLength, 4);
