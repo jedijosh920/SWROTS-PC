@@ -3,8 +3,9 @@
 // The main menu (main_menu.xbl_xml) has four top-level rows, MainMenuButton items 24 apart from y 179: Single Player,
 // Multi Player, Settings, Features (each a text id, its down and up neighbours, and for Settings the screen it opens),
 // with a veil behind each row and a fifth veil (debugveil, y 277) spare. A row "online" is put between Multi Player and
-// Settings: a copy of Settings' (its highlight bar too), opening the port's screen "online"; Settings and Features
-// move one row down, and the neighbours are linked through it.
+// Settings: a copy of Multi Player's (its bar and submenu, after Heroes vs Villains' entries there if any), its submenu
+// four entries of the port's (Host Game, Join Game, Public Rooms, Online Settings); Settings and Features move one row
+// down, and the neighbours are linked through it.
 //
 // The port's screens are the Settings screen's (BuildSettingsScreen):
 // - "online": Host Game, Join Game, Online Settings, and a status line. Join Game opens "online_code", the game's
@@ -65,24 +66,58 @@ void MoveItem(std::vector<uint8_t>& data, size_t item, float by)
     std::memcpy(data.data() + at, &y, 4);
 }
 
-// A copy of a submenu entry (MainMenuSwitchScreenButton and its bar) as another: its name, text, links and screen
-// (in that order after its name), and its y in the submenu.
-bool MakeEntry(std::vector<uint8_t> entry, const char* const (&from)[5], const char* const (&to)[5], float y,
-    std::vector<uint8_t>& out)
+// A length-prefixed string of the menu's format at `at`: its text (false when there is none that looks like one).
+bool ReadMenuString(const std::vector<uint8_t>& data, size_t at, std::string& text)
+{
+    if (at + 4 > data.size())
+        return false;
+    uint32_t n;
+    std::memcpy(&n, data.data() + at, 4);
+    if (n == 0 || n > 64 || at + 4 + n > data.size())
+        return false;
+    text.assign(reinterpret_cast<const char*>(data.data()) + at + 4, n);
+    for (char c : text)
+        if (c < 0x20 || c > 0x7E)
+            return false;
+    return true;
+}
+
+// A copy of a submenu entry (MainMenuSwitchScreenButton and its bar) as another. An entry: "screenItem", its name, its
+// place (x, y), ..., its text id, 17 bytes, then its down and up neighbours' names and its screen's (then its id).
+bool MakeEntry(const std::vector<uint8_t>& from, const char* name, const char* text, const char* down, const char* up,
+    const char* screen, float y, std::vector<uint8_t>& out)
 {
     const size_t nameAt = MenuString("screenItem").size();
+    std::string oldName, oldText;
+    if (!ReadMenuString(from, nameAt, oldName))
+        return false;
+    std::vector<uint8_t> entry = from;
     size_t end = entry.size();
-    if (!MenuReplaceString(entry, 0, end, from[0], to[0]) || !MenuReplaceString(entry, nameAt + 4, end, from[1], to[1]))
+    if (!MenuReplaceString(entry, 0, end, oldName, name))
         return false;
-    const std::vector<uint8_t> text = MenuString(to[1]);
-    const size_t textAt = MenuFind(entry, text, nameAt, end);
-    if (textAt == std::string::npos)
+    // the text id: the first IDS_ string after the name
+    const std::vector<uint8_t> ids = { 'I', 'D', 'S', '_' };
+    size_t textAt = std::string::npos;
+    for (size_t i = nameAt + 4; i + 8 < entry.size(); ++i)
+        if (std::memcmp(entry.data() + i + 4, ids.data(), 4) == 0 && ReadMenuString(entry, i, oldText)) {
+            textAt = i;
+            break;
+        }
+    if (textAt == std::string::npos || !MenuReplaceString(entry, textAt, end, oldText, text))
         return false;
-    for (int i = 2; i < 5; ++i) // down, up, screen: each after the one before (the same text may come twice)
-        if (!MenuReplaceString(entry, textAt + text.size(), end, from[i], std::string("\x01") + to[i]))
-            return false;
-    for (int i = 2; i < 5; ++i)
-        MenuReplaceString(entry, textAt + text.size(), end, std::string("\x01") + to[i], to[i]);
+    const size_t linksAt = textAt + 4 + std::strlen(text) + 17;
+    std::string oldDown, oldUp, oldScreen;
+    if (!ReadMenuString(entry, linksAt, oldDown) || !ReadMenuString(entry, linksAt + 4 + oldDown.size(), oldUp) ||
+        !ReadMenuString(entry, linksAt + 8 + oldDown.size() + oldUp.size(), oldScreen))
+        return false;
+    const size_t linksEnd = linksAt + 12 + oldDown.size() + oldUp.size() + oldScreen.size();
+    std::vector<uint8_t> links;
+    for (const char* t : { down, up, screen }) {
+        const std::vector<uint8_t> str = MenuString(t);
+        links.insert(links.end(), str.begin(), str.end());
+    }
+    entry.erase(entry.begin() + linksAt, entry.begin() + linksEnd);
+    entry.insert(entry.begin() + linksAt, links.begin(), links.end());
     float x, oldY;
     if (!MenuItemPosition(entry, &x, &oldY, false))
         return false;
@@ -101,22 +136,33 @@ bool PatchRows(std::vector<uint8_t>& data)
         return false;
     }
     const size_t nameAt = MenuString("screenItem").size();
-    // The new row: Multi Player's whole (its row, bar, submenu and two entries, up to Settings), as Online with a
-    // submenu of four: Host Game, Join Game, Public Rooms, Online Settings (each opens a screen of the port's; the
-    // entries' choice is the port's own: MainMenuSwitchEvent).
+    // The new row: Multi Player's whole (its row, bar, submenu and entries, up to Settings: Versus, Cooperative, and
+    // the port's Heroes vs Villains and Battlefront when there), as Online with a submenu of four: Host Game, Join
+    // Game, Public Rooms, Online Settings (their choice is the port's own: SwitchEvent). The submenu ends with bytes
+    // of its own after its last entry's bar (each entry's bar as long as Versus's).
     std::vector<uint8_t> tree(data.begin() + multi, data.begin() + settings);
-    size_t versus, versusEnd, coop, coopEnd, sub, subEnd;
-    if (!MenuRowBlock(tree, "versus", versus, versusEnd) || !MenuRowBlock(tree, "cooperative", coop, coopEnd) ||
-        !MenuRowBlock(tree, "multiplayersubmenu", sub, subEnd) || !(sub < versus && versus < coop)) {
+    const std::vector<uint8_t> item = MenuString("screenItem");
+    size_t versus, versusEnd, sub, subEnd;
+    if (!MenuRowBlock(tree, "versus", versus, versusEnd) || !MenuRowBlock(tree, "multiplayersubmenu", sub, subEnd) ||
+        sub >= versus) {
         LOG_WARN("Online menu: the Multi Player row is not as expected; no Online entry");
         return false;
     }
-    float x, y0, y1;
-    std::vector<uint8_t> versusBlock(tree.begin() + versus, tree.begin() + coop), coopBlock(tree.begin() + coop, tree.end());
-    if (!MenuItemPosition(versusBlock, &x, &y0, false) || !MenuItemPosition(coopBlock, &x, &y1, false))
+    const size_t versusBar = MenuFind(tree, item, versus + 1, versusEnd);
+    size_t lastBar = std::string::npos;
+    for (size_t at = MenuFind(tree, item, versus, tree.size()); at != std::string::npos;
+         at = MenuFind(tree, item, at + 1, tree.size()))
+        lastBar = at;
+    if (versusBar == std::string::npos || lastBar == std::string::npos ||
+        lastBar + (versusEnd - versusBar) > tree.size()) {
+        LOG_WARN("Online menu: the Multi Player submenu is not as expected; no Online entry");
         return false;
-    const float step = y1 - y0;
-    static const char* const kFrom[5] = { "versus", "IDS_VERSUS", "cooperative", "cooperative", "select_jedi" };
+    }
+    const std::vector<uint8_t> tail(tree.begin() + lastBar + (versusEnd - versusBar), tree.end());
+    const std::vector<uint8_t> versusBlock(tree.begin() + versus, tree.begin() + versusEnd);
+    float x, y0;
+    if (!MenuItemPosition(const_cast<std::vector<uint8_t>&>(versusBlock), &x, &y0, false))
+        return false;
     static const char* const kEntries[4][5] = {
         { "mmonlinehost", "IDS_PORT_ONLINE_HOST", "mmonlinejoin", "mmonlinesettings", "online_room" },
         { "mmonlinejoin", "IDS_PORT_ONLINE_JOIN", "mmonlinepublic", "mmonlinehost", "online_code" },
@@ -125,17 +171,14 @@ bool PatchRows(std::vector<uint8_t>& data)
     };
     std::vector<uint8_t> entries;
     for (int i = 0; i < 4; ++i)
-        if (!MakeEntry(versusBlock, kFrom, kEntries[i], y0 + step * float(i), entries)) {
+        if (!MakeEntry(versusBlock, kEntries[i][0], kEntries[i][1], kEntries[i][2], kEntries[i][3], kEntries[i][4],
+                y0 + kRowStep * float(i), entries)) {
             LOG_WARN("Online menu: the Versus entry is not as expected; no Online entry");
             return false;
         }
     std::vector<uint8_t> row(tree.begin(), tree.begin() + versus);
     // the submenu's children: the u32 before its first one
-    uint32_t children;
-    std::memcpy(&children, row.data() + row.size() - 4, 4);
-    if (children != 2)
-        return false;
-    children = 4;
+    uint32_t children = 4;
     std::memcpy(row.data() + row.size() - 4, &children, 4);
     size_t rowEnd = row.size();
     bool ok = MenuReplaceString(row, 0, rowEnd, "multiplayer", kRowName) &&
@@ -146,7 +189,9 @@ bool PatchRows(std::vector<uint8_t>& data)
         LOG_WARN("Online menu: the Multi Player row's strings are not as expected; no Online entry");
         return false;
     }
+    MoveItem(row, 0, kRowStep); // Multi Player's place, one row lower (its children's places are its own)
     row.insert(row.end(), entries.begin(), entries.end());
+    row.insert(row.end(), tail.begin(), tail.end());
     // the edits from the last back (each moves only what follows it): Features one row lower; Settings one row lower,
     // up the new row; the new row before Settings; Multi Player's down the new row
     MoveItem(data, features, kRowStep);
@@ -1347,6 +1392,7 @@ bool OnlineGoToScreen(uint32_t key)
 // popup pending once the main menu is up (the other player gone, the connection lost), as its owner.
 constexpr uint32_t kSwitchVtable = 0x005D5580, kSwitchEvent = 0x002CBEC0;
 constexpr uint32_t kMainButtonVtable = 0x005D5410, kMainButtonDraw = 0x002CC550;
+uint32_t g_PrevSwitchEvent = kSwitchEvent, g_PrevMainButtonDraw = kMainButtonDraw; // the slots as they were
 
 uint32_t ItemKey(uint8_t* handler)
 {
@@ -1419,7 +1465,7 @@ char __fastcall SwitchEvent(uint8_t* handler, void*, int event, int value)
             return 1;
         }
     }
-    return reinterpret_cast<ItemEventFn>(uintptr_t(kSwitchEvent))(handler, nullptr, event, value);
+    return reinterpret_cast<ItemEventFn>(uintptr_t(g_PrevSwitchEvent))(handler, nullptr, event, value);
 }
 
 char __fastcall MainButtonDraw(uint8_t* handler, void*, uint32_t value)
@@ -1428,7 +1474,7 @@ char __fastcall MainButtonDraw(uint8_t* handler, void*, uint32_t value)
         g_LostPopup = false;
         ShowPopup(handler, "IDS_PORT_LOST_TITLE", "IDS_PORT_LOST_TEXT");
     }
-    return reinterpret_cast<DrawFn>(uintptr_t(kMainButtonDraw))(handler, nullptr, value);
+    return reinterpret_cast<DrawFn>(uintptr_t(g_PrevMainButtonDraw))(handler, nullptr, value);
 }
 
 void PatchMainMenuOnline(std::vector<uint8_t>& data)
@@ -1491,13 +1537,13 @@ void InstallOnlineMenu()
         const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(kKeyHooks[i]));
         PatchBytes(kKeyVtables[i] + 4 * kEventSlot, &hook, 4);
     }
-    if (SlotIs(kSwitchVtable, 4, kSwitchEvent) && SlotIs(kMainButtonVtable, 3, kMainButtonDraw)) {
+    { // the main menu's buttons: after the port's other hooks there (Heroes vs Villains'), which are called on
+        g_PrevSwitchEvent = *reinterpret_cast<const uint32_t*>(uintptr_t(kSwitchVtable + 4 * 4));
+        g_PrevMainButtonDraw = *reinterpret_cast<const uint32_t*>(uintptr_t(kMainButtonVtable + 4 * 3));
         const uint32_t event = uint32_t(reinterpret_cast<uintptr_t>(&SwitchEvent));
         const uint32_t draw = uint32_t(reinterpret_cast<uintptr_t>(&MainButtonDraw));
         PatchBytes(kSwitchVtable + 4 * 4, &event, 4);
         PatchBytes(kMainButtonVtable + 4 * 3, &draw, 4);
-    } else {
-        LOG_WARN("Online menu: the main menu's buttons are not as expected; no Online submenu");
     }
 
     SetMenuText(kRowText, L"Online");
