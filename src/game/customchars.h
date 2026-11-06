@@ -119,6 +119,9 @@ void AddVoiceLines(const std::vector<VoiceLineSource>& lines);
 int SayLine(uint8_t* speaker, const char* lineId);
 // While quiet, the dialogue engine starts no line but the ones SayLine/ForceNextLine ask for (a mission's cutscene).
 void SetDialogueQuiet(bool quiet);
+// The lines being said now stop (fading out, their subtitles gone), as the dialogue engine interrupts a line for a more
+// important one; the number stopped.
+int StopDialogueLines();
 // A character kept quiet says no line of its own (battle cries, taunts, grunts): only the ones SayLine/ForceNextLine
 // ask for (a mission's say). Until the next start.
 void SetCharacterQuiet(const uint8_t* character, bool quiet);

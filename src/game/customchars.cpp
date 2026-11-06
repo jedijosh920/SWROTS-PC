@@ -237,6 +237,7 @@ struct ForcedLine {
     // then), then gets its own back
     const char** swapped = nullptr;
     const char* own = nullptr;
+    bool said = false; // started (or queued): it is said once; the speaker's next line is its own again
 };
 ForcedLine g_Forced;
 
@@ -282,8 +283,17 @@ bool IsQuietCharacter(const uint8_t* speaker)
     return false;
 }
 
+// The level's dialogue engine (TDialogueEngine), as its StartEntry last saw it (none started yet: nothing to stop).
+uint8_t* g_DialogueEngine = nullptr;
+
 int __fastcall StartEntryHook(uint8_t* engine, void*, uint8_t* speaker, int entry, int a, int b, int c)
 {
+    g_DialogueEngine = engine;
+    // A forced line is said once: the speaker's next start (its own taunt a moment later) and any start after its
+    // time get the entry's own line back (else a player's custom character repeated a mission's line with its next
+    // taunt, and an entry kept the mission's line after its time)
+    if (g_Forced.swapped && ((g_Forced.said && speaker == g_Forced.speaker) || GetTickCount64() >= g_Forced.until))
+        EndForcedLine();
     const bool forced = speaker && speaker == g_Forced.speaker && g_Forced.id && GetTickCount64() < g_Forced.until;
     if ((g_OnlyForced || (speaker && !g_QuietCharacters.empty() && IsQuietCharacter(speaker))) && !forced)
         return 0;
@@ -301,8 +311,10 @@ int __fastcall StartEntryHook(uint8_t* engine, void*, uint8_t* speaker, int entr
                 *id = g_Forced.id;
             }
             const int result = g_StartEntry(engine, nullptr, speaker, entry, a, b, c);
-            if (result)
+            if (result) {
                 LOG_INFO("Custom characters: says %s (%s)", g_Forced.id, name);
+                g_Forced.said = true;
+            }
             return result;
         }
     }
@@ -1639,6 +1651,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
     g_LoggedLines.clear();
     g_ForcePowersChosen.clear();
     g_QuietCharacters.clear();
+    g_DialogueEngine = nullptr;
     g_Mods = mods;
     g_GameData = gameData;
     g_Cache = cache;
@@ -1846,6 +1859,42 @@ int SayLine(uint8_t* speaker, const char* lineId)
     }
     EndForcedLine();
     return asked ? 0 : -1; // refused (another line on), or none of these events has an entry for its speaker
+}
+
+// The lines being said stop (their voices fade out, their subtitles go), as the engine itself interrupts a line for a
+// more important one (in StartEntry, 0x90502): its StopLine (0x8FE40, thiscall (slot, fade): Indiana Jones'
+// TDialogueEngine::StopLine), the entry's thread count (0x8CF10, thiscall (entry's first dword, -1)), and the slot
+// out of the playing list (+0x11C: {capacity, count +0x120, slots +0x124}, 0x20 bytes each; remove-range 0x1E58E0,
+// thiscall (list, first, end)).
+constexpr uint32_t kDialogueStopLine = 0x0008FE40;
+constexpr uint32_t kDialogueEntryThreads = 0x0008CF10;
+constexpr uint32_t kDialogueRemoveSlots = 0x001E58E0;
+constexpr uint32_t kDialoguePlaying = 0x11C;
+constexpr uint32_t kDialogueLastStopped = 0x8C;
+
+int StopDialogueLines()
+{
+    uint8_t* engine = g_DialogueEngine;
+    if (!engine)
+        return 0;
+    int stopped = 0;
+    __try {
+        for (int i = *reinterpret_cast<int*>(engine + kDialoguePlaying + 4) - 1; i >= 0; --i) {
+            reinterpret_cast<void(__fastcall*)(uint8_t*, void*, int, int)>(uintptr_t(kDialogueStopLine))(engine, nullptr, i, 1);
+            uint8_t* slot = *reinterpret_cast<uint8_t**>(engine + kDialoguePlaying + 8) + size_t(i) * 0x20;
+            *reinterpret_cast<int*>(engine + kDialogueLastStopped) = i;
+            reinterpret_cast<void(__fastcall*)(uint8_t*, void*, uint32_t, int)>(uintptr_t(kDialogueEntryThreads))(
+                engine, nullptr, *reinterpret_cast<uint32_t*>(slot), -1);
+            slot = *reinterpret_cast<uint8_t**>(engine + kDialoguePlaying + 8) + size_t(i) * 0x20;
+            reinterpret_cast<void(__fastcall*)(uint8_t*, void*, uint8_t*, uint8_t*)>(uintptr_t(kDialogueRemoveSlots))(
+                engine + kDialoguePlaying, nullptr, slot, slot + 0x20);
+            ++stopped;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        LOG_WARN("Custom characters: stopping the dialogue's lines faulted");
+    }
+    EndForcedLine();
+    return stopped;
 }
 
 void SetDialogueQuiet(bool quiet)

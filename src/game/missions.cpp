@@ -2265,12 +2265,22 @@ int L_skipping(lua_State* L)
     return 1;
 }
 
+// stop_lines(): the lines being said stop (their voices fade out, their subtitles go).
+int L_stop_lines(lua_State* L)
+{
+    lua_pushinteger(L, StopDialogueLines());
+    return 1;
+}
+
 // The prelude's cutscene(): the skip state, so waits end at once while skipping.
 int L_cutscene_state(lua_State* L)
 {
     const bool on = lua_toboolean(L, 1) != 0;
     g_InCutscene = on;
     SetDialogueQuiet(on); // no barks in a cutscene: only its own lines
+    if (on) // and none from before it runs on over it (a fighter's taunt as the scene starts)
+        if (const int stopped = StopDialogueLines())
+            LOG_INFO("Mission: the cutscene stops %d line(s) being said", stopped);
     g_Skip = false;
     g_SkipAskedAt = -10;
     if (on)
@@ -2421,7 +2431,7 @@ void Register(lua_State* L)
         { "line", L_line }, { "timer", L_timer }, { "timer_value", L_timer_value }, { "timer_stop", L_timer_stop },
         { "counter", L_counter }, { "hud", L_hud }, { "set_var", L_set_var }, { "command", L_command },
         { "skipping", L_skipping }, { "complete", L_complete }, { "fail", L_fail }, { "thread", L_thread },
-        { "_cutscene_state", L_cutscene_state }, { "_skip_pressed", L_skip_pressed }, { "_advance", L_advance },
+        { "_cutscene_state", L_cutscene_state }, { "stop_lines", L_stop_lines }, { "_skip_pressed", L_skip_pressed }, { "_advance", L_advance },
     };
     for (const luaL_Reg& f : kFunctions) {
         lua_pushcfunction(L, f.func);
