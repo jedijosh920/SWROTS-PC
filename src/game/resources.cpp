@@ -26,6 +26,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -428,6 +429,70 @@ void* RegisterLevelImage(uint8_t* packer, const PakIndex* level, const PakIndex:
 }
 
 // Resource patches (RegisterResourcePatch), by relative lower-case name.
+// A watch on the patched resources' decoding (a patched menu the game cannot finish reading loops forever on the
+// loading screen): one decoding for more than 8 s has its thread's place logged (where the game's code is, its
+// stack's game-code words), a few times, to find which part of the patch the game cannot read.
+std::atomic<DWORD> g_DecodingThread{ 0 };
+std::atomic<ULONGLONG> g_DecodingSince{ 0 };
+char g_DecodingName[128] = "";
+std::atomic<bool> g_WatchStarted{ false };
+
+void WatchDecoding()
+{
+    int reports = 0;
+    DWORD reportedThread = 0;
+    for (;;) {
+        Sleep(1000);
+        const DWORD thread = g_DecodingThread.load();
+        const ULONGLONG since = g_DecodingSince.load();
+        if (!thread || GetTickCount64() - since < 8000) {
+            reports = thread == reportedThread ? reports : 0;
+            continue;
+        }
+        if (thread != reportedThread) {
+            reportedThread = thread;
+            reports = 0;
+        }
+        if (reports >= 6)
+            continue;
+        ++reports;
+        HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, thread);
+        if (!h)
+            continue;
+        CONTEXT context = {};
+        context.ContextFlags = CONTEXT_FULL;
+        uint32_t stack[256] = {};
+        SIZE_T read = 0;
+        bool got = false;
+        if (SuspendThread(h) != DWORD(-1)) { // no allocation, no lock while it is held
+            got = GetThreadContext(h, &context) != 0;
+            if (got)
+                ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(uintptr_t(context.Esp)), stack,
+                    sizeof(stack), &read);
+            ResumeThread(h);
+        }
+        CloseHandle(h);
+        if (!got)
+            continue;
+        std::string words;
+        for (size_t i = 0; i < read / 4 && words.size() < 400; ++i)
+            if (stack[i] >= 0x00011000 && stack[i] < 0x005D0000) {
+                char w[16];
+                std::snprintf(w, sizeof(w), " %X@%zX", stack[i], i * 4);
+                words += w;
+            }
+        LOG_WARN("PAK: %s still decoding after %llu s: eip %08lX esp %08lX ebp %08lX eax %08lX ebx %08lX ecx %08lX "
+                 "edx %08lX esi %08lX edi %08lX; stack:%s",
+            g_DecodingName, (GetTickCount64() - since) / 1000, context.Eip, context.Esp, context.Ebp, context.Eax,
+            context.Ebx, context.Ecx, context.Edx, context.Esi, context.Edi, words.c_str());
+    }
+}
+DWORD WINAPI WatchDecodingThread(void*)
+{
+    WatchDecoding();
+    return 0;
+}
+
 std::mutex g_PatchLock;
 std::unordered_map<std::string, ResourcePatch> g_Patches;
 
@@ -557,7 +622,18 @@ bool ReadElsewhere(uint8_t* packer, const PakIndex* owner, const PakIndex::Entry
         VirtualAt<FileMemoryOpenFn>(file, kFileMemoryOpenSlot)(file, nullptr, buffer.data, uint32_t(data.size()));
         packer[kPackerLastWasImage] = 0;
         ReadSource source = { nullptr, path, 0, {}, record };
+        const bool patched = PatchFor(entry.name) != nullptr;
+        if (patched) {
+            bool expected = false;
+            if (g_WatchStarted.compare_exchange_strong(expected, true))
+                CloseHandle(CreateThread(nullptr, 0, &WatchDecodingThread, nullptr, 0, nullptr));
+            strncpy_s(g_DecodingName, entry.name.c_str(), _TRUNCATE);
+            g_DecodingSince = GetTickCount64();
+            g_DecodingThread = GetCurrentThreadId();
+        }
         result = DecodeFromFile(file, uint32_t(data.size()), context, &source, typeId, extra);
+        if (patched)
+            g_DecodingThread = 0;
     }
     LOG_INFO("PAK: %s loaded from %ls", entry.name.c_str(), owner->Path().c_str());
     return true;
