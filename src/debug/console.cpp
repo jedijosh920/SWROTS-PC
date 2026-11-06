@@ -1022,7 +1022,7 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         command != "infiniteforce" && command != "memory" && command != "team" &&
         command != "findrefs" && command != "despawn" && command != "characters" && command != "scale" &&
         command != "screenshot" && command != "coop" &&
-        command != "devmap" && command != "hvv" && command != "versus" && command != "mission")
+        command != "devmap" && command != "hvv" && command != "versus" && command != "mission" && command != "kill")
         return false;
     Print(LineKind::Output, "> %s", line.c_str());
     if (command == "duelist") {
@@ -1125,6 +1125,14 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         }
         Print(LineKind::Output, "  starting a duel...");
         game::StartDuel(first, second, map, rounds, game::ProfileSessionArguments());
+    } else if (command == "kill") {
+        // kill: the player's character is defeated at once, as by a killing blow (to see what a defeat does: a
+        // mission's Game Over, a mode's comeback)
+        if (!game::KillPlayer())
+            Print(LineKind::Error, "no player in the level");
+        else
+            Print(LineKind::Output, "  the player falls");
+        return true;
     } else if (command == "mission") {
         // mission [<id>]: starts a mission of mods\missions\<id> (missions.h); no id: lists them; next: its next part
         if (words.size() >= 2 && words[1] == "next") {
@@ -1251,7 +1259,7 @@ void RunQueuedConsoleCommands()
             // and gone while a level loads).
             const std::vector<std::string> words = Words(line);
             static const char* const kStandalone[] = { "player", "variants", "meshes", "restart", "autorestart",
-                "duelist", "freecam", "saber", "spawn", "peek", "infiniteforce", "memory", "team", "findrefs", "despawn", "characters", "scale", "screenshot", "coop", "devmap", "hvv", "versus", "mission", "clear", "cls" };
+                "duelist", "freecam", "saber", "spawn", "peek", "infiniteforce", "memory", "team", "findrefs", "despawn", "characters", "scale", "screenshot", "coop", "devmap", "hvv", "versus", "mission", "kill", "clear", "cls" };
             const bool standalone = !words.empty() && std::any_of(std::begin(kStandalone), std::end(kStandalone),
                 [&](const char* c) { return _stricmp(words[0].c_str(), c) == 0; });
             if (standalone) {

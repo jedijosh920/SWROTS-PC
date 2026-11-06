@@ -270,6 +270,12 @@ double g_TimerStart = 0;
 double g_EndAt = 0;         // the end showing since (time), 0: none
 bool g_EndOk = false, g_EndDone = false;
 bool g_PlayerDefeatedHandled = false;
+bool g_PlayerFell = false;    // the player fell to the game's own Game Over: the script stops there
+bool g_FellHandled = false;   // (the screen handed back to the game's Game Over once)
+// A mission's level starts black (the player is not seen standing there before its script runs); a script that does
+// not fade by itself in its first moment is faded in
+bool g_ScriptFaded = false;
+int g_ScriptTicks = 0;
 
 double Now() { return double(GameTime()) / 1000.0; }
 
@@ -1026,6 +1032,7 @@ struct Grapple {
     std::string partnerSequence;
     bool grabbed;
     float slow; // the slow motion through the blow (the game's kills: 0.5)
+    int slot = -1; // the [Animations] slot of the attacker's half, from its start: only its own events count
 };
 std::vector<Grapple> g_Grapples;
 constexpr uint32_t kScriptContext = 0x006943CC;   // the running script's: +0x68 its character
@@ -1046,16 +1053,19 @@ struct SequenceEvents {
     bool start, frameCode, left, ended;
 };
 
-void GrappleEvents(const SequenceEvents& e)
+void GrappleEvents(const SequenceEvents& e, int slot)
 {
     uint8_t* context = *reinterpret_cast<uint8_t**>(uintptr_t(kScriptContext));
     uint8_t* c = context ? At<uint8_t*>(context, 0x68) : nullptr;
     auto g = std::find_if(g_Grapples.begin(), g_Grapples.end(), [&](const Grapple& x) { return x.attacker == c; });
     if (!c || g == g_Grapples.end())
         return;
-    // (the attacker's animation before it, another of the mission's, is left as the kill starts: its end is not the
-    // kill's, which has not grabbed yet)
-    if (!e.start && !g->grabbed)
+    // Only the kill's own animation's events count: the attacker's animation before it (another of the mission's, a
+    // leap) is left as the kill starts, its end coming a frame after the grab (the kill would let go at once, its slow
+    // motion with it)
+    if (e.start && g->slot < 0)
+        g->slot = slot;
+    if (g->slot != slot)
         return;
     const auto release = [&] {
         if (!g->grabbed)
@@ -1107,7 +1117,7 @@ template <int K> bool __fastcall MissionAnimationFn(uint8_t* self, void*, uint32
     e.ended = SequenceEvent(0x001F62D0);
     e.frameCode = SequenceEvent(0x001F6390);
     if (!g_Grapples.empty())
-        GrappleEvents(e);
+        GrappleEvents(e, K);
     if (e.ended) // it ended: back to the class's state machine
         reinterpret_cast<void(__cdecl*)(uint8_t*, uint8_t*, int, int)>(uintptr_t(0x0038A140))(
             *reinterpret_cast<uint8_t**>(uintptr_t(kScriptInstance)), self, -1, -1);
@@ -1646,6 +1656,20 @@ int L_kill(lua_State* L)
     return 0;
 }
 
+} // namespace
+
+bool KillPlayer()
+{
+    uint8_t* c = PlayerObject();
+    if (!c)
+        return false;
+    At<uint8_t>(c, kCharacterInvincible) = 0;
+    Virtual<void(__fastcall*)(uint8_t*, void*, uint32_t)>(c, kInstantKillSlot)(c, nullptr, 0);
+    return true;
+}
+
+namespace {
+
 int L_class_of(lua_State* L)
 {
     uint8_t* c = CheckCharacter(L, 1);
@@ -1919,6 +1943,7 @@ int L_letterbox(lua_State* L)
 
 int L_fade(lua_State* L, double to)
 {
+    g_ScriptFaded = true;
     g_FadeFrom = g_Hud.fade;
     g_FadeTo = to;
     g_FadeLength = std::max(0.01, luaL_optnumber(L, 1, 1.0));
@@ -2576,7 +2601,9 @@ bool PlayerFatal(uint8_t* character)
         }
         lua_pop(g_Lua, 1);
     }
-    LOG_INFO("Mission: the player fell (the game's own Game Over)");
+    if (!g_PlayerFell)
+        LOG_INFO("Mission: the player fell (the game's own Game Over); the script stops");
+    g_PlayerFell = true;
     return false;
 }
 
@@ -2719,6 +2746,7 @@ void InstallMissions(const std::wstring& mods)
     g_EndAt = 0;
     g_EndDone = false;
     g_PlayerDefeatedHandled = false;
+    g_PlayerFell = g_FellHandled = false;
     g_AnimationCount = 0;
     g_FieldTinted = false;
     g_AnimControls.clear();
@@ -2995,6 +3023,10 @@ void InstallMissions(const std::wstring& mods)
     SetCameraDirector(&Director);
     g_Active = true;
     SetDialogueQuiet(true); // (until the mission is under way: see MissionFrame)
+    g_FadeFrom = g_FadeTo = 1; // (black from the first frame: see g_ScriptFaded)
+    g_FadeStart = g_FadeLength = 0;
+    g_ScriptFaded = false;
+    g_ScriptTicks = 0;
     LOG_INFO("Missions: %s (%s): the player is %s, %zu in the cast", g_Info->id.c_str(), g_Info->name.c_str(),
         g_PlayerClass.c_str(), g_Cast.size());
 }
@@ -3097,9 +3129,37 @@ void MissionFrame()
         }
         return;
     }
+    if (g_PlayerFell) {
+        // The game's Game Over (its Restart / Quit menu) is the end: the script runs no more (a fight's wait that ended
+        // as the player fell would start its next cutscene over it, hiding the menu and holding the controls), and a
+        // cutscene on screen gives it back to the game
+        if (!g_FellHandled) {
+            g_FellHandled = true;
+            if (g_Held)
+                Hold(false);
+            g_InCutscene = false;
+            g_Skip = false;
+            g_Shot = Shot{};
+            SetCameraFov(0);
+            GameLetterbox(false, 0.2f);
+            debug::WriteGameVariable("hud", "1");
+            reinterpret_cast<void(__cdecl*)(float, int, int, int)>(kSetSlowMotion)(1.0f, 0, 0, 0);
+            g_MissionSlow = false;
+            g_Hud.line.clear();
+            g_Hud.fade = 0;
+            g_FadeFrom = g_FadeTo = 0;
+        }
+        return;
+    }
     if (GamePaused())
         return;
     RunThreads();
+    if (++g_ScriptTicks == 1 && !g_ScriptFaded) { // (a script without fades of its own: in from black)
+        g_FadeFrom = 1;
+        g_FadeTo = 0;
+        g_FadeStart = Now();
+        g_FadeLength = 0.6;
+    }
 }
 
 } // namespace swrots::game

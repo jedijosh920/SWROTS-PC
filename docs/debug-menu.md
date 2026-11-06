@@ -43,6 +43,7 @@ Up/Down recall earlier commands.
 | `restart` | restarts the running mission (as the pause menu's Restart Mission does) |
 | `versus <class> <class> [map <map>] [rounds <n>]` | a Versus duel, you against the computer, on the developer map or a [custom map](modding/custom-maps.md#in-versus) |
 | `mission [<id>]` | starts a [mission of `mods\missions`](modding/missions.md); without an id, lists them |
+| `kill` | your character falls at once, as by a killing blow: to see what a defeat does (a mission's Game Over, a mode's comeback) |
 | `mission next` | in a running mission: skips the cutscene playing, or ends the fight (wait) the script waits on, so its next part begins ([testing a script](modding/missions.md#testing-a-script)); F8 does the same while the debug menu is on |
 | `devmap [<map>]` | the game restarts into the developer map: an empty, lit, flat floor under the sky with nothing on it but you, to test anything (see the [Game tab](#game-tab)); with a map's name, a [custom map](modding/custom-maps.md) on it |
 | `hvv [<classes>] [heroes <n>] [player <n>] [lives <n>] [health <n>] [intro on\|off] [map <map>]` | Heroes vs Villains: heroes against villains (2 to 16 classes, half each unless `heroes` says) on the developer map or a custom map, with lives and a scoreboard ([how to play it](research/heroes-vs-villains.md#playing-it)) |
