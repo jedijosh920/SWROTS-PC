@@ -59,6 +59,7 @@ struct MissionHud {
     std::string ending;        // "MISSION COMPLETE" / "MISSION FAILED" while the end shows
     std::string endingDetail;
     float endingAlpha = 0;
+    float endingFade = 0; // the end's fade to black, after its words have been up a while
     std::string error;         // the script's error, shown so a modder sees it
 };
 MissionHud GetMissionHud();

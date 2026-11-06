@@ -2413,6 +2413,13 @@ function say(id, who)
   wait(seconds)
 end
 function speak(speaker, text, seconds) wait(subtitle(speaker, text, seconds)) end
+-- the end stops the script where it is: nothing after it runs, so a cutscene's last shot stays up under the end's words
+do
+  local end_complete, end_fail = complete, fail
+  local function stop() if coroutine.isyieldable() then while true do coroutine.yield() end end end
+  function complete(text) end_complete(text) stop() end
+  function fail(text) end_fail(text) stop() end
+end
 function cutscene(fn)
   _cutscene_state(true)
   hold(true)
@@ -2592,7 +2599,8 @@ void UpdateHud()
     if (now > g_LineUntil)
         g_Hud.speaker.clear(), g_Hud.line.clear();
     g_Hud.timerSeconds = float(TimerValue());
-    g_Hud.endingAlpha = g_EndAt > 0 ? float(std::clamp((now - g_EndAt) / 0.8, 0.0, 1.0)) : 0;
+    g_Hud.endingAlpha = g_EndAt > 0 ? float(std::clamp((now - g_EndAt) / 0.6, 0.0, 1.0)) : 0;
+    g_Hud.endingFade = g_EndAt > 0 ? float(std::clamp((now - g_EndAt - 3.4) / 1.4, 0.0, 1.0)) : 0;
 }
 
 } // namespace
@@ -2978,6 +2986,7 @@ void InstallMissions(const std::wstring& mods)
     SetFatalHitGuard(&PlayerFatal);
     SetCameraDirector(&Director);
     g_Active = true;
+    SetDialogueQuiet(true); // (until the mission is under way: see MissionFrame)
     LOG_INFO("Missions: %s (%s): the player is %s, %zu in the cast", g_Info->id.c_str(), g_Info->name.c_str(),
         g_PlayerClass.c_str(), g_Cast.size());
 }
@@ -3010,6 +3019,10 @@ void MissionFrame()
     if (g_LentName.character && Now() > g_LentName.until) // a lent speaker name back
         RestoreLentName();
     UpdateHud();
+    // The characters say no line of their own (a companion's first-sight "Surrender while you can!") until the mission
+    // is under way, while the screen is black, in a cutscene or once it has ended: only the script's own lines. (A line
+    // the level started as it loaded was otherwise cut off a moment later by the first cutscene.)
+    SetDialogueQuiet(!g_Woken || g_InCutscene || g_Hud.fade > 0.5f || g_EndAt > 0);
     uint8_t* player = PlayerObject();
     if (!player)
         return;

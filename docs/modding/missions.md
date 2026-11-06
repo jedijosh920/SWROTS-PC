@@ -180,7 +180,7 @@ level is safe to use: functions on it do nothing, `alive()` and `exists()` are f
 | `thread(fn)` | runs `fn` alongside `main` (e.g. a timer's check, a second objective) |
 | `time()` | the game's time in seconds (stops while the game is paused) |
 | `paused()` | true while the game is paused |
-| `complete([text])` | the mission is complete: the end shows, then the main menu |
+| `complete([text])` | the mission is complete: the end shows, then the main menu. The end's words show over the scene as it stands (a cutscene's last shot stays up: nothing after `complete` or `fail` runs), then it fades to black |
 | `fail([text])` | the mission is failed: the end shows, then the mission starts again |
 | `on_player_defeated()` | define it to decide what the player's defeat does (it runs once, the player kept standing with 1 health); without it the player's defeat is the game's own (its Game Over screen: Restart or Quit) |
 | `log(text)` | writes to the game's log (`logs\swrots.log`), for testing |

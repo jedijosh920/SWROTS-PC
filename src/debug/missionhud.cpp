@@ -18,6 +18,10 @@ namespace {
 constexpr ImU32 kWhite = IM_COL32(240, 240, 240, 255);
 constexpr ImU32 kGold = IM_COL32(242, 193, 78, 255);
 constexpr ImU32 kRed = IM_COL32(255, 90, 80, 255);
+// the game's own messages (its tips, its subtitles): pale blue-white words, a blue for names, over the live view
+constexpr ImU32 kGamePale = IM_COL32(222, 230, 240, 255);
+constexpr ImU32 kGameBlue = IM_COL32(110, 170, 245, 255);
+constexpr ImU32 kGameFailed = IM_COL32(225, 95, 80, 255);
 
 ImU32 Faded(ImU32 colour, float alpha)
 {
@@ -31,6 +35,15 @@ void Text(ImDrawList* draw, float x, float y, float height, ImU32 colour, const 
     const float w = GameFontWidth(height, text);
     if (!GameFontText(draw, ImVec2(x - w * anchor, y), height, colour, text))
         draw->AddText(nullptr, height, ImVec2(x - w * anchor, y), colour, text.c_str());
+}
+
+// Text with the soft dark shadow the game's own messages have.
+void ShadowedText(ImDrawList* draw, float x, float y, float height, ImU32 colour, float alpha, const std::string& text,
+    float anchor = 0)
+{
+    const float o = std::max(1.0f, height * 0.06f);
+    Text(draw, x + o, y + o, height, Faded(IM_COL32(0, 0, 0, 255), alpha * 0.6f), text, anchor);
+    Text(draw, x, y, height, Faded(colour, alpha), text, anchor);
 }
 
 // A line split to fit `width` (the game font's width), at most a few lines.
@@ -127,13 +140,15 @@ void DrawMissionHud()
     // the fade
     if (h.fade > 0.001f)
         draw->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + w, y0 + hgt), IM_COL32(0, 0, 0, int(255 * std::min(1.0f, h.fade))));
-    // the end
+    // the end: its words over the scene as it stands, in the game's own message style, then the fade to black
     if (!h.ending.empty() && h.endingAlpha > 0) {
-        draw->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + w, y0 + hgt), IM_COL32(0, 0, 0, int(140 * h.endingAlpha)));
-        Text(draw, x0 + w / 2, y0 + hgt * 0.4f, 52 * u,
-            Faded(h.ending.find("COMPLETE") != std::string::npos ? kGold : kRed, h.endingAlpha), h.ending, 0.5f);
+        const bool complete = h.ending.find("COMPLETE") != std::string::npos;
+        const float y = y0 + hgt * 0.40f;
+        ShadowedText(draw, x0 + w / 2, y, 40 * u, complete ? kGamePale : kGameFailed, h.endingAlpha, h.ending, 0.5f);
         if (!h.endingDetail.empty())
-            Text(draw, x0 + w / 2, y0 + hgt * 0.4f + 62 * u, 20 * u, Faded(kWhite, h.endingAlpha), h.endingDetail, 0.5f);
+            ShadowedText(draw, x0 + w / 2, y + 50 * u, 20 * u, kGameBlue, h.endingAlpha, h.endingDetail, 0.5f);
+        if (h.endingFade > 0.001f)
+            draw->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + w, y0 + hgt), IM_COL32(0, 0, 0, int(255 * h.endingFade)));
     }
     // a script error, for the mission's author
     if (!h.error.empty())
