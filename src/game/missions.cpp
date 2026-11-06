@@ -184,6 +184,7 @@ void ReadMissions()
         m.name = Profile(ini, L"Mission", L"Name", found.cFileName);
         m.description = Profile(ini, L"Mission", L"Description");
         m.map = Profile(ini, L"Mission", L"Map");
+        m.player = Profile(ini, L"Mission", L"Player", L"IAnakin");
         m.folder = "missions\\" + Narrow(found.cFileName);
         g_Missions.push_back(m);
         LOG_INFO("Missions: %s (%s)%s%s", m.id.c_str(), m.name.c_str(), m.map.empty() ? "" : ", on ", m.map.c_str());

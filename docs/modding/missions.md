@@ -18,10 +18,23 @@ Copy the mission's folder into `mods\missions\`, next to `swrots.exe`:
 mods\missions\<id>\mission.ini     its name, map, player and cast
 mods\missions\<id>\mission.lua     its script
 mods\missions\<id>\lines.ini       its dialogue (optional)
+mods\missions\<id>\picture_small.stx  its pictures on the Select Custom Mission screen (optional): the row's, 128x32
+mods\missions\<id>\picture_large.stx  and the large one, 256x128 (as the game's bonus mission pictures)
+mods\missions\<id>\planet.stx         its location's picture there (optional), 128x128 (as the game's planets)
 ```
 
-Start it from the debug console with `mission <id>` (`mission` alone lists the installed ones). A mission that needs a
-custom map or custom characters needs those installed too.
+Every installed mission, whoever made it, is in the main menu under **Single Player > Custom Missions** (below Bonus
+Missions; the row is only there when a mission is installed). It opens the game's own mission select screen, **Select
+Custom Mission**: the missions in a row of pictures, and for the one under the cursor its name, the character you
+play (with its head picture), the location (its map's name, or Developer Map) and its description (one line; about
+55 characters fit). **A** starts it, **B** goes back to the main menu. A mission without pictures of its own shows its
+map's (`mods\maps\<map>\arena_small.stx`, `arena_large.stx` and `planet.stx`, see [custom maps](custom-maps.md)),
+else none. The character's head is the game's select-screen head for the Versus fighters and Yoda, and a custom
+character's own (its `s_selduel_<costume>head.stx`).
+
+With the debug menu on (`DebugMenu=1` in `settings.ini`), its **Missions** tab lists them too, each with its
+description and a **Start** button, and the debug console starts one with `mission <id>` (`mission` alone lists
+the installed ones). A mission that needs a custom map or custom characters needs those installed too.
 
 ## mission.ini
 

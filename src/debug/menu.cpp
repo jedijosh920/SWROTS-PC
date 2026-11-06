@@ -600,6 +600,30 @@ void SaberRow()
                           "longer change yours. Jedi-like characters only.");
 }
 
+// The missions installed in mods\missions (docs/modding/missions.md): each with its name, map and description, started
+// with one press (the console's `mission <id>`).
+void MissionsTab()
+{
+    const std::vector<game::MissionInfo>& missions = game::Missions();
+    if (missions.empty()) {
+        ImGui::TextWrapped("No missions installed. A mission is a folder in mods\\missions next to swrots.exe.");
+        return;
+    }
+    ImGui::TextDisabled("%zu mission(s) in mods\\missions", missions.size());
+    for (const game::MissionInfo& m : missions) {
+        ImGui::PushID(m.id.c_str());
+        ImGui::Separator();
+        if (ImGui::Button("Start"))
+            Submit("mission " + m.id);
+        ImGui::SameLine();
+        ImGui::TextUnformatted(m.name.empty() ? m.id.c_str() : m.name.c_str());
+        if (!m.description.empty())
+            ImGui::TextWrapped("%s", m.description.c_str());
+        ImGui::TextDisabled("%s%s%s", m.id.c_str(), m.map.empty() ? "" : "  -  map ", m.map.c_str());
+        ImGui::PopID();
+    }
+}
+
 void GameTab()
 {
     UpdateLog();
@@ -826,6 +850,10 @@ void BuildMenu()
             }
             if (ImGui::BeginTabItem("Game")) {
                 GameTab();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Missions")) {
+                MissionsTab();
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Heroes vs Villains")) {

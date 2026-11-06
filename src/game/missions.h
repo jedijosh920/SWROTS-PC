@@ -16,6 +16,7 @@ struct MissionInfo {
     std::string name;        // as shown
     std::string description;
     std::string map;         // a custom map's id; empty: the developer map's floor
+    std::string player;      // the player's class (Player=)
     std::string folder;      // its folder, mods-relative ("missions\<id>")
 };
 

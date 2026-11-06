@@ -828,6 +828,8 @@ void __fastcall TextureItemDrawHook(uint8_t* item, void*, void* context)
     for (auto& [own, picture] : g_RecordPictures) {
         if (own != record || !record)
             continue;
+        if (picture.file.empty())
+            return; // hidden (DrawRecordWith with no file)
         if (!picture.tried) {
             picture.tried = true;
             picture.texture = LoadPictureFile(picture.file.c_str());
@@ -1182,6 +1184,31 @@ void InstallRoster()
     PatchDisplacement(kSaberSites[1], &g_SaberColours[1]);
     PatchDisplacement(kSaberSites[2], &g_SaberColours[0]);
     PatchDisplacement(kSaberSites[3], &g_SaberColours[0]);
+}
+
+bool AddMissionPictures(std::vector<uint8_t>& data, const std::vector<std::string>& heads)
+{
+    struct Extension {
+        const char* set;
+        size_t count;  // the game's
+        size_t model;  // the picture copied
+    };
+    // each set read again before it is written (rewriting a set moves what follows it)
+    const Extension kSets[] = { { "PlanetSet", 5, 0 }, { "HeadSet", 6, 0 }, { "LargeArenaTextSet", 6, 1 },
+        { "SmallArenaTextSet", 5, 0 } };
+    for (const Extension& extension : kSets) {
+        std::vector<Picture> pictures;
+        size_t at, end;
+        if (!ReadSet(data, extension.set, pictures, at, end) || pictures.size() != extension.count) {
+            LOG_WARN("Roster: the bonus mission screen's %s is not as expected", extension.set);
+            return false;
+        }
+        const Picture model = pictures[extension.model];
+        for (const std::string& head : heads)
+            pictures.push_back(std::strcmp(extension.set, "HeadSet") == 0 && !head.empty() ? Like(model, head) : model);
+        WriteSet(data, at, end, pictures);
+    }
+    return true;
 }
 
 } // namespace swrots::game

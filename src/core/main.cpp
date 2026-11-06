@@ -35,6 +35,7 @@
 #include "game/freecam.h"
 #include "game/hvv.h"
 #include "game/missions.h"
+#include "game/missionsmenu.h"
 #include "game/hvvmenu.h"
 #include "game/menus.h"
 #include "game/prompts.h"
@@ -194,6 +195,7 @@ static void StartGame(const void* launchData)
     game::InstallHvv();
     game::InstallHvvMenu();
     game::InstallMissions(g_Boot.paths.mods);
+    game::InstallMissionsMenu();
     game::InstallResourceHooks(g_Boot.paths.gameData, g_Boot.paths.mods, g_Boot.paths.cache, g_Boot.dumpDir,
         g_Boot.logResources);
     game::InstallFreeCamera();

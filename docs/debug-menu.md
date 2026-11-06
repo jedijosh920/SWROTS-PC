@@ -333,6 +333,11 @@ switches, in one place.
   its fps counter, then a **memory** line: the Xbox memory the game uses (of 128 MiB the port gives
   it), other memory it allocated, and the characters spawned in this level.
 
+## Missions tab
+
+The [missions](modding/missions.md) installed in `mods\missions`: each with its name, description and map, and a
+**Start** button (the `mission <id>` command). The main menu has them too (Single Player > Custom Missions).
+
 ## Heroes vs Villains tab
 
 A team mode on the developer map ([Heroes vs Villains](research/heroes-vs-villains.md)): set how many

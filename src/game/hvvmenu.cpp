@@ -25,6 +25,7 @@
 #include "kernel/kernel.h"
 #include "game/hvv.h"
 #include "game/menus.h"
+#include "game/missionsmenu.h"
 #include "game/resources.h"
 #include "game/roster.h"
 #include "input/controls.h"
@@ -159,6 +160,7 @@ void PatchMainMenuResource(std::vector<uint8_t>& data)
     std::vector<uint8_t> copy = data;
     if (PatchMainMenu(copy))
         data.swap(copy);
+    PatchMissionsMainMenu(data); // Single Player > Custom Missions (missionsmenu.cpp)
 }
 
 using EventFn = bool(__fastcall*)(uint8_t*, void*, int, int);
@@ -170,6 +172,8 @@ bool __fastcall SwitchButtonEvent(uint8_t* self, void*, int event, int value)
     if (event == kChosen) {
         uint8_t* item = *reinterpret_cast<uint8_t**>(self + 8);
         const uint32_t key = item ? *reinterpret_cast<const uint32_t*>(item + 4) : 0;
+        if (key)
+            NoteMenuRowChosen(key);
         if (key == MenuKey(kRowName)) {
             g_HvvMode = true;
             g_PickSlot = -1;
