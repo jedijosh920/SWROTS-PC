@@ -172,7 +172,7 @@ void PasteLegend(const ImGuiViewport* vp, float u)
     const float left = vp->Pos.x + (vp->Size.x - w) / 2, top = vp->Pos.y + (vp->Size.y - hh) / 2;
     const float sx = w / 640.0f, sy = hh / 480.0f;
     const float cy = top + (333.0f + 16.0f) * sy;
-    const float keyH = 13 * u, h = 26 * u, padX = 6 * u, boxH = 28 * u;
+    const float keyH = 13 * u, h = 36 * u, padX = 6 * u, boxH = 30 * u; // the legends' text as theirs (about 20 px at 720)
     const float keyW = ImGui::GetFont()->CalcTextSizeA(keyH, FLT_MAX, 0, key.c_str()).x + 2 * padX;
     const float textX = left + 408.0f * sx, iconRight = textX - 4 * u;
     const ImVec2 a(iconRight - keyW, cy - boxH / 2), b(iconRight, cy + boxH / 2);
@@ -180,7 +180,7 @@ void PasteLegend(const ImGuiViewport* vp, float u)
     g_Draw->AddRect(a, b, IM_COL32(150, 190, 235, 255), 5 * u, 0, 1.5f * u);
     g_Draw->AddText(ImGui::GetFont(), keyH, ImVec2(a.x + padX, cy - keyH / 2), IM_COL32(235, 235, 235, 255), key.c_str());
     const ImVec2 at(textX + 6 * u, cy - h / 2);
-    if (!GameFontTextOf(GameFont::Menu, g_Draw, at, h, IM_COL32(205, 220, 245, 255), action))
+    if (!GameFontTextOf(GameFont::Menu, g_Draw, at, h, IM_COL32(220, 232, 252, 255), action))
         Text(at.x, at.y, h, kWhite, action, 0.0f);
 }
 

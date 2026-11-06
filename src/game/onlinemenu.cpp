@@ -382,7 +382,7 @@ constexpr const char* kRoomSettingsFileName = "interfc\\front_end\\xml\\online_r
 enum Row {
     kHost, kJoin, kSettings, kStatus,
     kName,
-    kMode, kArena, kRoomSettings, kPlayer1, kPlayer2, kCode, kReady, kLeave,
+    kMode, kArena, kRoomSettings, kCode, kReady, kLeave, kGap, kPlayer1, kPlayer2,
     kRoomName, kRounds, kRematch, kPublic,
     kPubStatus, kPub0, kPubLast = kPub0 + 7,
     kRowCount
@@ -402,11 +402,12 @@ constexpr RowDef kRowDefs[kRowCount] = {
     { "roommode", "IDS_PORT_ROOM_MODE", false, kRoom },
     { "roomarena", "IDS_PORT_ROOM_ARENA", false, kRoom },
     { "roomsettings", "IDS_PORT_ROOM_SETTINGS", true, kRoom },
-    { "roomp1", "IDS_PORT_ROOM_P1", false, kRoom },
-    { "roomp2", "IDS_PORT_ROOM_P2", false, kRoom },
     { "roomcode", "IDS_PORT_ROOM_CODE", false, kRoom },
     { "roomready", "IDS_PORT_ROOM_READY", false, kRoom },
     { "roomleave", "IDS_PORT_ROOM_LEAVE", true, kRoom },
+    { "roomgap", "IDS_PORT_ROOM_GAP", false, kRoom },  // a blank row, then the players as a table: name, connection, Ready
+    { "roomp1", "IDS_PORT_ROOM_P1", false, kRoom },
+    { "roomp2", "IDS_PORT_ROOM_P2", false, kRoom },
     { "roomname", "IDS_PORT_ROOM_NAME", false, kRoomSettingsScreen },
     { "roomrounds", "IDS_PORT_ROOM_ROUNDS", false, kRoomSettingsScreen },
     { "roomrematch", "IDS_PORT_ROOM_REMATCH", false, kRoomSettingsScreen },
@@ -550,18 +551,33 @@ void UpdateTexts()
     }
     const std::string me = Shorten(s.localName.empty() ? net::OnlinePlayerName() : s.localName, 15);
     const std::string other = Shorten(s.remoteName, 15);
-    std::string p1, p2;
+    // the players' table under the menu: each name, then the connection (the other player's) and Ready
     const bool live = s.matchOn && s.phase == net::OnlinePhase::Playing; // the room both play in: Ready counts
-    const std::string meReady = live && s.localReady ? "  READY" : "", otherReady = live && s.remoteReady ? "  READY" : "";
+    const auto state = [&](bool ready, bool remote) {
+        std::string q = remote ? Quality(s.pingMs) : std::string();
+        while (!q.empty() && q.front() == ' ')
+            q.erase(q.begin());
+        const std::string r = !live ? "" : ready ? "READY" : "NOT READY";
+        return q.empty() ? r : r.empty() ? q : q + "   " + r;
+    };
+    std::string n1, v1, n2, v2;
     if (s.host) {
-        p1 = me + meReady;
-        p2 = s.guestHere ? other + Quality(s.pingMs) + otherReady : "WAITING...";
+        n1 = me;
+        v1 = state(s.localReady, false);
+        n2 = s.guestHere ? other : "WAITING...";
+        v2 = s.guestHere ? state(s.remoteReady, true) : "";
     } else {
-        p1 = other.empty() ? "..." : other + Quality(s.pingMs) + otherReady;
-        p2 = me + meReady;
+        n1 = other.empty() ? "..." : other;
+        v1 = other.empty() ? "" : state(s.remoteReady, true);
+        n2 = me;
+        v2 = state(s.localReady, false);
     }
-    SetMenuText(ValueId(kPlayer1).c_str(), Wide(p1));
-    SetMenuText(ValueId(kPlayer2).c_str(), Wide(p2));
+    SetMenuText(kRowDefs[kPlayer1].text, Wide(n1));
+    SetMenuText(ValueId(kPlayer1).c_str(), Wide(v1));
+    SetMenuText(kRowDefs[kPlayer2].text, Wide(n2));
+    SetMenuText(ValueId(kPlayer2).c_str(), Wide(v2));
+    SetMenuText(kRowDefs[kGap].text, L"");
+    SetMenuText(ValueId(kGap).c_str(), L"");
     std::string code = "-";
     if (s.host && !s.roomCode.empty() && !Idle(s))
         code = s.roomCode;
@@ -590,7 +606,7 @@ bool RowDisabled(int row)
     case kMode: return true; // Versus only for now
     case kRoomName: case kRounds: case kArena: case kRematch: case kPublic: return !s.host || idle;
     case kRoomSettings: return idle;
-    case kPlayer1: case kPlayer2: return true;
+    case kPlayer1: case kPlayer2: case kGap: return true;
     case kCode: return !(s.host && !idle && !s.roomCode.empty());
     case kReady: return !(s.matchOn && s.phase == net::OnlinePhase::Playing);
     case kLeave: return false;
@@ -610,7 +626,7 @@ bool RowDimmed(int row)
         if (!s.host && !Idle(s))
             return false;
     }
-    return RowDisabled(row) && row != kStatus && row != kPlayer1 && row != kPlayer2 && row != kMode &&
+    return RowDisabled(row) && row != kStatus && row != kPlayer1 && row != kPlayer2 && row != kGap && row != kMode &&
         row != kPubStatus;
 }
 
@@ -866,6 +882,8 @@ char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
     const uint8_t saved = profile ? profile[0x2A] : 0;
     if (profile)
         profile[0x2A] = 1;
+    if (row == kGap) // the blank row before the players: nothing drawn
+        return 1;
     const std::string text = ValueId(row);
     SetOnOffTexts(text.c_str(), text.c_str());
     const char result = DrawUnfocused(handler, RowDisabled(row), [&] {
