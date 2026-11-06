@@ -17,9 +17,8 @@ namespace swrots::net {
 
 namespace {
 
-// The project's lobby (lobby/: deployed once on Cloudflare's free Workers plan); [Online] Lobby overrides it, and
-// an empty one turns Public Rooms off.
-constexpr const wchar_t* kDefaultLobby = L"";
+// The project's lobby (lobby/, on Cloudflare's free Workers plan); [Online] Lobby in settings.ini overrides it.
+constexpr const wchar_t* kDefaultLobby = L"https://swrots-lobby.swrots-pc.workers.dev";
 constexpr auto kAnnounceEvery = std::chrono::seconds(30);
 constexpr auto kListEvery = std::chrono::seconds(5);
 constexpr auto kListWanted = std::chrono::seconds(2);
