@@ -33,6 +33,9 @@ std::atomic<bool> g_Started{ false };
 
 std::wstring LobbyAddress()
 {
+    wchar_t test[512] = L"";
+    if (GetEnvironmentVariableW(L"SWROTS_ONLINE_LOBBY", test, 512)) // tests: a lobby on this PC
+        return test;
     wchar_t path[MAX_PATH];
     GetModuleFileNameW(nullptr, path, MAX_PATH);
     std::wstring ini = path;

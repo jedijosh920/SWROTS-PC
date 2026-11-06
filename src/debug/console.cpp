@@ -1058,6 +1058,7 @@ void Online(const std::vector<std::string>& words)
         room.rounds = uint8_t(std::clamp(std::atoi(words[2].c_str()), 1, 5));
         room.arena = uint8_t(std::clamp(std::atoi(words[3].c_str()), 0, 3));
         room.rematch = uint8_t(std::atoi(words[4].c_str()) ? 1 : 0);
+        room.open = uint8_t(words.size() > 5 && std::atoi(words[5].c_str()) ? 1 : 0); // [public 0|1]
         net::SetOnlineRoom(room);
     } else if (_stricmp(what.c_str(), "arena") == 0 && words.size() >= 6) {
         // online arena <class 1> <class 2> <map> <arena number>: a Versus duel as the select screens start one (tests)
