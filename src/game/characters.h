@@ -183,6 +183,10 @@ void SettleActivated(uint8_t* character);
 // (1,0,1) are the game's tuned red, green, blue and purple.
 void SetPlayerSaberColor(const float* rgb);
 bool PlayerSaberColor(float* rgb);
+// Any other Jedi-like character's saber colour, at once and from then on (its colour override); false when it has
+// none. The colours are kept until ForgetCharacterSaberColors (a level start: their characters are gone).
+bool SetCharacterSaberColor(uint8_t* character, const float* rgb);
+void ForgetCharacterSaberColors();
 // A colour as "red", "green", "blue", "purple" or "<r> <g> <b>" (0-255 each).
 bool ParseSaberColor(const std::string& spec, float* rgb);
 

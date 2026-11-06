@@ -796,6 +796,54 @@ int L_actor(lua_State* L)
     return 0;
 }
 
+// hide(c [, on]): it is taken out of sight where it stands, as the game's cinematics hide an object (their GhostObject
+// event's Hide, 0x1D2360: the object's deactivate, vfunc +0xB0; shown again with its activate, +0xB4, at once and in
+// the pose it had), an actor meanwhile (no hits, no AI, no one's target), quiet, and no one bumps into it;
+// hide(c, false): back as it was. (Only the deactivate hides: the "inactive" flag alone, +0xC 0x08000000, still draws
+// it. A character never drawn yet appears a frame late: a stand-in is best shown for a moment before it is hidden.)
+// For a cutscene's stand-ins (docs/modding/missions.md).
+constexpr uint32_t kCharacterPushFlag = 0x7F4;
+constexpr uint32_t kDeactivate = 0xB0; // object vfunc, thiscall (): the cinematics' "GhostObject" Hide (0x1D2360)
+struct HiddenWas {
+    uint8_t* character;
+    uint8_t push;
+    bool wasActor;
+    bool wasQuiet;
+};
+std::vector<HiddenWas> g_Hidden;
+
+int L_hide(lua_State* L)
+{
+    uint8_t* c = CheckCharacter(L, 1);
+    if (!c)
+        return 0;
+    const bool on = lua_isnoneornil(L, 2) || lua_toboolean(L, 2);
+    auto was = std::find_if(g_Hidden.begin(), g_Hidden.end(), [&](const HiddenWas& h) { return h.character == c; });
+    const auto actor = [&](bool to) {
+        lua_pushcfunction(L, L_actor);
+        lua_pushvalue(L, 1);
+        lua_pushboolean(L, to);
+        lua_call(L, 2, 0);
+    };
+    if (on && was == g_Hidden.end()) {
+        const bool isActor = std::any_of(g_Actors.begin(), g_Actors.end(), [&](const ActorWas& a) { return a.character == c; });
+        g_Hidden.push_back({ c, At<uint8_t>(c, kCharacterPushFlag), isActor, CharacterQuiet(c) });
+        SetCharacterQuiet(c, true); // (no battle cry from out of sight)
+        actor(true);
+        At<uint8_t>(c, kCharacterPushFlag) = 0;
+        Virtual<void(__fastcall*)(uint8_t*, void*)>(c, kDeactivate)(c, nullptr);
+    } else if (!on && was != g_Hidden.end()) {
+        Virtual<void(__fastcall*)(uint8_t*, void*)>(c, kActivate)(c, nullptr);
+        At<uint8_t>(c, kCharacterPushFlag) = was->push;
+        SetCharacterQuiet(c, was->wasQuiet);
+        const bool wasActor = was->wasActor;
+        g_Hidden.erase(was);
+        if (!wasActor)
+            actor(false);
+    }
+    return 0;
+}
+
 // keep_body(c [, on]): when it dies, its body stays where it fell (the game's "Cinematic Death?", +0x5D4: no fade, not
 // taken away). A body that nothing may wake: actor(c) once it has fallen.
 constexpr uint32_t kCinematicDeath = 0x5D4;
@@ -848,8 +896,12 @@ int L_saber_color(lua_State* L)
 {
     uint8_t* c = CheckCharacter(L, 1);
     float rgb[3];
-    if (!c || c != PlayerObject() || !ParseSaberColor(luaL_checkstring(L, 2), rgb)) {
+    if (!c || !ParseSaberColor(luaL_checkstring(L, 2), rgb)) {
         lua_pushboolean(L, false);
+        return 1;
+    }
+    if (c != PlayerObject()) { // another's (a cutscene's stand-in): its own from now on
+        lua_pushboolean(L, SetCharacterSaberColor(c, rgb));
         return 1;
     }
     if (!g_SaberWas.changed) {
@@ -999,6 +1051,10 @@ void GrappleEvents(const SequenceEvents& e)
     uint8_t* c = context ? At<uint8_t*>(context, 0x68) : nullptr;
     auto g = std::find_if(g_Grapples.begin(), g_Grapples.end(), [&](const Grapple& x) { return x.attacker == c; });
     if (!c || g == g_Grapples.end())
+        return;
+    // (the attacker's animation before it, another of the mission's, is left as the kill starts: its end is not the
+    // kill's, which has not grabbed yet)
+    if (!e.start && !g->grabbed)
         return;
     const auto release = [&] {
         if (!g->grabbed)
@@ -2353,7 +2409,7 @@ void Register(lua_State* L)
         { "alive", L_alive }, { "exists", L_exists }, { "health", L_health }, { "set_health", L_set_health },
         { "max_health", L_max_health }, { "invincible", L_invincible }, { "position", L_position },
         { "distance", L_distance }, { "place", L_place }, { "face", L_face }, { "side", L_side }, { "ai", L_ai },
-        { "attack", L_attack }, { "force_powers", L_force_powers }, { "hold", L_hold }, { "play", L_play }, { "play_anim", L_play_anim }, { "stop_anim", L_stop_anim }, { "actor", L_actor }, { "keep_body", L_keep_body }, { "pushable", L_pushable }, { "anim_frames", L_anim_frames }, { "moves", L_moves }, { "saber", L_saber }, { "saber_color", L_saber_color }, { "slow_motion", L_slow_motion }, { "quiet", L_quiet }, { "kill", L_kill }, { "boss", L_boss }, { "objective_done", L_objective_done }, { "tip", L_tip },
+        { "attack", L_attack }, { "force_powers", L_force_powers }, { "hold", L_hold }, { "play", L_play }, { "play_anim", L_play_anim }, { "stop_anim", L_stop_anim }, { "actor", L_actor }, { "keep_body", L_keep_body }, { "pushable", L_pushable }, { "anim_frames", L_anim_frames }, { "moves", L_moves }, { "saber", L_saber }, { "saber_color", L_saber_color }, { "hide", L_hide }, { "slow_motion", L_slow_motion }, { "quiet", L_quiet }, { "kill", L_kill }, { "boss", L_boss }, { "objective_done", L_objective_done }, { "tip", L_tip },
         { "go", L_go }, { "going", L_going }, { "marker", L_marker }, { "field", L_field },
         { "sound", L_sound }, { "stop_sounds", L_stop_sounds }, { "get_var", L_get_var },
         { "music_volume", L_music_volume },
@@ -2624,6 +2680,8 @@ void InstallMissions(const std::wstring& mods)
     g_AnimControls.clear();
     g_Grapples.clear();
     g_Actors.clear();
+    g_Hidden.clear();
+    ForgetCharacterSaberColors();
     g_Walkers.clear();
     SetBorrowedAnimations({});
     AddClassSequences(&MissionSequences);

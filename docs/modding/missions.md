@@ -223,6 +223,7 @@ level is safe to use: functions on it do nothing, `alive()` and `exists()` are f
 | `play(c, move [, speed])` | plays one of its moves by name: intros (`<Name>_Intro`), idles (`Idle_Flavor_v1`), falls (`Death`), reactions; false when it has none of that name |
 | `play_anim(c, animation [, options])` | plays an animation: one of its moves (by its name or its animation's), or one of `[Animations]`. Options: `from` / `to` (the animation's own frame numbers, 60 a second; left out, its first / last), `loop` (`from`..`to` again and again until `stop_anim`; it jumps from `to` back to `from`, so pick two frames alike), `bounce` (a loop that plays `to` back to `from` and on again, never jumping: a breathing or idle pose), `hold` (stops on `to` and keeps that pose, e.g. a body that stays down), `speed` (1 normal; 0 holds the pose at `from`), `blend` (seconds to blend in from the pose it was in; default 0, at once), `partner` + `partner_anim` (a paired kill, see below). Neither `loop` nor `hold`: it plays to `to` (or its end) and the character carries on as before. A hit, its death or its own AI can still end it, except on an actor (`actor`). False when it has no such animation |
 | `actor(c [, on])` | makes it a cutscene actor (`actor(c, false)`: as it was): it does only what the script says (moves, walks, sabers, lines): its AI is off, no hit reaches it (no damage, no reaction, no block), no one attacks or targets it, and an animation `play_anim` gives it stays on (put back if anything puts it away). A body that never gets up: `actor(c)`, then `play_anim(c, "dooku_death", {hold = true})` |
+| `hide(c [, on])` | takes it out of sight where it stands, as the game's own cinematics hide a character (`hide(c, false)`: back at once, in the pose it had): meanwhile an actor (see `actor`), quiet, and no one bumps into it. For a cutscene's stand-ins (see [Cutscenes with stand-ins](#cutscenes-with-stand-ins)) |
 | `keep_body(c [, on])` | when it dies, its body stays where it fell (the game's own "cinematic death": no fade, not taken away). With `actor(c)` once it has fallen, nothing wakes it |
 | `pushable(c, on)` | whether characters walking into it push it aside (and it them): off, they pass through it and it stays put (a body lying in the way) |
 | `stop_anim(c)` | ends `play_anim`'s loop or held pose: the character goes back to what it does (its idle) |
@@ -230,7 +231,7 @@ level is safe to use: functions on it do nothing, `alive()` and `exists()` are f
 | `moves(c)` | the names of its moves, as a table (`log(table.concat(moves(c), ","))` lists them) |
 | `saber(c, on [, seconds])` | its sabers lit or put away, as the game's cinematics do: the blade grows or shrinks over `seconds` (default 0.4) with the saber's sound; 0 at once, silent. A saber put away stays away (also while it fights) until `saber(c, true)`; false when it has none |
 | `saber(c)` | whether one of its sabers is lit |
-| `saber_color(c, colour)` | the player's saber colour from now on: `"red"`, `"green"`, `"blue"`, `"purple"` or `"r g b"` (0-255 each), e.g. a Padawan who takes up his Master's saber; the player only (false for another character). The colour the player had comes back when the mission ends or starts again |
+| `saber_color(c, colour)` | its saber colour from now on: `"red"`, `"green"`, `"blue"`, `"purple"` or `"r g b"` (0-255 each), e.g. a Padawan who takes up his Master's saber; any character with a lightsaber (false for one without). The colour the player had comes back when the mission ends or starts again |
 
 ### Camera
 
@@ -308,6 +309,33 @@ actor (`actor`) takes no damage from it and stays alive; `play_anim(c, "R_OnBack
 keeps it lying there, breathing, and `pushable(c, false)` keeps it from being pushed about. The pairs on the disc are
 the `*_kill_*` animations in `animation\grapple\` (e.g. `anakin_atk_kill_lunge_humangb` / `..._humangr`); the victim's
 move for a pair is the one the game's reaction tables give it (`Kill_Lunge_GR` for the lunge).
+
+### Cutscenes with stand-ins
+
+A cutscene played by the fighters themselves inherits whatever the fight left them in: a hit's reaction, a knockdown,
+the spot they were knocked to, the player's own move. For a scene that must play the same every time, let doubles
+play it: a character of the same class for each part, made once (`spawn`, `actor`, `quiet`, `pushable(d, false)`),
+then hidden until its scene. The scene shows its doubles where it wants them and hides the fighters; at its end the
+fighters come back where their doubles stand, and the doubles are hidden again:
+
+```lua
+local d = spawn("IMaul", x, z, 0, "neutral")          -- once, under the mission's opening black
+actor(d); quiet(d); pushable(d, false)
+wait(0.2); hide(d)                                    -- (a character's first frames come late: drawn a moment first)
+
+cutscene(function()
+  hide(d, false); place(d, 0, 210, 0); hide(maul)     -- the double takes the part, on the scene's first cut
+  -- ... the scene, with d ...
+  local x, z = position(d)
+  hide(maul, false); place(maul, x, z, 0); hide(d)    -- the fighter back, before the scene ends
+end)
+```
+
+The swap is not seen when it happens on a cut (the camera and the characters change on the same frame) or under a
+fade. The player's own character is best back a moment before the scene ends (on its last cut, or under black): the
+game's camera then has found it when the scene hands over. A double that ends a scene in a pose of its own (kneeling,
+lying) is best not used again: a later scene that needs that character standing has a double of its own. Lines a
+hidden character says go through its double: `say(id, d)`.
 
 ## Testing a script
 

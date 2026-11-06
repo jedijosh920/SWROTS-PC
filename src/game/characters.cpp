@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -2454,6 +2455,39 @@ bool ParseSaberColor(const std::string& spec, float* rgb)
     rgb[1] = g / 255.0f;
     rgb[2] = b / 255.0f;
     return true;
+}
+
+// Another character's saber colour (a mission's): its colour override (+0xF20) points at a colour kept here for the
+// boot, and its sabers take it now.
+std::list<std::pair<const uint8_t*, std::array<float, 3>>> g_OtherSaberColors;
+
+bool SetCharacterSaberColor(uint8_t* character, const float* rgb)
+{
+    if (!character || !rgb || !HasSaberColor(character))
+        return false;
+    auto kept = std::find_if(g_OtherSaberColors.begin(), g_OtherSaberColors.end(),
+        [&](const auto& c) { return c.first == character; });
+    if (kept == g_OtherSaberColors.end())
+        kept = g_OtherSaberColors.insert(g_OtherSaberColors.end(), { character, {} });
+    std::copy(rgb, rgb + 3, kept->second.begin());
+    *reinterpret_cast<const float**>(character + kCharacterSaberColor) = kept->second.data();
+    for (int i = 0; i < kWeaponSlots; ++i) {
+        uint8_t* weapon = *reinterpret_cast<uint8_t**>(character + kCharacterWeapons + i * 0x20);
+        if (!weapon)
+            continue;
+        const uint32_t vtable = *reinterpret_cast<uint32_t*>(weapon);
+        if (std::find(std::begin(kSaberVtables), std::end(kSaberVtables), vtable) == std::end(kSaberVtables))
+            continue;
+        reinterpret_cast<void(__fastcall*)(uint8_t*, void*, const float*)>(
+            reinterpret_cast<void* const*>(uintptr_t(vtable))[kSaberSetColor / 4])(weapon, nullptr, kept->second.data());
+    }
+    return true;
+}
+
+void ForgetCharacterSaberColors()
+{
+    // (only once the characters they belong to are gone: a level start)
+    g_OtherSaberColors.clear();
 }
 
 bool PlayerSaberColor(float* rgb)

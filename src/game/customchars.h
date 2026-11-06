@@ -122,6 +122,7 @@ void SetDialogueQuiet(bool quiet);
 // A character kept quiet says no line of its own (battle cries, taunts, grunts): only the ones SayLine/ForceNextLine
 // ask for (a mission's say). Until the next start.
 void SetCharacterQuiet(const uint8_t* character, bool quiet);
+bool CharacterQuiet(const uint8_t* character);
 
 // The duel cameras' name of the duelist whose intro a custom character plays (Intro=), or null for the base's.
 const char* IntroCameras(const CustomCharacter& custom);

@@ -1601,6 +1601,11 @@ void BuildVoiceArchive(const std::wstring& mods, const std::wstring& gameData, c
 
 } // namespace
 
+bool CharacterQuiet(const uint8_t* character)
+{
+    return character && IsQuietCharacter(character);
+}
+
 void SetCharacterQuiet(const uint8_t* character, bool quiet)
 {
     if (!character)
