@@ -124,18 +124,28 @@ std::vector<std::string> Split(const std::string& line, char by)
     return parts;
 }
 
+// A room code as the lobby keeps it: its 15 characters, without the dashes the game shows.
+std::string PlainCode(const std::string& code)
+{
+    std::string plain;
+    for (char c : code)
+        if (c != '-' && c != ' ')
+            plain += c;
+    return plain;
+}
+
 // What the host's room shows in the list (empty: nothing to announce).
 std::string Announcement(std::string& code)
 {
     const OnlineStatusInfo s = OnlineStatus();
     const bool open = s.host && s.room.open && !s.roomCode.empty() && s.phase != OnlinePhase::Off &&
         s.phase != OnlinePhase::Ended;
-    code = open ? s.roomCode : std::string();
+    code = open ? PlainCode(s.roomCode) : std::string();
     if (!open)
         return {};
     static const char* const kArenas[] = { "HOST PICKS", "RANDOM", "LOSER PICKS", "WINNER PICKS" };
     const std::string arena = !s.arenaPlayed.empty() ? s.arenaPlayed : kArenas[s.room.arena < 4 ? s.room.arena : 0];
-    return "{\"code\":" + Json(s.roomCode) + ",\"name\":" + Json(s.localName) + ",\"mode\":\"VERSUS\",\"arena\":" +
+    return "{\"code\":" + Json(code) + ",\"name\":" + Json(s.localName) + ",\"mode\":\"VERSUS\",\"arena\":" +
         Json(arena) + ",\"players\":" + std::to_string(s.guestHere ? 2 : 1) + ",\"version\":" +
         std::to_string(OnlineProtocol()) + "}";
 }
@@ -194,10 +204,10 @@ void Run()
             } else {
                 for (const std::string& line : Split(answer, '\n')) {
                     const std::vector<std::string> f = Split(line, '\t');
-                    if (f.size() < 6 || f[0].size() != 15)
+                    if (f.size() < 6 || PlainCode(f[0]).size() != 15)
                         continue;
                     PublicRoom r;
-                    r.code = f[0];
+                    r.code = PlainCode(f[0]);
                     r.name = f[1];
                     r.mode = f[2];
                     r.arena = f[3];
