@@ -16,6 +16,7 @@
 #include "game/freecam.h"
 #include "game/hvvmenu.h"
 #include "game/menus.h"
+#include "game/onlinemenu.h"
 #include "imgui.h"
 #include "net/session.h"
 
@@ -150,6 +151,25 @@ void VersusNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float 
     name(vp->Pos.x + vp->Size.x * 0.836f, p2, 1.0f);
 }
 
+// The room code's keyboard: under its legends (Scroll, Select, Back), one more for pasting, as theirs: a key's picture
+// (a dark rounded key with its name) and the action in the menus' font.
+void PasteLegend(const ImGuiViewport* vp, float u)
+{
+    const std::string key = "CTRL+V", action = "PASTE";
+    const float keyH = 15 * u, h = 26 * u, padX = 8 * u, gap = 14 * u;
+    const float keyW = ImGui::GetFont()->CalcTextSizeA(keyH, FLT_MAX, 0, key.c_str()).x + 2 * padX;
+    const float actionW = GameFontWidthOf(GameFont::Menu, h, action);
+    const float boxH = 30 * u, total = keyW + gap + actionW;
+    const float x = vp->Pos.x + (vp->Size.x - total) / 2, cy = vp->Pos.y + vp->Size.y * 0.80f;
+    const ImVec2 a(x, cy - boxH / 2), b(x + keyW, cy + boxH / 2);
+    g_Draw->AddRectFilled(a, b, IM_COL32(16, 18, 24, 235), 6 * u);
+    g_Draw->AddRect(a, b, IM_COL32(150, 175, 220, 255), 6 * u, 0, 1.5f * u);
+    g_Draw->AddText(ImGui::GetFont(), keyH, ImVec2(x + padX, cy - keyH / 2), IM_COL32(235, 235, 235, 255), key.c_str());
+    const ImVec2 at(x + keyW + gap, cy - h / 2);
+    if (!GameFontTextOf(GameFont::Menu, g_Draw, at, h, IM_COL32(205, 220, 245, 255), action))
+        Text(at.x, at.y, h, kWhite, action, 0.0f);
+}
+
 // From the match's start to its room: both games restart (the host's profile, no mods) and come up at their main
 // menu before the room; that is covered, with a line in the menus' font.
 void EnteringCover(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u)
@@ -169,7 +189,7 @@ void EnteringCover(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, floa
 
 bool OnlineHudWanted()
 {
-    return net::OnlineStatus().phase != net::OnlinePhase::Off;
+    return net::OnlineStatus().phase != net::OnlinePhase::Off || game::OnlineCodeKeyboardShown();
 }
 
 void DrawOnlineHud()
@@ -188,6 +208,8 @@ void DrawOnlineHud()
     g_Draw = ImGui::GetForegroundDrawList();
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float u = std::max(0.5f, vp->Size.y / 720.0f);
+    if (game::OnlineCodeKeyboardShown())
+        PasteLegend(vp, u);
     if (s.entering || s.leaving) {
         EnteringCover(s, vp, u);
         return;

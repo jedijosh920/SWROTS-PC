@@ -24,5 +24,7 @@ bool OnlineGoToScreen(uint32_t key);
 bool OnlineStartVersus();
 // The session ended without this player leaving (`why`): the Online screen with the game's popup saying so.
 bool OnlineShowLost(const std::string& why);
+// The room code's keyboard is on screen (its legend for pasting: the online HUD).
+bool OnlineCodeKeyboardShown();
 
 } // namespace swrots::game

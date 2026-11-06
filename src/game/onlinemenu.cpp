@@ -771,15 +771,55 @@ void __fastcall KeyboardInit(uint8_t* keyboard, void*)
 
 // The keys of a room code's letters read as digits are disabled, as the game disables Back, Space and Done on an
 // empty text (their handler's +0x20): each key is an item of the keyboard's screen named by its letter, found as the
-// keyboard finds those three (kFindItem: the screen's items [item+0x24], name), its handler at +0x80.
+// keyboard finds those three (kFindItem: the screen's items [item+0x24], name), its handler at +0x80. A letter key's
+// draw (0x2D0F90) has no disabled look of its own (the wide buttons' 0x2D1280 has): its text, drawn in its item's
+// colour (+0x94, RGBA), is dimmed as theirs is, and its own colour given back for a name.
+std::vector<std::pair<uint8_t*, uint32_t>> g_KeyColours; // the dimmed keys' items and their own colours
+ULONGLONG g_CodeKeyboardAt = 0;                          // the code keyboard last drawn (the paste legend: the HUD)
 
-void DisableRefusedKeys(uint8_t* keyboard)
+bool KeyColourRaw(uint8_t* key, uint32_t& colour, bool write)
 {
+    __try {
+        uint32_t& field = *reinterpret_cast<uint32_t*>(key + 0x94);
+        if (write)
+            field = colour;
+        else
+            colour = field;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+void DimKey(uint8_t* key, bool dim)
+{
+    auto it = std::find_if(g_KeyColours.begin(), g_KeyColours.end(), [&](const auto& e) { return e.first == key; });
+    if (!dim) {
+        if (it != g_KeyColours.end())
+            KeyColourRaw(key, it->second, true);
+        return;
+    }
+    if (it == g_KeyColours.end()) {
+        uint32_t own = 0;
+        if (!KeyColourRaw(key, own, false))
+            return;
+        g_KeyColours.push_back({ key, own });
+        it = g_KeyColours.end() - 1;
+    }
+    const uint32_t own = it->second;
+    auto part = [&](int shift, float k) { return uint32_t(float((own >> shift) & 0xFF) * k) << shift; };
+    uint32_t dimmed = part(0, 0.45f) | part(8, 0.45f) | part(16, 0.45f) | part(24, 0.55f);
+    KeyColourRaw(key, dimmed, true);
+}
+
+int FindRefusedKeysRaw(uint8_t* keyboard, uint8_t* (&found)[4])
+{
+    int count = 0;
     __try {
         const uint8_t* item = *reinterpret_cast<uint8_t* const*>(keyboard + 8);
         uint8_t* items = item ? *reinterpret_cast<uint8_t* const*>(item + 0x24) : nullptr;
         if (!items)
-            return;
+            return 0;
         for (const char letter : { 'S', 'D', 'O', 'B' }) {
             const char name[2] = { letter, 0 };
             uint8_t* key = reinterpret_cast<uint8_t*(__fastcall*)(uint8_t*, void*, const char*)>(uintptr_t(kFindItem))(
@@ -787,9 +827,20 @@ void DisableRefusedKeys(uint8_t* keyboard)
             uint8_t* handler = key ? *reinterpret_cast<uint8_t**>(key + 0x80) : nullptr;
             if (handler)
                 handler[0x20] = g_KeyboardForName ? 0 : 1;
+            if (key)
+                found[count++] = key;
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
+    return count;
+}
+
+void DisableRefusedKeys(uint8_t* keyboard)
+{
+    uint8_t* keys[4] = {};
+    const int n = FindRefusedKeysRaw(keyboard, keys);
+    for (int i = 0; i < n; ++i)
+        DimKey(keys[i], !g_KeyboardForName);
 }
 
 // Ctrl+V: the clipboard's code (its letters and digits) as the text.
@@ -800,6 +851,8 @@ void __fastcall KeyboardDraw(uint8_t* keyboard, void*, uint32_t value)
     if (down && !g_PasteDown)
         Paste(keyboard);
     g_PasteDown = down;
+    if (!g_KeyboardForName)
+        g_CodeKeyboardAt = GetTickCount64();
     DisableRefusedKeys(keyboard);
     reinterpret_cast<void(__fastcall*)(uint8_t*, void*, uint32_t)>(uintptr_t(kKeyboardDraw))(keyboard, nullptr, value);
 }
@@ -1038,6 +1091,11 @@ bool SlotIs(uint32_t vtable, int slot, uint32_t function)
 bool OnlineRefusesMainMenuEvent(uint8_t*, int)
 {
     return false; // the main menu stays whole (online play has its own screens)
+}
+
+bool OnlineCodeKeyboardShown()
+{
+    return g_CodeKeyboardAt && GetTickCount64() - g_CodeKeyboardAt < 250;
 }
 
 bool OnlineShowLost(const std::string& why)
