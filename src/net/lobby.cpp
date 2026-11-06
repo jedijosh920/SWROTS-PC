@@ -29,6 +29,7 @@ std::vector<PublicRoom> g_Rooms;
 std::string g_Status = "SEARCHING...";
 Clock::time_point g_ListWantedAt = {};
 std::atomic<bool> g_Started{ false };
+DWORD g_LastError = 0; // the last request's WinHTTP error (the lobby's thread only)
 
 std::wstring LobbyAddress()
 {
@@ -52,6 +53,7 @@ int Request(const std::wstring& base, const wchar_t* method, const std::wstring&
     std::string& answer)
 {
     answer.clear();
+    g_LastError = 0;
     const std::wstring url = base + path;
     URL_COMPONENTS parts = {};
     parts.dwStructSize = sizeof(parts);
@@ -94,7 +96,11 @@ int Request(const std::wstring& base, const wchar_t* method, const std::wstring&
                 answer.append(chunk.data(), read);
             }
         }
+        if (!status)
+            g_LastError = GetLastError();
         WinHttpCloseHandle(request);
+    } else {
+        g_LastError = GetLastError();
     }
     if (connection)
         WinHttpCloseHandle(connection);
@@ -152,7 +158,12 @@ std::string Announcement(std::string& code)
 
 void Run()
 {
+    {
+        const std::wstring base = LobbyAddress();
+        LOG_INFO("Lobby: %ls", base.empty() ? L"none ([Online] Lobby empty): no Public Rooms" : base.c_str());
+    }
     std::string announced, announcedCode;
+    int lastListStatus = 200;
     Clock::time_point announcedAt = {}, listedAt = {};
     for (;;) {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -174,7 +185,8 @@ void Run()
                 std::string answer;
                 const int status = Request(base, L"POST", L"/rooms", body, answer);
                 if (body != announced)
-                    LOG_INFO("Lobby: room %s announced (%d %s)", code.c_str(), status, answer.substr(0, 40).c_str());
+                    LOG_INFO("Lobby: room %s announced (%d, error %lu: %s)", code.c_str(), status,
+                        status ? 0ul : g_LastError, answer.substr(0, 40).c_str());
                 announcedAt = now;
                 if (status == 200) {
                     announced = body;
@@ -199,6 +211,10 @@ void Run()
             std::string answer;
             const int code200 = Request(base, L"GET", L"/rooms.txt?version=" + std::to_wstring(OnlineProtocol()), "",
                 answer);
+            if (code200 != lastListStatus)
+                LOG_INFO("Lobby: list answer %d (error %lu) %s", code200, code200 ? 0ul : g_LastError,
+                    answer.substr(0, 60).c_str());
+            lastListStatus = code200;
             if (code200 != 200) {
                 status = "LOBBY UNREACHABLE";
             } else {

@@ -2116,6 +2116,10 @@ void SetOnlineRoom(const OnlineRoomSettings& room)
     std::lock_guard<std::mutex> lock(g_S.lock);
     if (!g_S.host && g_S.phase != OnlinePhase::Off && g_S.phase != OnlinePhase::Ended)
         return; // the host's to set
+    if (room.rounds != g_S.room.rounds || room.arena != g_S.room.arena || room.rematch != g_S.room.rematch ||
+        room.open != g_S.room.open)
+        LOG_INFO("Online: room settings: %d rounds, arena %d, rematch %s, %s", room.rounds, room.arena,
+            room.rematch ? "on" : "off", room.open ? "public" : "private");
     g_S.room = room;
 }
 

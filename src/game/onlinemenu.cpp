@@ -47,6 +47,15 @@ constexpr const char* kCodeScreen = "online_code";
 constexpr const char* kCodeFile = "interfc\\front_end\\xml\\online_code.xml";
 constexpr const char* kCodesFile = "interfc\\front_end\\xml\\codes.xml";
 constexpr const char* kSettingsFile = "interfc\\front_end\\xml\\settings.xml";
+
+// settings.ini, next to the game
+std::wstring SettingsIni()
+{
+    wchar_t path[MAX_PATH];
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    std::wstring ini = path;
+    return ini.substr(0, ini.find_last_of(L"\\/")) + L"\\settings.ini";
+}
 constexpr float kRowStep = 24.0f;
 
 // --- The main menu's row ---------------------------------------------------------------------------------------------
@@ -834,7 +843,8 @@ char __fastcall ValueEvent(uint8_t* handler, void*, int event, int value)
     } else if (row == kRematch) {
         room.rematch = room.rematch ? 0 : 1;
     } else if (row == kPublic) {
-        room.open = room.open ? 0 : 1; // listed in Public Rooms
+        room.open = room.open ? 0 : 1; // listed in Public Rooms; the choice kept for the next rooms
+        WritePrivateProfileStringW(L"Online", L"PublicRoom", room.open ? L"1" : L"0", SettingsIni().c_str());
     } else {
         return 1;
     }
@@ -1402,6 +1412,7 @@ uint32_t ItemKey(uint8_t* handler)
     return item ? *reinterpret_cast<const uint32_t*>(item + 4) : 0;
 }
 
+
 // A room made (true: the room screen to open, by the caller when `open` is false); else the game's popup says why.
 bool HostGame(uint8_t* owner, bool open = true)
 {
@@ -1410,6 +1421,11 @@ bool HostGame(uint8_t* owner, bool open = true)
     g_Typed.clear();
     LOG_INFO("Online menu: Host Game");
     const bool hosting = net::OnlineHost();
+    if (hosting) { // the last Public Room choice ([Online] PublicRoom)
+        net::OnlineRoomSettings room = net::OnlineStatus().room;
+        room.open = GetPrivateProfileIntW(L"Online", L"PublicRoom", 0, SettingsIni().c_str()) ? 1 : 0;
+        net::SetOnlineRoom(room);
+    }
     if (hosting && open)
         GoToShellScreen(kScreenNames[kRoom]);
     else if (!hosting)
