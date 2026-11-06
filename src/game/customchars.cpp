@@ -1661,6 +1661,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
     g_ForcePowersChosen.clear();
     g_QuietCharacters.clear();
     g_DialogueEngine = nullptr;
+    g_Forced = {}; // (a line the last start forced: its entry went with that start's memory, nothing to give back)
     g_Mods = mods;
     g_GameData = gameData;
     g_Cache = cache;

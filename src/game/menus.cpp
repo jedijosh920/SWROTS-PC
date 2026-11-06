@@ -196,14 +196,16 @@ void SetMenuText(const char* id, const std::wstring& text)
     std::lock_guard<std::mutex> lock(g_TextLock);
     std::unique_ptr<wchar_t[]>& buffer = g_Texts[key];
     if (!buffer) {
-        buffer.reset(new wchar_t[kTextCapacity]);
+        buffer.reset(new wchar_t[kTextCapacity]());
         buffer[0] = 0;
     }
     // As the string table has them: the length first, then the characters.
     const size_t length = std::min(text.size(), kTextCapacity - 2);
     buffer[0] = wchar_t(length);
     std::memcpy(buffer.get() + 1, text.data(), length * sizeof(wchar_t));
-    buffer[length + 1] = 0;
+    // (and nothing after it: the rest of the buffer cleared, so no reader can come across an older text's or the
+    // heap's leftovers past its end; seen once on an objective, a path's piece after it)
+    std::fill(buffer.get() + length + 1, buffer.get() + kTextCapacity, wchar_t(0));
 }
 
 void SetMenuTextRedirect(uint32_t (*redirect)(uint32_t key))

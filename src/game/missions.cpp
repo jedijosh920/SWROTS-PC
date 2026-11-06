@@ -258,7 +258,21 @@ Shot g_Shot;
 bool g_Held = false;
 bool g_Skip = false;        // a cutscene is being skipped: waits end at once
 double g_SkipAskedAt = -10; // a first press in a cutscene: the second one skips it
-bool g_MissionSlow = false;  // the mission's slow motion is on (the letterbox must not cancel it)
+bool g_MissionSlow = false;
+// The player's class a mission chose (SetPlayerClass, kept through every start) and the choice before it, given back
+// at the next start that is not that mission's
+bool g_MissionChosePlayer = false;
+std::string g_PlayerBeforeMission;
+void MissionChoosesPlayer(const char* className)
+{
+    if (!g_MissionChosePlayer) {
+        const char* before = PlayerClass();
+        g_PlayerBeforeMission = before ? before : "";
+        g_MissionChosePlayer = true;
+    }
+    SetPlayerClass(nullptr); // (no costume, mesh or skin of another's)
+    SetPlayerClass(className, false);
+}  // the mission's slow motion is on (the letterbox must not cancel it)
 bool g_Advance = false;     // the developer's "next" (mission next, F8): the current wait ends
 bool g_InCutscene = false;
 double g_FadeFrom = 0, g_FadeTo = 0, g_FadeStart = 0, g_FadeLength = 0;
@@ -1033,6 +1047,7 @@ struct Grapple {
     bool grabbed;
     float slow; // the slow motion through the blow (the game's kills: 0.5)
     int slot = -1; // the [Animations] slot of the attacker's half, from its start: only its own events count
+    double grabbedAt = 0; // (game time)
 };
 std::vector<Grapple> g_Grapples;
 constexpr uint32_t kScriptContext = 0x006943CC;   // the running script's: +0x68 its character
@@ -1088,6 +1103,7 @@ void GrappleEvents(const SequenceEvents& e, int slot)
         g_MissionSlow = g->slow < 1.0f;
         reinterpret_cast<void(__cdecl*)(const char*, int, int, int, int)>(kPartnerSequence)(g->partnerSequence.c_str(), 0, 0, 0, 0);
         g->grabbed = true;
+        g->grabbedAt = Now();
         LOG_INFO("Mission: %s grabs its partner, who plays %s", VirtualTypeName(c), g->partnerSequence.c_str());
     }
     if (e.frameCode) {
@@ -1099,7 +1115,8 @@ void GrappleEvents(const SequenceEvents& e, int slot)
             g_MissionSlow = false;
         }
     }
-    if (e.left || e.ended) {
+    // (a "left" just as it starts, in the same frame, is the animation before it, a leap, being left: not this one's)
+    if ((e.left && !e.start && Now() - g->grabbedAt > 0.1) || e.ended) {
         release();
         g_Grapples.erase(g);
     }
@@ -1706,7 +1723,7 @@ int L_set_player(lua_State* L)
     lua_settop(L, 1);
     L_remove(L);
     Virtual<void(__fastcall*)(uint8_t*, void*, const float*)>(player, kPlace)(player, nullptr, m);
-    SetPlayerClass(className.c_str(), false);
+    MissionChoosesPlayer(className.c_str());
     std::string error;
     const bool ok = ReplacePlayer(error);
     if (!ok)
@@ -2616,7 +2633,8 @@ double Towards(double from, double to, double start, double length)
 void UpdateHud()
 {
     const double now = Now();
-    g_Hud.active = g_Active && g_Woken;
+    // (from the level's first frame: the start's black is up before the mission wakes, else its first frames showed)
+    g_Hud.active = g_Active && (g_Woken || PlayerObject());
     g_Hud.paused = GamePaused();
     // the bars are the game's own (GameLetterbox): the port's screen only notes them (nothing of its own shows under them)
     {
@@ -2719,6 +2737,14 @@ void InstallMissions(const std::wstring& mods)
     if (!g_MusicServed.empty()) // the last start's own track: the disc's again
         kernel::SetDiscFileOverride(g_MusicServed, L"");
     g_MusicServed.clear();
+    // the player's class: the last mission's (kept in the port's memory, as the debug menu's choice is, through every
+    // start) is the player's own again, whatever was chosen before it (a mission's start chooses it again below)
+    if (g_MissionChosePlayer) {
+        SetPlayerClass(nullptr);
+        if (!g_PlayerBeforeMission.empty())
+            SetPlayerClass(g_PlayerBeforeMission.c_str(), false);
+        g_MissionChosePlayer = false;
+    }
     g_Mods = mods;
     g_Active = false;
     g_Info = nullptr;
@@ -3015,8 +3041,7 @@ void InstallMissions(const std::wstring& mods)
         g_Fields.push_back(name);
     }
     SetDevMapLayout(layout);
-    SetPlayerClass(nullptr);
-    SetPlayerClass(g_PlayerClass.c_str(), false);
+    MissionChoosesPlayer(g_PlayerClass.c_str());
     ReadLines();
     RegisterDialogue();
     SetFatalHitGuard(&PlayerFatal);
