@@ -2,7 +2,8 @@
 //
 // A host whose room is public announces it every 30 s (POST /rooms); a room not announced for 75 s is gone, and a
 // host that closes its room takes it away (DELETE /rooms/<code>). Players list the rooms (GET /rooms.txt for the game,
-// GET /rooms for JSON, / for a page). Nothing is stored on disk: the rooms live in the object's memory only.
+// GET /rooms for JSON, / for a page). The rooms are also kept in the object's storage, so that they outlive the
+// object being taken out of memory (Cloudflare may do it at any time).
 //
 // The room code is what a player types to join (it holds the host's address): a public room shows it to anyone.
 
@@ -45,13 +46,24 @@ function escapeHtml(text) {
 
 export class Lobby {
   constructor(state, env) {
+    this.storage = state.storage;
     this.rooms = new Map(); // code -> { code, name, mode, arena, players, slots, version, address, seen }
+    state.blockConcurrencyWhile(async () => {
+      const stored = await this.storage.list({ prefix: "room:" });
+      for (const room of stored.values())
+        if (room && room.code) this.rooms.set(room.code, room);
+    });
   }
 
   prune() {
     const now = Date.now();
+    const gone = [];
     for (const [code, room] of this.rooms)
-      if (now - room.seen > ROOM_TTL_MS) this.rooms.delete(code);
+      if (now - room.seen > ROOM_TTL_MS) {
+        this.rooms.delete(code);
+        gone.push("room:" + code);
+      }
+    if (gone.length) this.storage.delete(gone);
   }
 
   list(version) {
@@ -86,7 +98,7 @@ export class Lobby {
           return new Response("too many rooms", { status: 429, headers });
       }
       const players = Math.max(1, Math.min(2, Number(body.players) | 0));
-      this.rooms.set(code, {
+      const room = {
         code,
         name: clean(body.name, 16) || "NONAME",
         mode: clean(body.mode, 16) || "VERSUS",
@@ -96,14 +108,19 @@ export class Lobby {
         version: Math.max(0, Number(body.version) | 0),
         address,
         seen: Date.now(),
-      });
+      };
+      this.rooms.set(code, room);
+      await this.storage.put("room:" + code, room);
       return new Response("ok", { headers });
     }
 
     if (request.method === "DELETE" && url.pathname.startsWith("/rooms/")) {
       const code = clean(url.pathname.slice("/rooms/".length), 15).toUpperCase();
       const room = this.rooms.get(code);
-      if (room && room.address === address) this.rooms.delete(code);
+      if (room && room.address === address) {
+        this.rooms.delete(code);
+        await this.storage.delete("room:" + code);
+      }
       return new Response("ok", { headers });
     }
 
