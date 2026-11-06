@@ -994,6 +994,30 @@ bool __fastcall IsEnemyHook(uint8_t* brain, void* edx, uint8_t* other, int flag)
     return g_OriginalIsEnemy(brain, edx, other, flag);
 }
 
+// A character hit by the player (0x18FA00, thiscall on its AI controller (attacker), called by the reaction to a hit
+// at 0x1593F8): one that can be provoked (+0x2A6) turns on the player, and the player's teams become every team but
+// the character's (0x18FA8C), so the game's lock-on takes it for an enemy from then on. For a level character (a
+// neutral the player strikes) that is the game's way; for one the port put on the player's side (an ally, a mission's
+// companion caught by a swing) it is not: the ally stays an ally and the player's teams stay as they were.
+constexpr uint32_t kProvokeCall = 0x001593F8;
+constexpr uint32_t kProvoke = 0x0018FA00;
+using ProvokeFn = void(__fastcall*)(uint8_t*, void*, uint8_t*);
+
+void __fastcall ProvokeHook(uint8_t* brain, void*, uint8_t* attacker)
+{
+    const uint8_t* self = brain ? *reinterpret_cast<uint8_t* const*>(brain + 0x10) : nullptr;
+    if (attacker && attacker == g_Player && self && self != g_Player && (TeamsOf(self) & kPortPlayerTeam) &&
+        !IsEnemyHook(brain, nullptr, attacker, 0)) {
+        static uint32_t s_LoggedId = 0;
+        if (*reinterpret_cast<const uint32_t*>(self + 4) != s_LoggedId) {
+            s_LoggedId = *reinterpret_cast<const uint32_t*>(self + 4);
+            LOG_INFO("Characters: an ally struck by the player stays an ally");
+        }
+        return;
+    }
+    reinterpret_cast<ProvokeFn>(uintptr_t(kProvoke))(brain, nullptr, attacker);
+}
+
 void SetFriendlyFire(const uint8_t* a, const uint8_t* b)
 {
     g_FriendlyFireA = a && b ? a : nullptr;
@@ -1126,6 +1150,11 @@ void InstallCharacters()
         std::memcpy(stub + 9, &back, 4);
         g_OriginalIsEnemy = reinterpret_cast<IsEnemyFn>(stub);
         PatchJump(kIsEnemy, reinterpret_cast<const void*>(&IsEnemyHook));
+        const uint8_t* call = reinterpret_cast<const uint8_t*>(uintptr_t(kProvokeCall));
+        if (call[0] == 0xE8 && kProvokeCall + 5 + *reinterpret_cast<const int32_t*>(call + 1) == kProvoke)
+            PatchCall(kProvokeCall, reinterpret_cast<const void*>(&ProvokeHook), 5);
+        else
+            LOG_WARN("Characters: unexpected code at the reaction's provoke call; a struck ally may turn on the player");
     } else {
         LOG_WARN("Characters: unexpected code at the enemy check; neutral and riot sides unavailable");
     }

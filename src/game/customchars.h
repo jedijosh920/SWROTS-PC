@@ -94,6 +94,10 @@ void CustomCharactersFrame();
 
 // The custom character a character is (recognised by its costume list, the port's own), or null.
 const CustomCharacter* CustomCharacterOf(const uint8_t* character);
+// A custom character with the port's Force controls (ForceFrom=) gets these powers from now on instead of its file's
+// ForcePowers= ("Push Grip SaberThrow Lightning Heal", any of them; none for ""): a mission's choice, until the next
+// start. False for any other character.
+bool SetForcePowers(const uint8_t* character, const std::string& powers);
 // True for Versus player 2 when both players chose the same fighter (its look's texture suffix "_duel").
 bool IsMirrorPlayer2(const uint8_t* character);
 // The HUD portrait a custom character shows now (player 2's in a Versus mirror, else its own).
@@ -115,6 +119,9 @@ void AddVoiceLines(const std::vector<VoiceLineSource>& lines);
 int SayLine(uint8_t* speaker, const char* lineId);
 // While quiet, the dialogue engine starts no line but the ones SayLine/ForceNextLine ask for (a mission's cutscene).
 void SetDialogueQuiet(bool quiet);
+// A character kept quiet says no line of its own (battle cries, taunts, grunts): only the ones SayLine/ForceNextLine
+// ask for (a mission's say). Until the next start.
+void SetCharacterQuiet(const uint8_t* character, bool quiet);
 
 // The duel cameras' name of the duelist whose intro a custom character plays (Intro=), or null for the base's.
 const char* IntroCameras(const CustomCharacter& custom);

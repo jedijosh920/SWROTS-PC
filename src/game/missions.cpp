@@ -257,6 +257,7 @@ Shot g_Shot;
 bool g_Held = false;
 bool g_Skip = false;        // a cutscene is being skipped: waits end at once
 double g_SkipAskedAt = -10; // a first press in a cutscene: the second one skips it
+bool g_MissionSlow = false;  // the mission's slow motion is on (the letterbox must not cancel it)
 bool g_Advance = false;     // the developer's "next" (mission next, F8): the current wait ends
 bool g_InCutscene = false;
 double g_FadeFrom = 0, g_FadeTo = 0, g_FadeStart = 0, g_FadeLength = 0;
@@ -818,6 +819,71 @@ int L_pushable(lua_State* L)
     return 0;
 }
 
+// force_powers(c, "Push Grip SaberThrow Lightning Heal"): the Force powers a custom character with the port's Force
+// (ForceFrom=) uses from now on, e.g. a Maul who does not heal; "" for none. False for any other character.
+int L_force_powers(lua_State* L)
+{
+    uint8_t* c = CheckCharacter(L, 1);
+    lua_pushboolean(L, c && SetForcePowers(c, luaL_checkstring(L, 2)));
+    return 1;
+}
+
+// saber_color(c, colour): the player's saber colour from now on ("red", "green", "blue", "purple" or "r g b", 0-255),
+// e.g. a Padawan who takes up his Master's saber. The player only (false for another character); the colour the
+// player had (the debug menu's, or the game's) comes back when the mission ends or starts again.
+struct SaberWas {
+    bool changed = false, had = false;
+    float rgb[3] = {};
+} g_SaberWas;
+
+void RestoreSaberColor()
+{
+    if (!g_SaberWas.changed)
+        return;
+    SetPlayerSaberColor(g_SaberWas.had ? g_SaberWas.rgb : nullptr);
+    g_SaberWas = {};
+}
+
+int L_saber_color(lua_State* L)
+{
+    uint8_t* c = CheckCharacter(L, 1);
+    float rgb[3];
+    if (!c || c != PlayerObject() || !ParseSaberColor(luaL_checkstring(L, 2), rgb)) {
+        lua_pushboolean(L, false);
+        return 1;
+    }
+    if (!g_SaberWas.changed) {
+        g_SaberWas.changed = true;
+        g_SaberWas.had = PlayerSaberColor(g_SaberWas.rgb);
+    }
+    SetPlayerSaberColor(rgb);
+    lua_pushboolean(L, true);
+    return 1;
+}
+
+// slow_motion(scale [, ramp]): the game's slow motion (as its kills use): everything at `scale` of its speed (0.3: a
+// third) from now on, easing in over `ramp` seconds (default 0.15); slow_motion(1) back to normal. Script waits run
+// on real time. Back to normal when the mission ends.
+constexpr uintptr_t kSetSlowMotion = 0x000A20E0; // cdecl (scale, ramp in, hold, ramp out): frames at 30 a second
+
+int L_slow_motion(lua_State* L)
+{
+    const float scale = std::clamp(float(luaL_checknumber(L, 1)), 0.05f, 1.0f);
+    const int ramp = int(std::clamp(luaL_optnumber(L, 2, 0.15), 0.0, 5.0) * 30.0 + 0.5);
+    reinterpret_cast<void(__cdecl*)(float, int, int, int)>(kSetSlowMotion)(scale, ramp, scale < 1.0f ? 9999 : 0, 0);
+    g_MissionSlow = scale < 1.0f;
+    return 0;
+}
+
+// quiet(c [, on]): it says no line of its own (battle cries, taunts, grunts), only the script's (say); off again with
+// quiet(c, false).
+int L_quiet(lua_State* L)
+{
+    if (uint8_t* c = CheckCharacter(L, 1))
+        SetCharacterQuiet(c, lua_isnoneornil(L, 2) || lua_toboolean(L, 2));
+    return 0;
+}
+
 int L_attack(lua_State* L)
 {
     uint8_t* c = CheckCharacter(L, 1);
@@ -887,6 +953,18 @@ bool SequenceEvent(uint32_t test)
 // attacker's (the pair's two animations share one origin), and the partner plays its half by name (e.g. Kill_Lunge_GR,
 // whose own script shows the hit, the saber's heavy impact at his root, and falls him: Fall_StandingF, R_OnBack).
 // Slow motion through the stab, the blade's impale effect at frame code 6 (as Anakin's: 0x401F40).
+// A mission's slow motion (slow_motion(), a paired kill's): the game's letterbox cancels any slow motion every frame
+// while its bars are up (0x12E0B7 calls 0xA2110: its cinematics run at normal speed); a mission's cutscene keeps the
+// one the mission asked for (g_MissionSlow).
+constexpr uint32_t kLetterboxCancelSlowCall = 0x0012E0B7;
+constexpr uintptr_t kCancelSlowMotion = 0x000A2110;
+
+void __cdecl LetterboxCancelSlow()
+{
+    if (!g_MissionSlow)
+        reinterpret_cast<void(__cdecl*)()>(kCancelSlowMotion)();
+}
+
 struct Grapple {
     uint8_t* attacker;
     uint32_t attackerId;
@@ -894,6 +972,7 @@ struct Grapple {
     uint32_t partnerId;
     std::string partnerSequence;
     bool grabbed;
+    float slow; // the slow motion through the blow (the game's kills: 0.5)
 };
 std::vector<Grapple> g_Grapples;
 constexpr uint32_t kScriptContext = 0x006943CC;   // the running script's: +0x68 its character
@@ -903,7 +982,8 @@ constexpr uintptr_t kRelease = 0x00172E20;
 constexpr uintptr_t kPartnerSequence = 0x00174B40; // cdecl (name, 0, 0, 0, 0): the partner plays that sequence
 constexpr uintptr_t kWeaponKillMode = 0x002BC210;  // cdecl (1, 0, 0) at a kill's start; 0x2BC1B0 (0, 0) after
 constexpr uintptr_t kWeaponKillModeOff = 0x002BC1B0;
-constexpr uintptr_t kSlowMotion = 0x00176BF0;      // cdecl (scale, ramp in, hold, ramp out)
+constexpr uintptr_t kSlowMotion = 0x000A20E0;      // cdecl (scale, ramp in, hold, ramp out): the time manager's ramp
+// (not the scripts' 0x176BF0, which skips while the script effects are off, byte 0x6943D0: always, in a mission)
 constexpr uintptr_t kImpaleEffect = 0x00401F40;    // IDS_FX_LIGHTSABER_Body_Impale at the saber's middle
 constexpr uintptr_t kFrameCode = 0x001728C0;       // the animation's frame code now
 
@@ -927,6 +1007,7 @@ void GrappleEvents(const SequenceEvents& e)
         reinterpret_cast<void(__cdecl*)(int, int)>(kWeaponKillModeOff)(0, 0);
         reinterpret_cast<void(__cdecl*)()>(kRelease)();
         reinterpret_cast<void(__cdecl*)(float, int, int, int)>(kSlowMotion)(1.0f, 10, 0, 0);
+        g_MissionSlow = false;
     };
     if (e.start) { // its start: the grab, the partner's half
         if (At<uint32_t>(c, 4) != g->attackerId || At<uint32_t>(g->partner, 4) != g->partnerId) {
@@ -936,7 +1017,8 @@ void GrappleEvents(const SequenceEvents& e)
         At<uint32_t>(c, kGrapplePartnerId) = g->partnerId;
         reinterpret_cast<void(__cdecl*)(int, int, int)>(kWeaponKillMode)(1, 0, 0);
         reinterpret_cast<void(__cdecl*)(float, float, float)>(kGrab)(0, 0, 0);
-        reinterpret_cast<void(__cdecl*)(float, int, int, int)>(kSlowMotion)(0.5f, 0, 9999, 0);
+        reinterpret_cast<void(__cdecl*)(float, int, int, int)>(kSlowMotion)(g->slow, 0, 9999, 0);
+        g_MissionSlow = g->slow < 1.0f;
         reinterpret_cast<void(__cdecl*)(const char*, int, int, int, int)>(kPartnerSequence)(g->partnerSequence.c_str(), 0, 0, 0, 0);
         g->grabbed = true;
         LOG_INFO("Mission: %s grabs its partner, who plays %s", VirtualTypeName(c), g->partnerSequence.c_str());
@@ -945,8 +1027,10 @@ void GrappleEvents(const SequenceEvents& e)
         const int code = reinterpret_cast<int(__cdecl*)()>(kFrameCode)();
         if (code == 6 && g->grabbed)
             reinterpret_cast<void(__cdecl*)()>(kImpaleEffect)();
-        else if (code == 20)
+        else if (code == 20 && g->slow == 0.5f) { // (the game's own: a slower one the script chose lasts the whole blow)
             reinterpret_cast<void(__cdecl*)(float, int, int, int)>(kSlowMotion)(1.0f, 10, 0, 0);
+            g_MissionSlow = false;
+        }
     }
     if (e.left || e.ended) {
         release();
@@ -1162,6 +1246,7 @@ int L_play_anim(lua_State* L)
     float blend = 0;
     uint8_t* partner = nullptr;
     std::string partnerSequence;
+    float slow = 0.5f;
     if (lua_istable(L, 3)) {
         const auto number = [&](const char* field, float fallback) {
             lua_getfield(L, 3, field);
@@ -1188,11 +1273,12 @@ int L_play_anim(lua_State* L)
         lua_getfield(L, 3, "partner_anim");
         partnerSequence = luaL_optstring(L, -1, "");
         lua_pop(L, 1);
+        slow = std::clamp(number("slow", 0.5f), 0.05f, 1.0f);
     }
     g_Grapples.erase(std::remove_if(g_Grapples.begin(), g_Grapples.end(), [&](const Grapple& g) { return g.attacker == c; }),
         g_Grapples.end());
     if (c && partner && partner != c && !partnerSequence.empty())
-        g_Grapples.push_back({ c, At<uint32_t>(c, 4), partner, At<uint32_t>(partner, 4), partnerSequence, false });
+        g_Grapples.push_back({ c, At<uint32_t>(c, 4), partner, At<uint32_t>(partner, 4), partnerSequence, false, slow });
     uint8_t* sequence = FindSequence(c, name);
     uint8_t* cs = c ? At<uint8_t*>(c, kCharacterScript) : nullptr;
     if (!sequence || !cs) {
@@ -2155,10 +2241,13 @@ int L_skip_pressed(lua_State* L)
     return 1;
 }
 
-// The developer's "next" outside a cutscene: true once (the wait that sees it ends).
+// The developer's "next" outside a cutscene: true once (the wait that sees it ends), for the story's own waits only
+// (main's): a thread's wait (one watching for a death, say) is not the story's, and must not take it.
+lua_State* g_MainThread = nullptr;
+
 int L_advance(lua_State* L)
 {
-    const bool advance = g_Advance && !g_InCutscene;
+    const bool advance = g_Advance && !g_InCutscene && L == g_MainThread;
     if (advance)
         g_Advance = false;
     lua_pushboolean(L, advance);
@@ -2174,6 +2263,9 @@ void End(bool ok, const std::string& detail)
     g_Hud.ending = ok ? "MISSION COMPLETE" : "MISSION FAILED";
     g_Hud.endingDetail = detail;
     Hold(true); // everyone stops for the end
+    RestoreSaberColor();
+    reinterpret_cast<void(__cdecl*)(float, int, int, int)>(kSetSlowMotion)(1.0f, 0, 0, 0);
+    g_MissionSlow = false;
     if (!g_PlayersSubtitles.empty()) // the player's own subtitles setting back
         debug::WriteGameVariable("subtitles", g_PlayersSubtitles);
     if (g_PlayersMusicVolume >= 0) { // the player's own music volume back
@@ -2261,7 +2353,7 @@ void Register(lua_State* L)
         { "alive", L_alive }, { "exists", L_exists }, { "health", L_health }, { "set_health", L_set_health },
         { "max_health", L_max_health }, { "invincible", L_invincible }, { "position", L_position },
         { "distance", L_distance }, { "place", L_place }, { "face", L_face }, { "side", L_side }, { "ai", L_ai },
-        { "attack", L_attack }, { "hold", L_hold }, { "play", L_play }, { "play_anim", L_play_anim }, { "stop_anim", L_stop_anim }, { "actor", L_actor }, { "keep_body", L_keep_body }, { "pushable", L_pushable }, { "anim_frames", L_anim_frames }, { "moves", L_moves }, { "saber", L_saber }, { "kill", L_kill }, { "boss", L_boss }, { "objective_done", L_objective_done }, { "tip", L_tip },
+        { "attack", L_attack }, { "force_powers", L_force_powers }, { "hold", L_hold }, { "play", L_play }, { "play_anim", L_play_anim }, { "stop_anim", L_stop_anim }, { "actor", L_actor }, { "keep_body", L_keep_body }, { "pushable", L_pushable }, { "anim_frames", L_anim_frames }, { "moves", L_moves }, { "saber", L_saber }, { "saber_color", L_saber_color }, { "slow_motion", L_slow_motion }, { "quiet", L_quiet }, { "kill", L_kill }, { "boss", L_boss }, { "objective_done", L_objective_done }, { "tip", L_tip },
         { "go", L_go }, { "going", L_going }, { "marker", L_marker }, { "field", L_field },
         { "sound", L_sound }, { "stop_sounds", L_stop_sounds }, { "get_var", L_get_var },
         { "music_volume", L_music_volume },
@@ -2293,6 +2385,7 @@ void CloseScript()
         lua_close(g_Lua);
     g_Lua = nullptr;
     g_Threads.clear();
+    g_MainThread = nullptr;
 }
 
 // Loads the script and starts `main` as the first coroutine.
@@ -2331,6 +2424,7 @@ void StartScript()
     lua_insert(L, -2);
     lua_xmove(L, co, 1);
     g_Threads.push_back(luaL_ref(L, LUA_REGISTRYINDEX));
+    g_MainThread = co;
     LOG_INFO("Missions: the script runs");
 }
 
@@ -2511,6 +2605,8 @@ void InstallMissions(const std::wstring& mods)
     SetCameraFov(0);
     g_Held = g_Skip = g_InCutscene = g_Advance = false;
     g_SkipAskedAt = -10;
+    RestoreSaberColor();
+    g_MissionSlow = false;
     SetDialogueQuiet(false);
     g_LentName = {};
     g_LevelCharFade = -1;
@@ -2541,6 +2637,11 @@ void InstallMissions(const std::wstring& mods)
         return;
     }
     PatchCall(kScriptSaberOnCall, reinterpret_cast<const void*>(&ScriptSaberOn), 5);
+    if (const uint8_t* call = reinterpret_cast<const uint8_t*>(uintptr_t(kLetterboxCancelSlowCall));
+        call[0] == 0xE8 && kLetterboxCancelSlowCall + 5 + *reinterpret_cast<const int32_t*>(call + 1) == kCancelSlowMotion)
+        PatchCall(kLetterboxCancelSlowCall, reinterpret_cast<const void*>(&LetterboxCancelSlow), 5);
+    else
+        LOG_WARN("Missions: unexpected code at the letterbox's slow motion cancel; no slow motion in cutscenes");
     HookReactions(); // actor(): no hits
     if (*reinterpret_cast<const uint32_t*>(uintptr_t(kTickScriptSlot)) == kTickScript) {
         const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(&TickScriptHook));

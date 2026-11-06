@@ -415,6 +415,13 @@ The port's missions (`missions.cpp`, `play_anim`) hook TickScript to loop a rang
   apart; a character with the byte `+0x7F4` ("character push", Phys_EnableCharacterPush; 1 from its constructor, the
   script function 0x17A020(bool) sets it, e.g. off during ForceAction_2HandPush) at 0 takes no part: others pass
   through it and it is never shoved. Missions: `pushable(c, false)`.
+- Provoking: the reaction to a hit (0x1593F8) calls 0x18FA00 (thiscall on the struck character's AI controller,
+  (attacker)), which acts only when the attacker is the player: a character that can be provoked (`[+0x9FC]+0x2A6`)
+  turns on the player, and the player's teams (`[+0xA00]+0x214`) become every team but the struck one's (0x18FA8C), so
+  the game's lock-on (which reads teams) takes it for an enemy. For a neutral of the level that is the game's way; an
+  ally the port put on the player's side (its team bit 0x8000) caught by the player's swing turned on the player
+  that way, and both then swung at each other without a hit (IsEnemy still said allies). The port skips the call for
+  such an ally (`characters.cpp` ProvokeHook).
 
 ## Paired kills
 
@@ -428,7 +435,10 @@ the human's `Kill_Lunge_GR` (0x3D34C0, `anakin_atk_kill_lunge_humangr`).
   partner: the script's target, else `[+0x3D8]`, else `[attacker+0x5B0]` (an instance id), else in a cutscene the
   nearest; ids stored both ways, victim `+0x5AC` / attacker `+0x5B0`; the victim's physics commit `+0x4E4` becomes a
   TCommit_GrappleDefend (vtable 0x58EB38) that holds its root to the attacker's at that offset: the lunge's is
-  (0, 0, 0), the pair's animations made around one origin), slow motion 0x176BF0(0.5, 0, 9999, 0). Frame code 6:
+  (0, 0, 0), the pair's animations made around one origin), slow motion 0x176BF0(0.5, 0, 9999, 0) (the scripts'
+  slow motion: it skips while the script effects are off, byte 0x6943D0, else 0xA20E0 sets the time manager's ramp;
+  the letterbox's tick cancels any slow motion every frame while its bars are up, 0x12E0B7 calling 0xA2110, so the
+  game's cinematics run at normal speed; missions call 0xA20E0 and keep their own through the bars). Frame code 6:
   0x401F40 (IDS_FX_LIGHTSABER_Body_Impale at the saber's ATT_saber_middle); 20: slow motion off. At its end: release
   0x172E20, 0x2BC1B0(0, 0). 0x174B40(name, 0, 0, 0, 0) plays a sequence on the grapple partner by name.
 - The victim's `Kill_Lunge_GR`: at its start IDS_FX_LIGHTSABER_IMPACT_HEAVY at its bone root_g and 1000 damage to

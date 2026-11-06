@@ -271,9 +271,21 @@ constexpr const char* kVoiceFallbacks[][3] = {
     { "TNT", "BAT", "KIL" }, { "BAT", "TNT", "FSE" },
 };
 
+// Characters a mission keeps quiet (SetCharacterQuiet): the object and its instance id (+4).
+std::vector<std::pair<const uint8_t*, uint32_t>> g_QuietCharacters;
+
+bool IsQuietCharacter(const uint8_t* speaker)
+{
+    for (const auto& q : g_QuietCharacters)
+        if (q.first == speaker && *reinterpret_cast<const uint32_t*>(speaker + 4) == q.second)
+            return true;
+    return false;
+}
+
 int __fastcall StartEntryHook(uint8_t* engine, void*, uint8_t* speaker, int entry, int a, int b, int c)
 {
-    if (g_OnlyForced && !(speaker && speaker == g_Forced.speaker && g_Forced.id && GetTickCount64() < g_Forced.until))
+    const bool forced = speaker && speaker == g_Forced.speaker && g_Forced.id && GetTickCount64() < g_Forced.until;
+    if ((g_OnlyForced || (speaker && !g_QuietCharacters.empty() && IsQuietCharacter(speaker))) && !forced)
         return 0;
     if (speaker && speaker == g_Forced.speaker && entry >= 0 && g_Forced.id && GetTickCount64() < g_Forced.until) {
         uint8_t* e = *reinterpret_cast<uint8_t**>(engine + kDialogueEntries) + size_t(entry) * kDialogueEntrySize;
@@ -555,7 +567,38 @@ void Offer(bool condition, uint8_t* classObject, uint32_t handleAt)
         3, 3, 1, 1.0f);
 }
 
-void ForceRules(uint8_t* inst, uint8_t* classObject, const CustomCharacter& custom)
+// A mission's choice of a character's Force powers (SetForcePowers): the character, its instance id (+4), the powers.
+struct ForcePowersChoice {
+    const uint8_t* character;
+    uint32_t id;
+    int powers;
+};
+std::vector<ForcePowersChoice> g_ForcePowersChosen;
+
+int ForcePowersFrom(const std::string& text) // "Push Grip SaberThrow Lightning Heal": bits 1, 2, 4, 8, 16
+{
+    std::string powers = text;
+    for (char& c : powers)
+        c = char(toupper(static_cast<unsigned char>(c)));
+    static const struct { const char* name; int bit; } kPowers[] = { { "PUSH", 1 }, { "GRIP", 2 }, { "GRASP", 2 },
+        { "SABERTHROW", 4 }, { "THROW", 4 }, { "LIGHTNING", 8 }, { "HEAL", 16 } };
+    int bits = 0;
+    for (const auto& p : kPowers)
+        if (powers.find(p.name) != std::string::npos)
+            bits |= p.bit;
+    return bits;
+}
+
+void SetPowerFlags(uint8_t* inst, int powers)
+{
+    inst[0x2DC] = powers & 1 ? 1 : 0;
+    inst[0x2DB] = powers & 2 ? 1 : 0;
+    inst[0x2DF] = powers & 4 ? 1 : 0;
+    inst[0x2DD] = powers & 8 ? 1 : 0;
+    inst[0x2D9] = powers & 16 ? 1 : 0;
+}
+
+void ForceRules(uint8_t* inst, uint8_t* classObject, const CustomCharacter& custom, const uint8_t* character)
 {
     const auto call = [](uint32_t f) { return reinterpret_cast<bool(__cdecl*)()>(uintptr_t(f))(); };
     // what the Jedi set-up 0x400EE0 does and the Jedi Brute's Init leaves out: the powers' costs (lightning, throw,
@@ -566,14 +609,12 @@ void ForceRules(uint8_t* inst, uint8_t* classObject, const CustomCharacter& cust
         costs[2] = 150;
         costs[3] = 250;
         costs[4] = 100;
-        if (custom.forcePowers >= 0) {
-            inst[0x2DC] = custom.forcePowers & 1 ? 1 : 0;
-            inst[0x2DB] = custom.forcePowers & 2 ? 1 : 0;
-            inst[0x2DF] = custom.forcePowers & 4 ? 1 : 0;
-            inst[0x2DD] = custom.forcePowers & 8 ? 1 : 0;
-            inst[0x2D9] = custom.forcePowers & 16 ? 1 : 0;
-        }
+        if (custom.forcePowers >= 0)
+            SetPowerFlags(inst, custom.forcePowers);
     }
+    for (const ForcePowersChoice& chosen : g_ForcePowersChosen) // a mission's choice, over the file's
+        if (chosen.character == character && *reinterpret_cast<const uint32_t*>(character + 4) == chosen.id)
+            SetPowerFlags(inst, chosen.powers);
     // the computer's character (0x176E30) offers every power it can pay for; its attack table's rows (the Force
     // class's, added to the base's: ForceRows) choose among them by range and facing, its conditions are not asked
     const bool ai = call(0x00176E30);
@@ -748,7 +789,7 @@ void __cdecl BruteRulesHook(uint8_t* inst, uint8_t* classObject)
         uint8_t* character = scripts ? *reinterpret_cast<uint8_t**>(scripts + 0x68) : nullptr;
         const CustomCharacter* custom = character ? CustomCharacterOf(character) : nullptr;
         if (custom && custom->forceControls && inst && classObject)
-            ForceRules(inst, classObject, *custom);
+            ForceRules(inst, classObject, *custom, character);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
 }
@@ -1213,15 +1254,9 @@ void ReadCharacters(const std::wstring& mods)
         c.forceFrom = Profile(file, L"ForceFrom");
         c.forceControls = !c.forceFrom.empty();
         {
-            const std::string powers = Upper(Profile(file, L"ForcePowers"));
-            if (!powers.empty()) {
-                c.forcePowers = 0;
-                static const struct { const char* name; int bit; } kPowers[] = { { "PUSH", 1 }, { "GRIP", 2 },
-                    { "GRASP", 2 }, { "SABERTHROW", 4 }, { "LIGHTNING", 8 }, { "HEAL", 16 } };
-                for (const auto& p : kPowers)
-                    if (powers.find(p.name) != std::string::npos)
-                        c.forcePowers |= p.bit;
-            }
+            const std::string powers = Profile(file, L"ForcePowers");
+            if (!powers.empty())
+                c.forcePowers = ForcePowersFrom(powers);
         }
         c.introAnimation = Profile(file, L"IntroAnimation");
         if (const std::string speed = Profile(file, L"IntroSpeed"); !speed.empty() && std::atof(speed.c_str()) > 0)
@@ -1566,6 +1601,30 @@ void BuildVoiceArchive(const std::wstring& mods, const std::wstring& gameData, c
 
 } // namespace
 
+void SetCharacterQuiet(const uint8_t* character, bool quiet)
+{
+    if (!character)
+        return;
+    g_QuietCharacters.erase(std::remove_if(g_QuietCharacters.begin(), g_QuietCharacters.end(),
+                                [&](const auto& q) { return q.first == character; }),
+        g_QuietCharacters.end());
+    if (quiet)
+        g_QuietCharacters.emplace_back(character, *reinterpret_cast<const uint32_t*>(character + 4));
+}
+
+bool SetForcePowers(const uint8_t* character, const std::string& powers)
+{
+    const CustomCharacter* custom = character ? CustomCharacterOf(character) : nullptr;
+    if (!custom || !custom->forceControls)
+        return false;
+    const uint32_t id = *reinterpret_cast<const uint32_t*>(character + 4);
+    g_ForcePowersChosen.erase(std::remove_if(g_ForcePowersChosen.begin(), g_ForcePowersChosen.end(),
+                                  [&](const ForcePowersChoice& c) { return c.character == character; }),
+        g_ForcePowersChosen.end());
+    g_ForcePowersChosen.push_back({ character, id, ForcePowersFrom(powers) });
+    return true;
+}
+
 void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameData, const std::wstring& cache)
 {
     g_Proxies.clear(); // class infos are made anew at every start
@@ -1573,6 +1632,8 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
     g_LineTurns.clear();
     g_SpeakerTexts.clear();
     g_LoggedLines.clear();
+    g_ForcePowersChosen.clear();
+    g_QuietCharacters.clear();
     g_Mods = mods;
     g_GameData = gameData;
     g_Cache = cache;

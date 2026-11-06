@@ -204,6 +204,8 @@ level is safe to use: functions on it do nothing, `alive()` and `exists()` are f
 | `side(c, "ally" / "enemy" / "neutral" / "riot")` | changes its side |
 | `ai(c, on)` | its AI on or off (off: it stands still); a `go` it is on no longer switches its AI off when it gets there |
 | `attack(c, target)` | its AI goes after that target |
+| `force_powers(c, powers)` | the Force powers a custom character with the port's Force (`ForceFrom=`) uses from now on, any of `"Push Grip SaberThrow Lightning Heal"` (`""`: none), e.g. a boss who does not heal himself; false for any other character |
+| `quiet(c [, on])` | it says no line of its own (battle cries, taunts, grunts), only the script's (`say`); `quiet(c, false)`: as before |
 | `walk(c, marker [, timeout])` | it runs to a marker of `[Markers]` its own way (as the game's AI goes to places) and the script waits until it is there (true) or `timeout` seconds (default 20) passed (false); works in cutscenes too, and for characters whose AI is off (actors): their AI is on for the way, off again once there |
 | `go(c, marker [, fight])` / `going(c, marker)` | the same without waiting (with `fight`, it fights what it meets on the way); whether it is still on its way |
 | `marker(name)` | a marker's x, z |
@@ -228,6 +230,7 @@ level is safe to use: functions on it do nothing, `alive()` and `exists()` are f
 | `moves(c)` | the names of its moves, as a table (`log(table.concat(moves(c), ","))` lists them) |
 | `saber(c, on [, seconds])` | its sabers lit or put away, as the game's cinematics do: the blade grows or shrinks over `seconds` (default 0.4) with the saber's sound; 0 at once, silent. A saber put away stays away (also while it fights) until `saber(c, true)`; false when it has none |
 | `saber(c)` | whether one of its sabers is lit |
+| `saber_color(c, colour)` | the player's saber colour from now on: `"red"`, `"green"`, `"blue"`, `"purple"` or `"r g b"` (0-255 each), e.g. a Padawan who takes up his Master's saber; the player only (false for another character). The colour the player had comes back when the mission ends or starts again |
 
 ### Camera
 
@@ -277,7 +280,8 @@ A line of `lines.ini` with a `[Voice]` file is said with it (see lines.ini above
 
 | Function | |
 |---|---|
-| `set_var(name, value)` | sets a game variable, as the console's `set` (e.g. `set_var("timeScale", 0.5)` for slow motion) |
+| `slow_motion(scale [, ramp])` | the game's own slow motion (as its kill moves use): everything at `scale` of its speed (0.3: a third), easing in over `ramp` seconds (default 0.15), also in cutscenes; `slow_motion(1)` back to normal. The script's waits run on real time. Back to normal when the mission ends |
+| `set_var(name, value)` | sets a game variable, as the console's `set` |
 | `get_var(name)` | a game variable's value (text), or nil |
 | `command(text)` | runs a debug console command |
 
@@ -297,7 +301,9 @@ play_anim(maul, "anakin_atk_kill_lunge_humangb", {partner = quigon, partner_anim
 As the attacker's half starts, the partner is grabbed (held to the attacker: the blade goes where it should, wherever
 the two stood) and plays its half, a move of its own by name (`Kill_Lunge_GR` is every human's: the saber's heavy
 impact, then the fall, `Fall_StandingF`, and lying on its back, `R_OnBack`). The attacker's half shows the blade's
-impale at its frame code 6, in slow motion until its frame code 20 (as Anakin's own lunge kill). A partner that is an
+impale at its frame code 6, in slow motion until its frame code 20 (as Anakin's own lunge kill, at half speed). The
+option `slow` sets a slower one that lasts until the script's `slow_motion(1)` or the move's end, for a kill that
+lands with weight: `{partner = quigon, partner_anim = "Kill_Lunge_GR", slow = 0.35}`. A partner that is an
 actor (`actor`) takes no damage from it and stays alive; `play_anim(c, "R_OnBack", {bounce = true, speed = 0.5})` then
 keeps it lying there, breathing, and `pushable(c, false)` keeps it from being pushed about. The pairs on the disc are
 the `*_kill_*` animations in `animation\grapple\` (e.g. `anakin_atk_kill_lunge_humangb` / `..._humangr`); the victim's
@@ -311,7 +317,9 @@ show at the bottom of the screen and in `logs\swrots.log` (`Mission: script erro
 To get to a later part quickly, `mission next` in the console (or F8, or the debug menu's **Next part**, with the debug
 menu on) skips the cutscene playing, or, outside one, ends the script's current `wait_until` or `wait` at once (it
 returns true): a fight the script waits on is over and the next part begins. Code after the wait still runs, so a
-fight's wait followed by `set_health(boss, 0.5)` leaves the boss as the story expects.
+fight's wait followed by `set_health(boss, 0.5)` leaves the boss as the story expects. Only the story's own waits
+(`main`'s) end: a `thread`'s wait (one watching for a death, say) goes on, so a script that skips ahead has to bring
+about what its threads wait for, e.g. `kill(jedi)` for one waiting on `not alive(jedi)`.
 
 ## How it works (for developers)
 
