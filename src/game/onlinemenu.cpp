@@ -1197,10 +1197,16 @@ void __fastcall KeyboardDone(uint8_t* keyboard, void*)
         ShowNotice(keyboard, g_Note, "popup"); // the code screen's own popup (its item "popup")
 }
 
-void OpenKeyboard(bool forName)
+// The keyboard set for the code or the name (its screen opened by the caller).
+void PrepareKeyboard(bool forName)
 {
     g_KeyboardForName = forName;
     SetMenuText("IDS_PORT_ONLINE_ENTER_CODE", forName ? L"Enter your Name" : L"Enter the Room Code");
+}
+
+void OpenKeyboard(bool forName)
+{
+    PrepareKeyboard(forName);
     GoToShellScreen(kCodeScreen);
 }
 
@@ -1396,17 +1402,20 @@ uint32_t ItemKey(uint8_t* handler)
     return item ? *reinterpret_cast<const uint32_t*>(item + 4) : 0;
 }
 
-void HostGame(uint8_t* owner)
+// A room made (true: the room screen to open, by the caller when `open` is false); else the game's popup says why.
+bool HostGame(uint8_t* owner, bool open = true)
 {
     g_Note.clear();
     g_Copied.clear();
     g_Typed.clear();
     LOG_INFO("Online menu: Host Game");
-    if (net::OnlineHost())
+    const bool hosting = net::OnlineHost();
+    if (hosting && open)
         GoToShellScreen(kScreenNames[kRoom]);
-    else
+    else if (!hosting)
         ShowNotice(owner, Shorten(net::OnlineStatus().message, 60));
     UpdateTexts();
+    return hosting;
 }
 
 // The Yes/No popup's answer to a value row (its owner): a public room joined; else the settings control's own.
@@ -1440,26 +1449,18 @@ void __fastcall PopupNo(uint8_t* handler, void*)
 
 char __fastcall SwitchEvent(uint8_t* handler, void*, int event, int value)
 {
+    // The entries' screens are opened by the game's own choice (as Versus's: the main menu then closes the submenu
+    // when it is left), after what each needs first.
     if (event == kChosen) {
         const uint32_t key = ItemKey(handler);
-        if (key == MenuKey("mmonlinehost")) {
-            HostGame(handler);
-            return 1;
-        }
+        if (key == MenuKey("mmonlinehost") && !HostGame(handler, false))
+            return 1; // no room: the popup says why, the menu stays
         if (key == MenuKey("mmonlinejoin")) {
             LOG_INFO("Online menu: Join Game");
-            OpenKeyboard(false);
-            return 1;
+            PrepareKeyboard(false);
         }
-        if (key == MenuKey("mmonlinepublic")) {
+        if (key == MenuKey("mmonlinepublic"))
             net::LobbyWantList();
-            GoToShellScreen(kScreenNames[kPublicScreen]);
-            return 1;
-        }
-        if (key == MenuKey("mmonlinesettings")) {
-            GoToShellScreen(kScreenNames[kSettingsScreen]);
-            return 1;
-        }
     }
     return reinterpret_cast<ItemEventFn>(uintptr_t(g_PrevSwitchEvent))(handler, nullptr, event, value);
 }
