@@ -506,6 +506,7 @@ struct Session {
     input::GamePad ownPad = {};
     uint32_t ownPacket = 0;
     bool inLevel = false;               // the match's level is up (no pause there: NoPause)
+    std::string lastMap;                // the host: the last duel's map (its level)
     std::vector<PropsMsg> propsIn;      // the guest: the host's props messages, for the game thread
     uint32_t propsSeqOut = 0, propsSeqIn = 0;
     int roundWinner = -1;               // the host: the last round's winner (0 player 1, 1 player 2), -1 none yet
@@ -1035,6 +1036,12 @@ void LaunchObserved(std::string& arguments)
     if (!g_S.armed || !g_S.server)
         return;
     if (g_S.host) {
+        // the arena played (Public Rooms shows it): a duel's map
+        const size_t mapAt = arguments.find(" map:");
+        if (arguments.find("v_c1:") != std::string::npos && mapAt != std::string::npos) {
+            const size_t end = arguments.find(' ', mapAt + 5);
+            g_S.lastMap = arguments.substr(mapAt + 5, (end == std::string::npos ? arguments.size() : end) - mapAt - 5);
+        }
         // the room's rounds to win
         const size_t at = arguments.find("v_roundcount:");
         if (at != std::string::npos) {
@@ -2064,6 +2071,14 @@ OnlineStatusInfo OnlineStatus()
     i.room = g_S.room;
     i.entering = g_S.entering && (g_S.phase == OnlinePhase::Starting || g_S.phase == OnlinePhase::Playing);
     i.leaving = g_S.leaving && g_S.phase == OnlinePhase::Ended;
+    if (g_S.inLevel && !g_S.lastMap.empty()) { // U170_EP4_Deathstar_02: EP4 DEATHSTAR 02
+        std::string map = g_S.lastMap;
+        if (map.size() > 1 && map[0] == 'U' && map.find('_') != std::string::npos && isdigit(uint8_t(map[1])))
+            map = map.substr(map.find('_') + 1);
+        for (char& c : map)
+            c = c == '_' ? ' ' : char(toupper(uint8_t(c)));
+        i.arenaPlayed = map;
+    }
     return i;
 }
 
@@ -2076,6 +2091,11 @@ std::string OnlineStatusLine()
         names[int(i.phase)], i.host ? "host" : "guest", i.roomCode.empty() ? "" : ", code ", i.roomCode.c_str(),
         i.frame, i.inputDelay, i.pingMs, i.stalls, i.desync ? ", DESYNC" : "", i.message.c_str());
     return line;
+}
+
+uint16_t OnlineProtocol()
+{
+    return kProtocol;
 }
 
 std::string OnlinePlayerName()

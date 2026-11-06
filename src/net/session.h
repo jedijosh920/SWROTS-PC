@@ -57,7 +57,11 @@ struct OnlineStatusInfo {
     OnlineRoomSettings room;
     bool entering = false;  // the match's start until its room shows (the game's restart, its main menu: covered)
     bool leaving = false;   // the match's end until the Online screen shows (the same)
+    std::string arenaPlayed; // the host in a duel: its arena (from its map)
 };
+
+// The protocol's version (two PCs play together only on the same one; Public Rooms lists those).
+uint16_t OnlineProtocol();
 
 // The player's name online, and its change (Online Settings: [Online] Name in settings.ini).
 std::string OnlinePlayerName();

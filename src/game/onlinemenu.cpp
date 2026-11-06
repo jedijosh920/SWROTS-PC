@@ -32,6 +32,7 @@
 #include "game/hvvmenu.h"
 #include "game/menus.h"
 #include "game/resources.h"
+#include "net/lobby.h"
 #include "net/session.h"
 #include "net/transport.h"
 
@@ -318,9 +319,10 @@ std::string Shorten(std::string text, size_t most)
 // "online": Host Game, Join Game, Online Settings, and a line of status. "online_settings": the player's name.
 // "online_room" (both players, from Host Game or a join on): the host's settings, the two players, the room code,
 // Start (the host) and Leave.
-enum Screen { kOnline, kSettingsScreen, kRoom, kScreenCount };
+enum Screen { kOnline, kSettingsScreen, kRoom, kPublicScreen, kScreenCount };
 // (The Online screen is gone: Online is the main menu's submenu; its back and its popups are the main menu's.)
-constexpr const char* kScreenNames[kScreenCount] = { "main_menu", "online_settings", "online_room" };
+constexpr const char* kScreenNames[kScreenCount] = { "main_menu", "online_settings", "online_room", "online_public" };
+constexpr const char* kPublicFileName = "interfc\\front_end\\xml\\online_public.xml";
 constexpr const char* kSettingsFileName = "interfc\\front_end\\xml\\online_settings.xml";
 constexpr const char* kRoomFileName = "interfc\\front_end\\xml\\online_room.xml";
 
@@ -328,6 +330,7 @@ enum Row {
     kHost, kJoin, kSettings, kStatus,
     kName,
     kMode, kRounds, kArena, kRematch, kPublic, kPlayer1, kPlayer2, kCode, kStart, kLeave,
+    kPubStatus, kPub0, kPubLast = kPub0 + 7,
     kRowCount
 };
 struct RowDef {
@@ -352,7 +355,21 @@ constexpr RowDef kRowDefs[kRowCount] = {
     { "roomcode", "IDS_PORT_ROOM_CODE", false, kRoom },
     { "roomstart", "IDS_PORT_ROOM_START", true, kRoom },
     { "roomleave", "IDS_PORT_ROOM_LEAVE", true, kRoom },
+    { "pubstatus", "IDS_PORT_PUB_STATUS", false, kPublicScreen },
+    { "pubroom1", "IDS_PORT_PUB_ROOM1", false, kPublicScreen },
+    { "pubroom2", "IDS_PORT_PUB_ROOM2", false, kPublicScreen },
+    { "pubroom3", "IDS_PORT_PUB_ROOM3", false, kPublicScreen },
+    { "pubroom4", "IDS_PORT_PUB_ROOM4", false, kPublicScreen },
+    { "pubroom5", "IDS_PORT_PUB_ROOM5", false, kPublicScreen },
+    { "pubroom6", "IDS_PORT_PUB_ROOM6", false, kPublicScreen },
+    { "pubroom7", "IDS_PORT_PUB_ROOM7", false, kPublicScreen },
+    { "pubroom8", "IDS_PORT_PUB_ROOM8", false, kPublicScreen },
 };
+static_assert(sizeof(kRowDefs) / sizeof(kRowDefs[0]) == kRowCount, "a row each");
+
+// Public Rooms: the lobby's last list (the rows show its first eight).
+std::vector<net::PublicRoom> g_PubRooms;
+std::string g_PendingJoin; // the room code a Yes in the popup joins
 
 std::vector<ShellScreenRow> Rows(Screen screen)
 {
@@ -412,6 +429,25 @@ void UpdateTexts()
     SetMenuText(ValueId(kArena).c_str(), kArenaTexts[s.room.arena < std::size(kArenaTexts) ? s.room.arena : 0]);
     SetMenuText(ValueId(kRematch).c_str(), s.room.rematch ? L"ON" : L"OFF");
     SetMenuText(ValueId(kPublic).c_str(), s.room.open ? L"YES" : L"NO");
+    // Public Rooms
+    std::string lobbyStatus;
+    net::LobbyRooms(g_PubRooms, lobbyStatus);
+    const size_t shown = std::min<size_t>(g_PubRooms.size(), kPubLast - kPub0 + 1);
+    SetMenuText(ValueId(kPubStatus).c_str(), Wide(!lobbyStatus.empty() ? lobbyStatus :
+        g_PubRooms.empty() ? std::string("NO PUBLIC ROOM") : std::to_string(g_PubRooms.size()) +
+        (g_PubRooms.size() == 1 ? " ROOM" : " ROOMS")));
+    for (int row = kPub0; row <= kPubLast; ++row) {
+        const size_t i = size_t(row - kPub0);
+        if (i < shown) {
+            const net::PublicRoom& r = g_PubRooms[i];
+            SetMenuText(kRowDefs[row].text, Wide(Shorten(r.name, 15)));
+            SetMenuText(ValueId(row).c_str(), Wide(std::to_string(r.players) + "/" + std::to_string(r.slots) + "  " +
+                Shorten(r.mode, 8) + "  " + Shorten(r.arena, 18)));
+        } else {
+            SetMenuText(kRowDefs[row].text, L"");
+            SetMenuText(ValueId(row).c_str(), L"");
+        }
+    }
     const std::string me = Shorten(s.localName.empty() ? net::OnlinePlayerName() : s.localName, 15);
     const std::string other = Shorten(s.remoteName, 15);
     std::string p1, p2;
@@ -455,7 +491,11 @@ bool RowDisabled(int row)
     case kCode: return !(s.host && !idle && !s.roomCode.empty());
     case kStart: return !(s.host && s.matchOn && s.phase == net::OnlinePhase::Playing);
     case kLeave: return false;
-    default: return false;
+    case kPubStatus: return true;
+    default:
+        if (row >= kPub0 && row <= kPubLast)
+            return size_t(row - kPub0) >= g_PubRooms.size();
+        return false;
     }
 }
 
@@ -467,7 +507,8 @@ bool RowDimmed(int row)
         if (!s.host && !Idle(s))
             return false;
     }
-    return RowDisabled(row) && row != kStatus && row != kPlayer1 && row != kPlayer2 && row != kMode;
+    return RowDisabled(row) && row != kStatus && row != kPlayer1 && row != kPlayer2 && row != kMode &&
+        row != kPubStatus;
 }
 
 constexpr uint32_t kMakeOnOff = 0x002D9690;   // SettingsScreenOnOffControl
@@ -623,6 +664,29 @@ bool ShowNotice(uint8_t* owner, const std::string& text, const char* name = "Def
     return ShowPopup(owner, "IDS_PORT_NOTICE_TITLE", "IDS_PORT_NOTICE_TEXT", name);
 }
 
+// The game's Yes/No popup (the screen's YesNoPopup item): shown with its slot 27 (+0x6C: (owner, 0)); once closed it
+// calls its owner's slot 8 (+0x20) for Yes, slot 9 (+0x24) for No (0x2E6C80).
+bool ShowYesNo(uint8_t* owner, const char* titleId, const char* messageId)
+{
+    __try {
+        uint8_t* shell = *reinterpret_cast<uint8_t**>(uintptr_t(kShellObject));
+        uint8_t* popup = shell ? reinterpret_cast<uint8_t*(__fastcall*)(uint8_t*, void*, const char*, void*, int)>(
+            uintptr_t(kFindPopup))(shell, nullptr, "YesNoPopup", nullptr, 0) : nullptr;
+        if (!popup)
+            return false;
+        reinterpret_cast<void(__fastcall*)(uint8_t*, void*, uint8_t*, int)>(
+            (*reinterpret_cast<void* const* const*>(popup))[0x6C / 4])(popup, nullptr, owner, 0);
+        reinterpret_cast<void(__fastcall*)(uint8_t*, void*, const void*)>(uintptr_t(kPopupTitle))(popup, nullptr,
+            GameText(titleId));
+        reinterpret_cast<void(__fastcall*)(uint8_t*, void*, const void*)>(uintptr_t(kPopupMessage))(popup, nullptr,
+            GameText(messageId));
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        LOG_WARN("Online menu: the Yes/No popup could not be shown");
+        return false;
+    }
+}
+
 // A value row shows its text as the control's On text (the control shows On for the profile's subtitles setting,
 // +0x2A, which it is given for the draw).
 char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
@@ -630,7 +694,9 @@ char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
     const int row = RowOf(handler);
     if (row < 0 || kRowDefs[row].button)
         return g_OnOffDraw(handler, nullptr, value);
-    if (row == kStatus || row == kName || row == kMode) // once a frame on each screen
+    if (row == kPubStatus)
+        net::LobbyWantList(); // the list kept fresh while Public Rooms is up
+    if (row == kStatus || row == kName || row == kMode || row == kPubStatus) // once a frame on each screen
         UpdateTexts();
     if (row == kStatus || row == kMode)
         KeepOnRightScreen(row);
@@ -670,7 +736,7 @@ char Back(uint8_t* handler, int event, int value)
         GoToShellScreen(kScreenNames[kOnline]);
         return 1;
     }
-    if (row >= 0 && kRowDefs[row].screen == kSettingsScreen) {
+    if (row >= 0 && (kRowDefs[row].screen == kSettingsScreen || kRowDefs[row].screen == kPublicScreen)) {
         GoToShellScreen(kScreenNames[kOnline]);
         return 1;
     }
@@ -697,6 +763,20 @@ char __fastcall ValueEvent(uint8_t* handler, void*, int event, int value)
     }
     if (row == kName && event == kChosen) {
         OpenKeyboard(true);
+        return 1;
+    }
+    if (row >= kPub0 && row <= kPubLast) { // a public room: join it (the game's Yes/No first)
+        if (event != kChosen || size_t(row - kPub0) >= g_PubRooms.size())
+            return 1;
+        const net::PublicRoom r = g_PubRooms[size_t(row - kPub0)];
+        if (r.players >= r.slots) {
+            ShowNotice(handler, "This room is full.");
+            return 1;
+        }
+        g_PendingJoin = r.code;
+        SetMenuText("IDS_PORT_JOIN_TEXT", Wide("Join " + Shorten(r.name, 16) + "'s room?"));
+        if (!ShowYesNo(handler, "IDS_PORT_JOIN_TITLE", "IDS_PORT_JOIN_TEXT"))
+            g_PendingJoin.clear();
         return 1;
     }
     net::OnlineRoomSettings room = s.room;
@@ -1182,6 +1262,9 @@ bool GenerateScreens(const std::string& lowerName, std::vector<uint8_t>& data)
     if (lowerName == kSettingsFileName)
         return BuildSettingsScreen(data, kScreenNames[kSettingsScreen], Rows(kSettingsScreen), "IDS_PORT_ONLINE_SETTINGS",
             "OnlineValue", "OnlineButton");
+    if (lowerName == kPublicFileName)
+        return BuildSettingsScreen(data, kScreenNames[kPublicScreen], Rows(kPublicScreen), "IDS_PORT_PUBLIC_TITLE",
+            "OnlineValue", "OnlineButton");
     if (lowerName == kRoomFileName)
         return BuildSettingsScreen(data, kScreenNames[kRoom], Rows(kRoom), "IDS_PORT_ROOM_TITLE", "OnlineValue",
             "OnlineButton");
@@ -1284,6 +1367,35 @@ void HostGame(uint8_t* owner)
     UpdateTexts();
 }
 
+// The Yes/No popup's answer to a value row (its owner): a public room joined; else the settings control's own.
+constexpr uint32_t kControlYes = 0x002D7C60, kControlNo = 0x002D7B80;
+
+void __fastcall PopupYes(uint8_t* handler, void*)
+{
+    if (g_PendingJoin.empty()) {
+        reinterpret_cast<void(__fastcall*)(uint8_t*, void*)>(uintptr_t(kControlYes))(handler, nullptr);
+        return;
+    }
+    const std::string code = g_PendingJoin;
+    g_PendingJoin.clear();
+    g_Typed = code.substr(0, 5) + "-" + code.substr(5, 5) + "-" + code.substr(10);
+    g_Note.clear();
+    LOG_INFO("Online menu: joining the public room %s", g_Typed.c_str());
+    if (net::OnlineJoin(code))
+        GoToShellScreen(kScreenNames[kRoom]);
+    else
+        ShowNotice(handler, Shorten(net::OnlineStatus().message, 60));
+}
+
+void __fastcall PopupNo(uint8_t* handler, void*)
+{
+    if (!g_PendingJoin.empty()) {
+        g_PendingJoin.clear();
+        return;
+    }
+    reinterpret_cast<void(__fastcall*)(uint8_t*, void*)>(uintptr_t(kControlNo))(handler, nullptr);
+}
+
 char __fastcall SwitchEvent(uint8_t* handler, void*, int event, int value)
 {
     if (event == kChosen) {
@@ -1298,7 +1410,8 @@ char __fastcall SwitchEvent(uint8_t* handler, void*, int event, int value)
             return 1;
         }
         if (key == MenuKey("mmonlinepublic")) {
-            ShowNotice(handler, "Public rooms are coming soon.");
+            net::LobbyWantList();
+            GoToShellScreen(kScreenNames[kPublicScreen]);
             return 1;
         }
         if (key == MenuKey("mmonlinesettings")) {
@@ -1358,6 +1471,10 @@ void InstallOnlineMenu()
     g_ValueVtable[4] = uint32_t(reinterpret_cast<uintptr_t>(&ValueEvent));
     g_ValueVtable[10] = uint32_t(reinterpret_cast<uintptr_t>(&MakeValueSlot));
     g_ValueVtable[27] = uint32_t(reinterpret_cast<uintptr_t>(&Nothing));
+    if (g_ValueVtable[8] == kControlYes && g_ValueVtable[9] == kControlNo) {
+        g_ValueVtable[8] = uint32_t(reinterpret_cast<uintptr_t>(&PopupYes));
+        g_ValueVtable[9] = uint32_t(reinterpret_cast<uintptr_t>(&PopupNo));
+    }
     g_ValueVtable[28] = uint32_t(reinterpret_cast<uintptr_t>(&Nothing));
     std::memcpy(g_ButtonVtable, reinterpret_cast<const void*>(uintptr_t(kButtonVtable)), sizeof g_ButtonVtable);
     g_ButtonEvent = reinterpret_cast<ItemEventFn>(uintptr_t(g_ButtonVtable[4]));
@@ -1396,6 +1513,10 @@ void InstallOnlineMenu()
     SetMenuText("IDS_PORT_ROOM_ARENA", L"Arena");
     SetMenuText("IDS_PORT_ROOM_REMATCH", L"Auto Rematch");
     SetMenuText("IDS_PORT_ROOM_PUBLIC", L"Public Room");
+    SetMenuText("IDS_PORT_PUBLIC_TITLE", L"Public Rooms");
+    SetMenuText("IDS_PORT_PUB_STATUS", L"Public Rooms");
+    SetMenuText("IDS_PORT_JOIN_TITLE", L"Join Room");
+    SetMenuText("IDS_PORT_JOIN_TEXT", L"");
     SetMenuText("IDS_PORT_ROOM_P1", L"Player 1");
     SetMenuText("IDS_PORT_ROOM_P2", L"Player 2");
     SetMenuText("IDS_PORT_ROOM_CODE", L"Room Code");
@@ -1415,6 +1536,8 @@ void InstallOnlineMenu()
     AddShellHandler("OnlineKeyboard", &MakeKeyboard);
     AddShellScreen(kSettingsFileName);
     AddShellScreen(kRoomFileName);
+    AddShellScreen(kPublicFileName);
+    net::StartLobby(); // a public room's announcements
     AddShellScreen(kCodeFile);
     RegisterResourceGenerator(&GenerateScreens);
 }

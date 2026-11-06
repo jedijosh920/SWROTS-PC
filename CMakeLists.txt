@@ -72,7 +72,7 @@ target_compile_options(SWROTSCore PRIVATE /W3 /GS- /EHsc /Zi /utf-8)
 # A fixed base (netplay): the port's own state that the game holds pointers to (sound objects, the jumps patched into
 # its libraries) must be at the same addresses on every PC. Relocations are kept, should the address be taken.
 set_target_properties(SWROTSCore PROPERTIES LINK_FLAGS "/LARGEADDRESSAWARE /SAFESEH:NO /DEBUG /BASE:0x60000000 /DYNAMICBASE:NO /MAP")
-target_link_libraries(SWROTSCore PRIVATE ws2_32 ntdll bcrypt winmm user32 dbghelp xinput d3d9 d3dcompiler xaudio2 windowscodecs ole32 shell32 comdlg32 uuid hid setupapi propsys)
+target_link_libraries(SWROTSCore PRIVATE ws2_32 winhttp ntdll bcrypt winmm user32 dbghelp xinput d3d9 d3dcompiler xaudio2 windowscodecs ole32 shell32 comdlg32 uuid hid setupapi propsys)
 
 add_dependencies(SWROTS SWROTSCore)
 set_target_properties(SWROTS PROPERTIES OUTPUT_NAME swrots)

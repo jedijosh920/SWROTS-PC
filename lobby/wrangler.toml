@@ -1,0 +1,12 @@
+name = "swrots-lobby"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+
+[[durable_objects.bindings]]
+name = "LOBBY"
+class_name = "Lobby"
+
+# The Workers Free plan has SQLite-backed Durable Objects only (the lobby keeps its rooms in memory anyway).
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Lobby"]
