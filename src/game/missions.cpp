@@ -2096,6 +2096,11 @@ int L_line(lua_State* L)
         return 1;
     }
     const Line& line = it->second;
+    // a cutscene being skipped says nothing more (it rushes on: its lines would pile up over each other)
+    if (g_Skip) {
+        lua_pushnumber(L, 0);
+        return 1;
+    }
     // the game's own: the speaker (a character of the cast, "player", or the one given) says it, its subtitle
     // "SPEAKER: text" and its voice the game's
     // line(id [, speaker, fallback]): -1 when the dialogue engine is busy (say() asks again on the next frames);
@@ -2303,6 +2308,7 @@ int L_skip_pressed(lua_State* L)
     if (g_InCutscene && g_Held && input::TakeHeldPress()) {
         if (Now() - g_SkipAskedAt < 3.0) {
             g_Skip = true;
+            StopDialogueLines(); // (a skipped scene's lines end with it)
             g_NoticeUntil = Now();
         } else {
             g_SkipAskedAt = Now();
@@ -2621,9 +2627,10 @@ void AdvanceMission()
 {
     if (!g_Active)
         return;
-    if (g_InCutscene)
+    if (g_InCutscene) {
         g_Skip = true;
-    else
+        StopDialogueLines(); // (a skipped scene's lines end with it)
+    } else
         g_Advance = true;
     LOG_INFO("Mission: next (%s)", g_InCutscene ? "the cutscene skipped" : "the current wait ends");
 }

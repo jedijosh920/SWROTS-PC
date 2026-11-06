@@ -250,7 +250,7 @@ Heights are from the floor; `look` is the height on the character the camera loo
 
 | Function | |
 |---|---|
-| `cutscene(fn)` | runs `fn` as a cutscene: bars, the game's HUD hidden, everyone held; the player skips it by pressing A or Start twice (the first press asks; its `wait`s and `say`s then end at once; `wait_until` does not). A line someone is saying as it starts (a fighter's taunt) stops, and no one says a line of their own during it: only its own |
+| `cutscene(fn)` | runs `fn` as a cutscene: bars, the game's HUD hidden, everyone held; the player skips it by pressing A or Start twice (the first press asks; its `wait`s and `say`s then end at once; `wait_until` does not). A line someone is saying as it starts (a fighter's taunt) stops, and no one says a line of their own during it: only its own. Skipped, its lines stop and it says no more |
 | `letterbox(on [, seconds])` | the game's own cutscene bars slide in or out (0.5 s); while they are in, the game counts it a cutscene (its HUD hidden) |
 | `tip(name)` | a tip of `[Tips]` shows |
 | `fade_out(seconds)` / `fade_in(seconds)` | to black and back |
