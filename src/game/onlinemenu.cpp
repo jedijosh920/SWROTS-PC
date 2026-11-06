@@ -46,6 +46,7 @@ constexpr const char* kRowText = "IDS_PORT_ONLINE";
 constexpr const char* kCodeScreen = "online_code";
 constexpr const char* kCodeFile = "interfc\\front_end\\xml\\online_code.xml";
 constexpr const char* kCodesFile = "interfc\\front_end\\xml\\codes.xml";
+constexpr const char* kSettingsFile = "interfc\\front_end\\xml\\settings.xml";
 constexpr float kRowStep = 24.0f;
 
 // --- The main menu's row ---------------------------------------------------------------------------------------------
@@ -222,39 +223,30 @@ bool PatchRows(std::vector<uint8_t>& data)
     return true;
 }
 
-// The game's own popup on the main menu (for "connection lost"): the Codes screen's DefaultPopup item (its last, just
-// before the screen's texture sets: their count, then each) and its two texture sets (KeySet, LongKeySet: the
-// screen's only ones), put in the main menu's (whose last item is its own YesNoPopup).
+// The game's own popup on the main menu (for "connection lost"): the Settings screen's DefaultPopup item (it uses no
+// texture set), put after the main menu's last item (its own YesNoPopup), before its texture sets' count. Settings'
+// file is of the main menu's own make (the Codes screen's is not: other header, a word after its texture sets).
 bool AddMainMenuPopup(std::vector<uint8_t>& data)
 {
-    std::vector<uint8_t> codes;
-    if (!ReadDiscResource(kCodesFile, codes))
+    std::vector<uint8_t> settings;
+    if (!ReadDiscResource(kSettingsFile, settings))
         return false;
-    const std::vector<uint8_t> setTag = MenuString("textureSet");
-    std::vector<uint8_t> popupTag = MenuString("screenItem");
-    const std::vector<uint8_t> popupName = MenuString("popup");
+    const std::vector<uint8_t> item = MenuString("screenItem");
+    std::vector<uint8_t> popupTag = item;
+    const std::vector<uint8_t> popupName = MenuString("DefaultPopup");
     popupTag.insert(popupTag.end(), popupName.begin(), popupName.end());
-    const size_t codesPopup = MenuFind(codes, popupTag, 0, codes.size());
-    const size_t codesSets = MenuFind(codes, setTag, 0, codes.size());
-    const size_t menuSets = MenuFind(data, setTag, 0, data.size());
-    if (codesPopup == std::string::npos || codesSets == std::string::npos || menuSets == std::string::npos ||
-        codesPopup + 4 > codesSets || menuSets < 4)
+    const size_t popup = MenuFind(settings, popupTag, 0, settings.size());
+    const size_t popupEnd = popup == std::string::npos ? popup : MenuFind(settings, item, popup + 1, settings.size());
+    const size_t menuSets = MenuFind(data, MenuString("textureSet"), 0, data.size());
+    if (popupEnd == std::string::npos || menuSets == std::string::npos || menuSets < 4 ||
+        MenuFind(data, popupTag, 0, data.size()) != std::string::npos ||
+        std::memcmp(settings.data(), data.data(), 4) != 0) // the same make: the same first word
         return false;
-    uint32_t codesSetCount, menuSetCount;
-    std::memcpy(&codesSetCount, codes.data() + codesSets - 4, 4);
-    std::memcpy(&menuSetCount, data.data() + menuSets - 4, 4);
-    if (codesSetCount != 2 || menuSetCount == 0 || menuSetCount > 32)
+    // the popup's own block (no child, no texture set)
+    if (popupEnd - popup > 400 || MenuFind(settings, MenuString("textureSet"), popup, popupEnd) != std::string::npos)
         return false;
-    std::vector<uint8_t> popup(codes.begin() + codesPopup, codes.begin() + codesSets - 4);
-    size_t popupEnd = popup.size();
-    if (!MenuReplaceString(popup, 0, popupEnd, "popup", "DefaultPopup")) // found by name (kFindPopup)
-        return false;
-    const std::vector<uint8_t> sets(codes.begin() + codesSets, codes.end());
-    // the sets at the end, their count, the popup before the count (the last item)
-    data.insert(data.end(), sets.begin(), sets.end());
-    menuSetCount += codesSetCount;
-    std::memcpy(data.data() + menuSets - 4, &menuSetCount, 4);
-    data.insert(data.begin() + (menuSets - 4), popup.begin(), popup.end());
+    const std::vector<uint8_t> block(settings.begin() + popup, settings.begin() + popupEnd);
+    data.insert(data.begin() + (menuSets - 4), block.begin(), block.end());
     uint32_t nameLength, firstLength, items;
     std::memcpy(&nameLength, data.data() + 4, 4);
     std::memcpy(&firstLength, data.data() + 4 + 4 + nameLength, 4);
