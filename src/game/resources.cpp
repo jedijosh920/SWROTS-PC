@@ -466,8 +466,8 @@ void WatchDecoding()
             continue;
         CONTEXT context = {};
         context.ContextFlags = CONTEXT_FULL;
-        uint32_t stack[256] = {}, file[48] = {}, reader[9] = {};
-        SIZE_T read = 0, fileRead = 0, readerRead = 0;
+        uint32_t stack[256] = {}, file[48] = {}, reader[9] = {}, object[16] = {}, inner[16][16] = {};
+        SIZE_T read = 0, fileRead = 0, readerRead = 0, objectRead = 0;
         bool got = false;
         if (SuspendThread(h) != DWORD(-1)) { // no allocation, no lock while it is held
             got = GetThreadContext(h, &context) != 0;
@@ -478,6 +478,15 @@ void WatchDecoding()
                     ReadProcessMemory(GetCurrentProcess(), g_DecodingFile, file, sizeof(file), &fileRead);
                 if (g_DecodingReader)
                     ReadProcessMemory(GetCurrentProcess(), g_DecodingReader, reader, sizeof(reader), &readerRead);
+                // the object the game's code works on (its stream: ESI in the string reader), one level deep
+                ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(uintptr_t(context.Esi)), object,
+                    sizeof(object), &objectRead);
+                for (size_t i = 0; i < objectRead / 4; ++i) {
+                    SIZE_T n = 0;
+                    if (object[i] >= 0x01000000 && object[i] < 0x7FFF0000)
+                        ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(uintptr_t(object[i])), inner[i],
+                            sizeof(inner[i]), &n);
+                }
             }
             ResumeThread(h);
         }
@@ -504,6 +513,15 @@ void WatchDecoding()
             fileWords += w;
         }
         LOG_WARN("PAK: %s: its file object's words:%s", g_DecodingName, fileWords.c_str());
+        for (size_t i = 0; i < objectRead / 4; ++i) {
+            std::string line;
+            for (uint32_t w : inner[i]) {
+                char t[12];
+                std::snprintf(t, sizeof(t), " %X", w);
+                line += t;
+            }
+            LOG_WARN("PAK: esi[%zu] = %X:%s", i, object[i], line.c_str());
+        }
         LOG_WARN("PAK: %s still decoding after %llu s: eip %08lX esp %08lX ebp %08lX eax %08lX ebx %08lX ecx %08lX "
                  "edx %08lX esi %08lX edi %08lX; stack:%s",
             g_DecodingName, (GetTickCount64() - since) / 1000, context.Eip, context.Esp, context.Ebp, context.Eax,
