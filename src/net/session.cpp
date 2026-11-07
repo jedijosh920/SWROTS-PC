@@ -12,8 +12,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "core/log.h"
@@ -44,8 +46,8 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr uint32_t kMagic = 0x4E525753; // 'SWRN'
-constexpr uint16_t kProtocol = 8; // 2: the players' names; 3: client/server matches; 4: the arena's picker; 5: props; 6: a public room;
-                                  // 7: the room's name, the players' Ready; 8: Versus's time limit (the room, the duel's clock)
+constexpr uint16_t kProtocol = 9; // 2: the players' names; 3: client/server matches; 4: the arena's picker; 5: props; 6: a public room;
+                                  // 7: the room's name, the players' Ready; 8: Versus's time limit (the room, the duel's clock); 9: Cooperative's characters
 constexpr uint16_t kDefaultPort = 27960;
 constexpr uint32_t kHistory = 512;      // frames of inputs kept (a power of two)
 constexpr uint32_t kMaxSend = 48;       // inputs in one packet at most
@@ -87,6 +89,7 @@ enum class Msg : uint8_t {
     Hello = 1, Welcome, Reject, Chunk, ChunkAck, Ready, Start, Started, Input, Ping, Pong, Bye, Pages,
     Pad, Launch, State, Room, Props, // client/server
     Seat, // the guest's Ready in the room
+    Chars, // a Cooperative mission's other characters (client/server)
 };
 
 constexpr uint32_t kPage = 1024;      // a desync's report: the data checked, hashed by 1 KiB pages
@@ -200,6 +203,20 @@ struct PropsMsg {
     uint16_t reserved;
     PropState props[kPropsPerMsg];
     uint32_t gone[kGonePerMsg];
+};
+// A Cooperative mission's other characters on the host's game (enemies, allies), a few a frame in turn.
+constexpr int kCharsPerMsg = 5;
+struct CharState {
+    uint32_t id; // the character's instance id (the same on both games: the same level)
+    FighterState state;
+};
+struct CharsMsg {
+    Header h;
+    uint32_t seq;
+    uint32_t hostFrame;
+    uint8_t count;
+    uint8_t reserved[3];
+    CharState chars[kCharsPerMsg];
 };
 // The host's gameplay settings, which the guest plays with for the match.
 struct GameplaySettings {
@@ -523,6 +540,8 @@ struct Session {
     bool inLevel = false;               // the match's level is up (no pause there: NoPause)
     std::string lastMap;                // the host: the last duel's map (its level)
     std::vector<PropsMsg> propsIn;      // the guest: the host's props messages, for the game thread
+    std::vector<CharsMsg> charsIn;      // the guest: the host's characters, for the game thread
+    uint32_t charsSeqOut = 0, charsSeqIn = 0;
     uint32_t propsSeqOut = 0, propsSeqIn = 0;
     int roundWinner = -1;               // the host: the last round's winner (0 player 1, 1 player 2), -1 none yet
     int matchWinner = -1;               // the host: the last match's (its last round's), for the arena's picker
@@ -1140,11 +1159,16 @@ bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
 
 // The guest's fighters in a duel: no health change of their own (the host's come through ApplyFighter).
 std::atomic<uint8_t*> g_GuestFighters[2] = {};
+// The guest's Cooperative characters following the host's (their damage the host's too).
+std::unordered_set<uint8_t*> g_GuestFollowed;
+std::map<uint32_t, uint8_t*> g_GuestCharIds; // (diagnostics: by id)
+
 float GuestDamage(uint8_t* character, float change)
 {
     // its damage only: the game's own heals (a new round's full health) go through
-    return change < 0.0f && character && (character == g_GuestFighters[0] || character == g_GuestFighters[1]) ? 0.0f
-                                                                                                             : change;
+    const bool hosts = character && (character == g_GuestFighters[0] || character == g_GuestFighters[1] ||
+                                        g_GuestFollowed.count(character));
+    return change < 0.0f && hosts ? 0.0f : change;
 }
 
 // A launch's map (its "map:" argument): empty for the menus.
@@ -1299,6 +1323,16 @@ void OnServerMsgLocked(Msg type, const uint8_t* data, size_t size)
             g_S.propsIn.push_back(m);
         }
         break;
+    case Msg::Chars:
+        if (!g_S.host && size >= sizeof(CharsMsg) && g_S.charsIn.size() < 64) {
+            CharsMsg m;
+            std::memcpy(&m, data, sizeof(m));
+            if (m.seq <= g_S.charsSeqIn)
+                return;
+            g_S.charsSeqIn = m.seq;
+            g_S.charsIn.push_back(m);
+        }
+        break;
     case Msg::State:
         if (!g_S.host && size >= sizeof(StateMsg)) {
             StateMsg m;
@@ -1442,6 +1476,9 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     const uint32_t frame = g_S.frame;
     std::vector<PropsMsg> propsIn;
     propsIn.swap(g_S.propsIn);
+    std::vector<CharsMsg> charsIn;
+    charsIn.swap(g_S.charsIn);
+    const bool coopMission = g_S.room.mode == 1;
     lock.unlock();
 
     uint8_t* fighters[2] = {};
@@ -1450,6 +1487,10 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         static bool wasDuel = false;
         if (duel && !wasDuel) {
             PropsReset();
+            CharactersReset();
+            ApplyCharactersReset();
+            g_GuestFollowed.clear();
+            g_GuestCharIds.clear();
             std::lock_guard<std::mutex> relock(g_S.lock);
             g_S.matchDraws = 0;
             g_S.drawEndAt = {};
@@ -1538,6 +1579,29 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         }
         if (m.seq % 600 == 1)
             LOG_INFO("Online: %s", PropsStats().c_str());
+        if (coopMission && m.seq > 30) { // the mission's other characters: a few a frame, in turn
+            CharsMsg cm = {};
+            uint32_t ids[kCharsPerMsg] = {};
+            uint8_t* objects[kCharsPerMsg] = {};
+            const int n = CharactersCapture(fighters[0], fighters[1], ids, objects, kCharsPerMsg);
+            int count = 0;
+            for (int i = 0; i < n; ++i) {
+                cm.chars[count].id = ids[i];
+                if (CaptureFighter(objects[i], cm.chars[count].state))
+                    ++count;
+            }
+            if (count) {
+                cm.h = MakeHeader(Msg::Chars, g_S.token);
+                cm.seq = ++g_S.charsSeqOut;
+                cm.hostFrame = frame;
+                cm.count = uint8_t(count);
+                SendLocked(cm);
+            }
+            if (m.seq % 600 == 1)
+                LOG_INFO("Online: %zu character(s) followed, %u message(s) sent", CharactersKnown(), g_S.charsSeqOut);
+            if (frame % 120 == 0)
+                LOG_INFO("Online: characters, frame %u: %s", frame, DescribeCharacters(4).c_str());
+        }
         return;
     }
     bool followDraw = false;
@@ -1567,6 +1631,42 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     const uint32_t lead = pingMs > 0 ? uint32_t(pingMs * 60 / 2000) : 0; // half the round trip, in game ticks
     for (int i = 0; i < 2; ++i)
         ApplyFighter(i, fighters[i], state.fighters[i], lead, i == 1);
+    // a Cooperative mission's other characters: the host's (the latest of each)
+    static uint32_t missing = 0, notCharacter = 0;
+    for (const CharsMsg& cm : charsIn)
+        for (int i = 0; i < std::min<int>(cm.count, kCharsPerMsg); ++i) {
+            const CharState& c = cm.chars[i];
+            uint8_t* o = ObjectOfId(c.id);
+            if (!o) {
+                if (missing++ < 40 || missing % 500 == 0)
+                    LOG_INFO("Online: the host's character %u is not in this game (%u so far)", c.id, missing);
+                continue;
+            }
+            if (o == fighters[0] || o == fighters[1] || !IsCharacter(o)) {
+                if (notCharacter++ < 20)
+                    LOG_INFO("Online: the host's character %u is another object here", c.id);
+                continue;
+            }
+            g_GuestFollowed.insert(o);
+            g_GuestCharIds[c.id] = o;
+            ApplyCharacter(c.id, o, c.state, lead);
+        }
+    if (frame % 120 == 0 && coopMission && !g_GuestCharIds.empty()) {
+        std::string line;
+        size_t n = 0;
+        for (auto it = g_GuestCharIds.begin(); it != g_GuestCharIds.end() && n < 4; ++n) {
+            if (ObjectOfId(it->first) != it->second) {
+                it = g_GuestCharIds.erase(it);
+                continue;
+            }
+            line += DescribeCharacter(it->first, it->second) + "; ";
+            ++it;
+        }
+        LOG_INFO("Online: characters, frame %u: %s", frame, line.c_str());
+    }
+    if (frame % 600 == 0 && coopMission)
+        LOG_INFO("Online: %u character state(s) applied, %zu character(s) followed, %u missing here", CharactersApplied(),
+            g_GuestFollowed.size(), missing);
     if (frame % 600 == 0)
         LOG_INFO("Online: guest frame %u, host state %u applied (%s), ping %d ms", frame, state.seq,
             ApplyStats().c_str(), pingMs);
@@ -1898,7 +1998,7 @@ void HandleLocked(const uint8_t* data, size_t size, const Endpoint& from)
     }
     // Both ways.
     if (type == Msg::Pad || type == Msg::Launch || type == Msg::State || type == Msg::Room || type == Msg::Props ||
-        type == Msg::Seat) {
+        type == Msg::Seat || type == Msg::Chars) {
         if (g_S.server && (g_S.armed || g_S.bootPending || type == Msg::Room || type == Msg::Seat))
             OnServerMsgLocked(type, data, size);
         return;
@@ -2139,10 +2239,12 @@ void ResetSessionLocked(bool host)
     g_S.pendingLaunchSet = g_S.followingLaunch = g_S.followStarted = false;
     g_S.stateSeqOut = g_S.stateSeqIn = g_S.statesIn = 0;
     g_S.propsSeqOut = g_S.propsSeqIn = 0;
+    g_S.charsSeqOut = g_S.charsSeqIn = 0;
     g_S.clockTenths = -1;
     g_S.draws = 0;
     g_S.drawsKnown = false;
     g_S.propsIn.clear();
+    g_S.charsIn.clear();
     g_S.haveState = false;
     g_S.guestInDuel = false;
     g_S.ownPad = g_S.hostLive = {};

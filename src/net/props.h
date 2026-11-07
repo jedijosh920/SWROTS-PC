@@ -28,6 +28,18 @@ void PropsReceive(uint32_t frame, const PropState* props, int count, const uint3
 void PropsApply(uint32_t frame);
 std::string PropsStats();
 
+// Client/server netplay in a Cooperative mission: its other characters (enemies, allies) are the host's. The host
+// finds them at the mission's start (a full scan) and the new ones as they come (the ids after the last one known,
+// a few hundred every half second), and gives up to `max` of them a frame, in turn (net/duelstate.h's ApplyCharacter
+// on the guest).
+void CharactersReset();
+int CharactersCapture(const uint8_t* player1, const uint8_t* player2, uint32_t* ids, uint8_t** objects, int max);
+size_t CharactersKnown();
+// The host's characters followed, by id (diagnostics: the lowest `max`).
+std::string DescribeCharacters(size_t max);
+// The object of this instance id on this game, or null.
+uint8_t* ObjectOfId(uint32_t id);
+
 // The console's `objects` (research and tests): the level's objects by class (the log has each), and a prop of a
 // class moved up (`move`) or taken away (`destroy`) on this game.
 std::string ObjectsCommand(const std::string& verb, const std::string& cls, float amount);

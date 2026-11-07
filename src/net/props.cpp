@@ -14,6 +14,7 @@
 
 #include "core/log.h"
 #include "kernel/kernel.h"
+#include "net/duelstate.h"
 
 namespace swrots::net {
 
@@ -289,6 +290,104 @@ std::string PropsStats()
     std::snprintf(line, sizeof(line), "props: %zu found, %u places and %u gone sent; %u places applied, %u taken away",
         g_Props.size(), g_Sent, g_GoneSent, g_Applied, g_Destroyed);
     return line;
+}
+
+namespace {
+
+struct Character {
+    uint8_t* object = nullptr;
+    uint32_t id = 0;
+};
+std::vector<Character> g_Chars;
+bool g_CharsScanned = false;
+uint32_t g_ProbeFrom = 0, g_ProbeCalls = 0;
+size_t g_CharNext = 0;
+
+void AddCharacter(uint8_t* o, uint32_t id, const uint8_t* p1, const uint8_t* p2)
+{
+    if (o == p1 || o == p2 || !IsCharacter(o))
+        return;
+    for (const Character& c : g_Chars)
+        if (c.id == id)
+            return;
+    char cls[48];
+    ClassNameRaw(o, cls);
+    if (g_Chars.size() < 400 || g_Chars.size() % 50 == 0)
+        LOG_INFO("Online: character %u (%s) followed", id, cls);
+    g_Chars.push_back({ o, id });
+}
+
+} // namespace
+
+void CharactersReset()
+{
+    g_Chars.clear();
+    g_CharsScanned = false;
+    g_ProbeFrom = 0;
+    g_ProbeCalls = 0;
+    g_CharNext = 0;
+}
+
+size_t CharactersKnown()
+{
+    return g_Chars.size();
+}
+
+std::string DescribeCharacters(size_t max)
+{
+    std::vector<Character> list = g_Chars;
+    std::sort(list.begin(), list.end(), [](const Character& a, const Character& b) { return a.id < b.id; });
+    std::string line;
+    for (size_t i = 0; i < list.size() && i < max; ++i)
+        line += DescribeCharacter(list[i].id, list[i].object) + "; ";
+    return line;
+}
+
+uint8_t* ObjectOfId(uint32_t id)
+{
+    return id ? ObjectById(id) : nullptr;
+}
+
+int CharactersCapture(const uint8_t* player1, const uint8_t* player2, uint32_t* ids, uint8_t** objects, int max)
+{
+    if (!g_CharsScanned) {
+        g_CharsScanned = true;
+        const ULONGLONG start = GetTickCount64();
+        const std::vector<uint8_t*> all = ScanObjects();
+        for (uint8_t* o : all) {
+            const uint32_t id = IdOf(o);
+            g_ProbeFrom = std::max(g_ProbeFrom, id + 1);
+            AddCharacter(o, id, player1, player2);
+        }
+        LOG_INFO("Online: %zu character(s) among %zu objects (%llu ms); new ones from id %u", g_Chars.size(), all.size(),
+            GetTickCount64() - start, g_ProbeFrom);
+    }
+    if (++g_ProbeCalls % 30 == 0 && g_ProbeFrom) { // the new objects: ids after the last one known
+        const uint32_t from = g_ProbeFrom;
+        for (uint32_t id = from; id < from + 512; ++id) {
+            uint8_t* o = ObjectById(id);
+            if (!o)
+                continue;
+            g_ProbeFrom = id + 1;
+            AddCharacter(o, id, player1, player2);
+        }
+    }
+    g_Chars.erase(std::remove_if(g_Chars.begin(), g_Chars.end(),
+                      [](const Character& c) { return ObjectById(c.id) != c.object; }),
+        g_Chars.end());
+    int count = 0;
+    const size_t n = g_Chars.size();
+    for (size_t k = 0; k < n && count < max; ++k) {
+        const Character& c = g_Chars[(g_CharNext + k) % n];
+        if (c.object == player1 || c.object == player2)
+            continue;
+        ids[count] = c.id;
+        objects[count] = c.object;
+        ++count;
+    }
+    if (n)
+        g_CharNext = (g_CharNext + size_t(count)) % n;
+    return count;
 }
 
 std::string ObjectsCommand(const std::string& verb, const std::string& cls, float amount)

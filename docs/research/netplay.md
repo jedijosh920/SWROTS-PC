@@ -591,6 +591,23 @@ A match between two PCs over the Internet (each player host once): movement smoo
 - **The host's gameplay settings**: a match plays with them in memory; `SaveSettings` during a match now writes the
   PC's own (`SetOwnGameplaySettings`), so a host's co-op setting can never stay on the guest's PC.
 
+### Cooperative online (2026-11-07)
+
+The room's Game Mode Cooperative takes both games to Multi Player > Cooperative's missions select (`select_challenge`,
+both pads), every mission unlocked for the online select only: the list's lock, read from the profile as it is built
+(0x2D41E3, `profile[mission + 0x2B6]`), is made "unlocked" while the online select is up and given back once the room or
+the main menu is (nothing written to the profile). A mission is then followed as a duel is (its two players are the
+game's player slots: their states, the props).
+
+Both games load the same objects with the same instance ids (`objects list`: 209 objects, the same ids, in Cruiser
+Cargo Hold). The mission's other characters (enemies, allies: an object whose +0x434 is a CharState) are the host's:
+the host finds them at the mission's start (one full scan) and the new ones as they come (the 512 ids after the last
+one known, every half second; ids are given in order), and sends five a frame in turn (`Chars`, protocol 9: each a
+fighter's state, its id). The guest writes each into its own of that id as it does the other player's fighter (its
+place, its sequence where it went its own way, its health through the game's own change: its death the game's), and
+keeps its own damage to them out (the host's hits decide). Every two seconds both games log the four lowest ids' place
+and health (`characters, frame`), to compare.
+
 ### Phases
 
 1. **Duel state capture/apply** on one PC: the state's size (a few KiB expected), and whether writing it into a

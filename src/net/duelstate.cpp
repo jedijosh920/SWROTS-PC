@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
+#include <unordered_map>
 #include <vector>
 
 #include "core/log.h"
@@ -698,7 +699,7 @@ bool WriteLivingRaw(uint8_t* fighter, float health, bool revive)
 // health is the game's to make dead; one the host brings back (a new round: not dead, health) is brought back here.
 // The game's Versus logic takes both fighters as living at a new round's start (0x27AB30, unchecked), so one this
 // game brought back itself before the host's state did is not put down again meanwhile.
-void ApplyHealth(int slot, Applied& a, uint8_t* fighter, const FighterState& s)
+void ApplyHealth(const char* who, Applied& a, uint8_t* fighter, const FighterState& s)
 {
     bool living = true;
     float health = 0;
@@ -715,7 +716,7 @@ void ApplyHealth(int slot, Applied& a, uint8_t* fighter, const FighterState& s)
         a.reviveHold = 0;
     if ((hostLiving != a.hostLiving || living != a.leftLiving) && g_LivingLogged < 80) {
         ++g_LivingLogged;
-        LOG_INFO("Online: P%d living: the host's %s (health %.1f), this game's %s (health %.1f, dead %d)%s", slot + 1,
+        LOG_INFO("Online: %s living: the host's %s (health %.1f), this game's %s (health %.1f, dead %d)%s", who,
             hostLiving ? "yes" : "no", hostHealth, living ? "yes" : "no", health, fighter[0x12C],
             g_ApplyFrame < a.reviveHold ? ", brought back here first" : "");
     }
@@ -733,18 +734,13 @@ void ApplyHealth(int slot, Applied& a, uint8_t* fighter, const FighterState& s)
 
 } // namespace
 
-void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t leadTicks, bool own)
+namespace {
+
+// A character of this game following the host's (a player's fighter, or a Cooperative mission's other character: an
+// enemy, an ally): `who` names it in the log, `other` is its pair's (a player's the other player's).
+void ApplyInto(const char* who, Applied& a, const Applied& other, uint8_t* fighter, const FighterState& s,
+    uint32_t leadTicks, bool own)
 {
-    if (!fighter || !s.valid || slot < 0 || slot > 1)
-        return;
-    Applied& a = g_Applied[slot];
-    if (slot == 0)
-        ++g_ApplyFrame;
-    if (a.fighter != fighter) { // a new round (the fighters are made again): follow from here
-        a = Applied();
-        a.fighter = fighter;
-        a.starts = s.starts;
-    }
     // The sequences of the host's fighter and this game's: their staging and grabs are left to this game.
     char hostName[kSeqNameBytes] = {};
     SeqInfo live;
@@ -755,9 +751,8 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
     a.livePaired = Paired(live.name);
     if ((a.hostPaired || a.livePaired) && std::strcmp(hostName, live.name) != 0 && g_NamesLogged < 60) {
         ++g_NamesLogged;
-        LOG_INFO("Online: P%d grab: the host's '%s', this game's '%s'", slot + 1, hostName, live.name);
+        LOG_INFO("Online: %s grab: the host's '%s', this game's '%s'", who, hostName, live.name);
     }
-    const Applied& other = g_Applied[slot ^ 1];
     const bool staged = Staged(hostName) || Staged(live.name);
     a.liveCaught = Caught(live.name);
     const bool hostPairedAny = a.hostPaired || other.hostPaired;
@@ -775,7 +770,7 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
         ++g_ApplyStaged;
         a.starts = s.starts;
         a.parted = 0;
-        ApplyHealth(slot, a, fighter, s); // its damage still comes from the host
+        ApplyHealth(who, a, fighter, s); // its damage still comes from the host
         return;
     }
     // Its place: the host's (the other player's fighter), or this PC's own fighter's own unless it is far off.
@@ -810,7 +805,7 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
         }
     }
     CopyFields(fighter, s.fields, into);
-    ApplyHealth(slot, a, fighter, s); // the host's (its hits, its death, the round's end)
+    ApplyHealth(who, a, fighter, s); // the host's (its hits, its death, the round's end)
     if (s.seq < 0)
         return;
     const bool started = s.starts != a.starts; // the host started a sequence since
@@ -831,7 +826,64 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
         ++g_ApplyRefused;
         a.refusedUntil = g_ApplyFrame + 6; // not every frame
         if (g_ApplyRefused <= 20 || g_ApplyRefused % 100 == 0)
-            LOG_INFO("Online: P%d's sequence %d refused (%u refusals)", slot + 1, s.seq, g_ApplyRefused);
+            LOG_INFO("Online: %s's sequence %d refused (%u refusals)", who, s.seq, g_ApplyRefused);
+    }
+}
+
+std::unordered_map<uint32_t, Applied> g_CharApplied; // the other characters followed (by instance id)
+uint32_t g_CharsApplied = 0;
+
+} // namespace
+
+void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t leadTicks, bool own)
+{
+    if (!fighter || !s.valid || slot < 0 || slot > 1)
+        return;
+    Applied& a = g_Applied[slot];
+    if (slot == 0)
+        ++g_ApplyFrame;
+    if (a.fighter != fighter) { // a new round (the fighters are made again): follow from here
+        a = Applied();
+        a.fighter = fighter;
+        a.starts = s.starts;
+    }
+    ApplyInto(slot == 0 ? "P1" : "P2", a, g_Applied[slot ^ 1], fighter, s, leadTicks, own);
+}
+
+void ApplyCharacter(uint32_t id, uint8_t* character, const FighterState& s, uint32_t leadTicks)
+{
+    if (!character || !s.valid)
+        return;
+    Applied& a = g_CharApplied[id];
+    if (a.fighter != character) {
+        a = Applied();
+        a.fighter = character;
+        a.starts = s.starts;
+    }
+    char who[24];
+    std::snprintf(who, sizeof(who), "character %u", id);
+    static const Applied kNone;
+    ApplyInto(who, a, kNone, character, s, leadTicks, false);
+    ++g_CharsApplied;
+}
+
+void ApplyCharactersReset()
+{
+    g_CharApplied.clear();
+}
+
+uint32_t CharactersApplied()
+{
+    return g_CharsApplied;
+}
+
+bool IsCharacter(const uint8_t* object)
+{
+    __try {
+        const uint8_t* state = *reinterpret_cast<uint8_t* const*>(object + kCharState);
+        return state && *reinterpret_cast<const uint32_t*>(state) == kCharStateVtable;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
     }
 }
 
@@ -847,6 +899,19 @@ bool DuelStaged()
             return true;
     }
     return false;
+}
+
+std::string DescribeCharacter(uint32_t id, const uint8_t* character)
+{
+    SeqInfo seq;
+    ReadSeq(character, seq);
+    float v[4] = {};
+    const uint32_t at[4] = { 0x180, 0x184, 0x188, 0x130 };
+    for (int k = 0; k < 4; ++k)
+        ReadFloat(character, at[k], v[k]);
+    char part[128];
+    std::snprintf(part, sizeof(part), "%u '%s' at %.0f %.0f %.0f health %.0f", id, seq.name, v[0], v[1], v[2], v[3]);
+    return part;
 }
 
 std::string DescribeDuel()

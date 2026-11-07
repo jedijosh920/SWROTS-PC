@@ -54,6 +54,16 @@ bool CaptureFighter(const uint8_t* fighter, FighterState& out);
 // only when it stays parted.
 void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t leadTicks, bool own);
 std::string ApplyStats();
+// A Cooperative mission's other characters (its enemies, its allies): the host's, by their instance id (the same level
+// on both games: the same ids), applied as the other player's fighter is (its place, its sequence, its health through
+// the game's own change: its death the game's). A new level forgets them.
+void ApplyCharacter(uint32_t id, uint8_t* character, const FighterState& s, uint32_t leadTicks);
+void ApplyCharactersReset();
+uint32_t CharactersApplied();
+// An object of a character's class (its behaviour at +0x434).
+bool IsCharacter(const uint8_t* object);
+// A character's id, sequence, place and health (diagnostics).
+std::string DescribeCharacter(uint32_t id, const uint8_t* character);
 // Whether either fighter of the duel plays its intro or outro now, and a line about both and the camera (diagnostics).
 bool DuelStaged();
 std::string DescribeDuel();
