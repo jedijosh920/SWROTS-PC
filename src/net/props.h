@@ -35,6 +35,8 @@ std::string PropsStats();
 void CharactersReset();
 int CharactersCapture(const uint8_t* player1, const uint8_t* player2, uint32_t* ids, uint8_t** objects, int max);
 size_t CharactersKnown();
+// A character met in a fight (a hit dealt or taken: the host's damage observer), followed from then on when it is one.
+void CharacterSeen(uint8_t* character, const uint8_t* player1, const uint8_t* player2, const char* how);
 // The host's characters followed, by id (diagnostics: the lowest `max`).
 std::string DescribeCharacters(size_t max);
 // The object of this instance id on this game, or null.

@@ -297,6 +297,7 @@ namespace {
 struct Character {
     uint8_t* object = nullptr;
     uint32_t id = 0;
+    bool byId = true; // the manager finds it by its id (else: seen in a fight only)
 };
 std::vector<Character> g_Chars;
 bool g_CharsScanned = false;
@@ -379,6 +380,32 @@ std::string DescribeCharacters(size_t max)
     return line;
 }
 
+void CharacterSeen(uint8_t* character, const uint8_t* player1, const uint8_t* player2, const char* how)
+{
+    if (!character || character == player1 || character == player2)
+        return;
+    for (const Character& c : g_Chars)
+        if (c.object == character)
+            return;
+    const uint32_t id = IdOf(character);
+    uint8_t* found = id ? ObjectById(id) : nullptr;
+    uint32_t vtable = 0;
+    __try {
+        vtable = *reinterpret_cast<const uint32_t*>(character);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    char cls[48];
+    ClassNameRaw(character, cls);
+    static int logged = 0;
+    if (logged++ < 60)
+        LOG_INFO("Online: a character %s: %08X vtable %08X id %u (the manager's by that id: %08X) %s, character %d: %s",
+            how, uint32_t(uintptr_t(character)), vtable, id, uint32_t(uintptr_t(found)), cls, IsCharacter(character) ? 1 : 0,
+            DescribeCharacter(id, character).c_str());
+    if (!IsCharacter(character) || !id)
+        return;
+    g_Chars.push_back({ character, id, found == character });
+}
+
 uint8_t* ObjectOfId(uint32_t id)
 {
     return id ? ObjectById(id) : nullptr;
@@ -422,7 +449,9 @@ int CharactersCapture(const uint8_t* player1, const uint8_t* player2, uint32_t* 
         }
     }
     g_Chars.erase(std::remove_if(g_Chars.begin(), g_Chars.end(),
-                      [](const Character& c) { return ObjectById(c.id) != c.object; }),
+                      [](const Character& c) {
+                          return c.byId ? ObjectById(c.id) != c.object : !IsCharacter(c.object) || IdOf(c.object) != c.id;
+                      }),
         g_Chars.end());
     int count = 0;
     const size_t n = g_Chars.size();

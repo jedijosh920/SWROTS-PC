@@ -1163,6 +1163,17 @@ std::atomic<uint8_t*> g_GuestFighters[2] = {};
 std::unordered_set<uint8_t*> g_GuestFollowed;
 std::map<uint32_t, uint8_t*> g_GuestCharIds; // (diagnostics: by id)
 
+// A Cooperative mission: the characters in a fight (the hits' attackers, those hit) are followed (the host's; the
+// guest's are logged, to compare).
+uint8_t* g_HostPlayers[2] = {};
+void HostDamageSeen(uint8_t* character, float change, uint32_t source, uint8_t* attacker)
+{
+    (void)change;
+    (void)source;
+    CharacterSeen(character, g_HostPlayers[0], g_HostPlayers[1], "hit");
+    CharacterSeen(attacker, g_HostPlayers[0], g_HostPlayers[1], "hitting");
+}
+
 float GuestDamage(uint8_t* character, float change)
 {
     // its damage only: the game's own heals (a new round's full health) go through
@@ -1496,6 +1507,18 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             g_S.drawEndAt = {};
         }
         wasDuel = duel;
+    }
+    g_HostPlayers[0] = duel ? fighters[0] : nullptr; // a Cooperative mission's fights (both games: diagnostics)
+    g_HostPlayers[1] = duel ? fighters[1] : nullptr;
+    {
+        static bool observing = false;
+        if (duel && coopMission && !observing) {
+            game::SetDamageObserver(&HostDamageSeen);
+            observing = true;
+        } else if ((!duel || !coopMission) && observing) {
+            game::SetDamageObserver(nullptr);
+            observing = false;
+        }
     }
     if (duel && frame % 120 == 0) { // diagnostics: both fighters' places on both games (a small one's, Yoda's)
         static uint32_t described = 0;
