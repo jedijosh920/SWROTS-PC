@@ -974,18 +974,31 @@ const void* GameText(const char* id)
     return got ? *got : nullptr;
 }
 
-// The HUD's opacity: its PlayerVitals item's (found by name on the screen up: the level's HUD, 0x2F5A00), its colour's
-// alpha (+0x97), which its transitions fade.
+// The HUD's opacity: its vitals' fade (the in-level HUD's Vitals handlers, vtable 0x5A80A0; their slot 2, 0x25CD10,
+// steps a fade each frame: its time +0x10 times its rate +0xC, at most 1, as the alpha of their drawing's colour,
+// [handler+4] +0xB), read as the game sets it.
+constexpr uint32_t kVitalsFadeSlot = 0x005A80A8, kVitalsFade = 0x0025CD10;
+using VitalsFadeFn = char(__fastcall*)(uint8_t*, void*, float);
+float g_HudAlpha = -1.0f;
+ULONGLONG g_HudAlphaAt = 0;
+
+char __fastcall VitalsFade(uint8_t* handler, void*, float seconds)
+{
+    const char result = reinterpret_cast<VitalsFadeFn>(uintptr_t(kVitalsFade))(handler, nullptr, seconds);
+    __try {
+        const uint8_t* draw = *reinterpret_cast<uint8_t* const*>(handler + 4);
+        if (draw) {
+            g_HudAlpha = float(draw[0xB]) / 255.0f;
+            g_HudAlphaAt = GetTickCount64();
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return result;
+}
+
 float HudItemAlpha()
 {
-    __try {
-        uint8_t* shell = *reinterpret_cast<uint8_t**>(uintptr_t(kShellObject));
-        uint8_t* item = shell ? reinterpret_cast<uint8_t*(__fastcall*)(uint8_t*, void*, const char*, void*, int)>(
-            uintptr_t(kFindPopup))(shell, nullptr, "PlayerVitals", nullptr, 0) : nullptr;
-        return item ? float(item[0x97]) / 255.0f : -1.0f;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return -1.0f;
-    }
+    return g_HudAlpha >= 0 && GetTickCount64() - g_HudAlphaAt < 500 ? g_HudAlpha : -1.0f;
 }
 
 bool ShowPopup(uint8_t* owner, const char* titleId, const char* messageId, const char* name = "DefaultPopup")
@@ -2108,6 +2121,12 @@ void InstallOnlineMenu()
     if (SlotIs(kJediListVtable, 4, kJediListEvent)) {
         const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(&JediListEvent));
         PatchBytes(kJediListVtable + 4 * 4, &hook, 4);
+    }
+    if (*reinterpret_cast<const uint32_t*>(uintptr_t(kVitalsFadeSlot)) == kVitalsFade) { // the HUD's fade (GameHudAlpha)
+        const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(&VitalsFade));
+        PatchBytes(kVitalsFadeSlot, &hook, 4);
+    } else {
+        LOG_WARN("Online menu: the HUD's vitals are not as expected; the duel's names do not fade with it");
     }
     if (SlotIs(kIntroVtable, 0, kIntroInit)) {
         const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(&IntroInit));

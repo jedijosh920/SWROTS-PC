@@ -30,8 +30,8 @@ bool OnlineCodeKeyboardShown();
 bool OnlinePastePromptBuilt();
 // The room code's keyboard opened (tests: the console's online keyboard).
 void OnlineOpenCodeKeyboard();
-// In a level: the game's HUD's opacity now (its player's vitals, PlayerVitals of interfc\hud.xml: faded in and out with
-// the HUD), 0-1; 1 when it cannot be read.
+// In a level: the game's HUD's opacity now (its vitals' fade in and out, as the game last stepped it), 0-1; 1 when it
+// cannot be read.
 float GameHudAlpha();
 
 } // namespace swrots::game
