@@ -333,7 +333,10 @@ uint32_t ClassHash(const char* name)
 
 void AddCharacter(uint8_t* o, uint32_t id, const uint8_t* p1, const uint8_t* p2)
 {
-    if (!o || !id || o == p1 || o == p2 || g_CharById.count(id) || !Inside(o, 0x438) || !IsCharacter(o))
+    if (!o || !id || o == p1 || o == p2 || g_CharById.count(id) || !Inside(o, 0x438))
+        return;
+    // its behaviour (+0x434) in the game's memory too, before IsCharacter reads its vtable
+    if (!Inside(*reinterpret_cast<uint8_t* const*>(o + 0x434), 4) || !IsCharacter(o))
         return;
     char cls[48];
     ClassNameRaw(o, cls);
