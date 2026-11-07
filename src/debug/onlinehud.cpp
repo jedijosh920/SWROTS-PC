@@ -33,6 +33,13 @@ constexpr ImU32 kRed = IM_COL32(255, 85, 70, 255);
 constexpr ImU32 kPanel = IM_COL32(10, 12, 18, 175);
 constexpr ULONGLONG kEndShownMs = 7000;
 
+// A colour with its alpha times `alpha` (the game's HUD fading in or out: game::GameHudAlpha).
+ImU32 WithAlpha(ImU32 colour, float alpha)
+{
+    const ImU32 a = ImU32(float(colour >> 24) * std::clamp(alpha, 0.0f, 1.0f) + 0.5f);
+    return (colour & 0x00FFFFFF) | (a << 24);
+}
+
 ImDrawList* g_Draw = nullptr;
 
 std::string Upper(std::string t)
@@ -138,9 +145,9 @@ void OtherPlayer(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float 
 // left, player 2's on the right), in the menus' font and the menus' colours (a title's light blue, a dark blue rim).
 constexpr ImU32 kNameText = IM_COL32(153, 191, 243, 255);
 constexpr ImU32 kNameRim = IM_COL32(16, 30, 72, 235);
-void VersusNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u)
+void VersusNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u, float fade)
 {
-    if (!game::GamePlayerSlot(0) || !game::GamePlayerSlot(1))
+    if (!game::GamePlayerSlot(0) || !game::GamePlayerSlot(1) || fade <= 0.01f)
         return;
     const std::string p1 = s.host ? s.localName : s.remoteName, p2 = s.host ? s.remoteName : s.localName;
     // in the space above each bar (player 1's from 17% of the width, player 2's up to 83.6%)
@@ -152,9 +159,10 @@ void VersusNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float 
         static const float kAround[8][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 }, { -0.7f, -0.7f }, { 0.7f, -0.7f },
             { -0.7f, 0.7f }, { 0.7f, 0.7f } };
         for (const auto& d : kAround)
-            GameFontTextOf(GameFont::Menu, g_Draw, ImVec2(at.x + d[0] * r, at.y + d[1] * r), h, kNameRim, t, false);
-        if (!GameFontTextOf(GameFont::Menu, g_Draw, at, h, kNameText, t, false))
-            Text(x, y, h, kNameText, text, align);
+            GameFontTextOf(GameFont::Menu, g_Draw, ImVec2(at.x + d[0] * r, at.y + d[1] * r), h, WithAlpha(kNameRim, fade),
+                t, false);
+        if (!GameFontTextOf(GameFont::Menu, g_Draw, at, h, WithAlpha(kNameText, fade), t, false))
+            Text(x, y, h, WithAlpha(kNameText, fade), text, align);
     };
     name(vp->Pos.x + vp->Size.x * 0.170f, p1, 0.0f);
     name(vp->Pos.x + vp->Size.x * 0.836f, p2, 1.0f);
@@ -169,19 +177,20 @@ constexpr ImU32 kClockInner = IM_COL32(30, 72, 140, 200);
 constexpr ImU32 kClockText = IM_COL32(205, 232, 255, 255);
 constexpr ImU32 kClockLow = IM_COL32(240, 70, 60, 255);
 
-void DuelClock(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u)
+void DuelClock(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u, float fade)
 {
-    if (s.clockTenths < 0)
+    if (s.clockTenths < 0 || fade <= 0.01f)
         return;
     const int seconds = (s.clockTenths + 9) / 10;
     const std::string text = std::to_string(seconds);
     const float cx = vp->Pos.x + vp->Size.x / 2, cy = vp->Pos.y + vp->Size.y * 0.883f;
     const float h = 34 * u, w = std::max(72 * u, Width(h, "88") + 28 * u), ph = 46 * u;
     const ImVec2 a(cx - w / 2, cy - ph / 2), b(cx + w / 2, cy + ph / 2);
-    g_Draw->AddRectFilled(a, b, kClockPanel, 8 * u);
-    g_Draw->AddRect(ImVec2(a.x + 3 * u, a.y + 3 * u), ImVec2(b.x - 3 * u, b.y - 3 * u), kClockInner, 6 * u, 0, 1.0f * u);
-    g_Draw->AddRect(a, b, kClockRim, 8 * u, 0, 2.0f * u);
-    const ImU32 colour = seconds <= 10 ? kClockLow : kClockText;
+    g_Draw->AddRectFilled(a, b, WithAlpha(kClockPanel, fade), 8 * u);
+    g_Draw->AddRect(ImVec2(a.x + 3 * u, a.y + 3 * u), ImVec2(b.x - 3 * u, b.y - 3 * u), WithAlpha(kClockInner, fade),
+        6 * u, 0, 1.0f * u);
+    g_Draw->AddRect(a, b, WithAlpha(kClockRim, fade), 8 * u, 0, 2.0f * u);
+    const ImU32 colour = WithAlpha(seconds <= 10 ? kClockLow : kClockText, fade);
     const ImVec2 at(cx - GameFontWidthOf(GameFont::Hud, h, text) / 2, cy - h / 2);
     if (!GameFontTextOf(GameFont::Hud, g_Draw, at, h, colour, text))
         Text(cx, cy - h / 2, h, colour, text, 0.5f);
@@ -274,8 +283,9 @@ void DrawOnlineHud()
         if (s.pingMs >= 0)
             Text(vp->Pos.x + vp->Size.x - 16 * u, vp->Pos.y + 10 * u, 14 * u, kDim, std::to_string(s.pingMs) + " ms", 1.0f);
         if (game::BootIsVersusDuel()) {
-            VersusNames(s, vp, u);
-            DuelClock(s, vp, u);
+            const float fade = game::GameHudAlpha(); // the HUD's fades: the names and the clock with it
+            VersusNames(s, vp, u, fade);
+            DuelClock(s, vp, u, fade);
         }
         else if (!s.remoteName.empty())
             OtherPlayer(s, vp, u);

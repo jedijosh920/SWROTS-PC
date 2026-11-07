@@ -769,7 +769,7 @@ void TitleAsRoomName(uint8_t* handler)
 struct HiddenItem {
     uint8_t* item = nullptr;
     int16_t y = 0;
-    uint8_t alpha = 0xFF;
+    bool hidden = false; // put away by the port (its place and alpha its own again once shown)
 };
 HiddenItem g_HiddenItems[6];
 
@@ -783,15 +783,22 @@ void ShowItem(uint8_t* handler, int slot, const char* name, bool shown)
         if (!item)
             return;
         HiddenItem& h = g_HiddenItems[slot];
-        if (h.item != item) { // this screen's item (the screen made again): its place and alpha as they are
+        if (h.item != item) { // this screen's item (the screen made again): as the game has it
             h.item = item;
-            h.y = *reinterpret_cast<int16_t*>(item + 0xE6);
-            h.alpha = item[0x97];
-            if (h.y >= 600 * 32) // (already put away)
-                h.y = int16_t(h.y - 1000 * 32);
+            h.hidden = false;
         }
-        *reinterpret_cast<int16_t*>(item + 0xE6) = shown ? h.y : int16_t(h.y + 1000 * 32 > 32767 ? 32767 : h.y + 1000 * 32);
-        item[0x97] = shown ? h.alpha : 0;
+        if (!shown && !h.hidden) {
+            h.y = *reinterpret_cast<int16_t*>(item + 0xE6);
+            h.hidden = true;
+        }
+        if (!shown) {
+            *reinterpret_cast<int16_t*>(item + 0xE6) = int16_t(h.y + 1000 * 32 > 32767 ? 32767 : h.y + 1000 * 32);
+            item[0x97] = 0;
+        } else if (h.hidden) { // back as it was (the menus' items are opaque once their screen is in)
+            *reinterpret_cast<int16_t*>(item + 0xE6) = h.y;
+            item[0x97] = 0xFF;
+            h.hidden = false;
+        }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
 }
@@ -965,6 +972,20 @@ const void* GameText(const char* id)
     void** got = reinterpret_cast<LookupFn>((*reinterpret_cast<void* const* const*>(table))[1])(table, nullptr, &out,
         &text, 0);
     return got ? *got : nullptr;
+}
+
+// The HUD's opacity: its PlayerVitals item's (found by name on the screen up: the level's HUD, 0x2F5A00), its colour's
+// alpha (+0x97), which its transitions fade.
+float HudItemAlpha()
+{
+    __try {
+        uint8_t* shell = *reinterpret_cast<uint8_t**>(uintptr_t(kShellObject));
+        uint8_t* item = shell ? reinterpret_cast<uint8_t*(__fastcall*)(uint8_t*, void*, const char*, void*, int)>(
+            uintptr_t(kFindPopup))(shell, nullptr, "PlayerVitals", nullptr, 0) : nullptr;
+        return item ? float(item[0x97]) / 255.0f : -1.0f;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1.0f;
+    }
 }
 
 bool ShowPopup(uint8_t* owner, const char* titleId, const char* messageId, const char* name = "DefaultPopup")
@@ -1904,6 +1925,19 @@ bool OnlineRefusesMainMenuEvent(uint8_t*, int)
 void OnlineOpenCodeKeyboard()
 {
     OpenKeyboard(KeyboardFor::Code);
+}
+
+float GameHudAlpha()
+{
+    const float alpha = HudItemAlpha();
+    static int logged = 0;
+    static float last = -2.0f;
+    if (alpha != last && logged < 40) { // (the fades' steps, the first ones)
+        ++logged;
+        LOG_INFO("Online HUD: the game's HUD alpha %.2f", alpha);
+    }
+    last = alpha;
+    return alpha < 0 ? 1.0f : alpha;
 }
 
 bool OnlinePastePromptBuilt()
