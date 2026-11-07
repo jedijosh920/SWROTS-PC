@@ -380,6 +380,16 @@ std::string DescribeCharacters(size_t max)
     return line;
 }
 
+static uint32_t VtableOf(const uint8_t* object)
+{
+    uint32_t vtable = 0;
+    __try {
+        vtable = *reinterpret_cast<const uint32_t*>(object);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return vtable;
+}
+
 void CharacterSeen(uint8_t* character, const uint8_t* player1, const uint8_t* player2, const char* how)
 {
     if (!character || character == player1 || character == player2)
@@ -389,11 +399,7 @@ void CharacterSeen(uint8_t* character, const uint8_t* player1, const uint8_t* pl
             return;
     const uint32_t id = IdOf(character);
     uint8_t* found = id ? ObjectById(id) : nullptr;
-    uint32_t vtable = 0;
-    __try {
-        vtable = *reinterpret_cast<const uint32_t*>(character);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
+    const uint32_t vtable = VtableOf(character);
     char cls[48];
     ClassNameRaw(character, cls);
     static int logged = 0;
