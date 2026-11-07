@@ -303,8 +303,40 @@ bool g_CharsScanned = false;
 uint32_t g_ProbeFrom = 0, g_ProbeCalls = 0;
 size_t g_CharNext = 0;
 
+// The object manager ([[0x68D944]+0x58]; 0xB4CC0 finds an object by its id): besides its id map (+0x340), three
+// lists it looks through in turn: +0x3F0 count, +0x3F4 objects; +0x3B4 count, +0x3B8 (id, object) pairs; +0x35C count,
+// +0x360 objects. Characters spawned during a level (a mission's enemies, made from its templates) are found there.
+void ListedObjectsRaw(std::vector<uint8_t*>& out, int (&counts)[3])
+{
+    counts[0] = counts[1] = counts[2] = 0;
+    __try {
+        const uint8_t* root = *reinterpret_cast<uint8_t* const*>(uintptr_t(0x0068D944));
+        const uint8_t* m = root ? *reinterpret_cast<uint8_t* const*>(root + 0x58) : nullptr;
+        if (!m)
+            return;
+        const int n0 = *reinterpret_cast<const int*>(m + 0x3F0);
+        uint8_t* const* a0 = *reinterpret_cast<uint8_t* const* const*>(m + 0x3F4);
+        for (int i = 0; a0 && i < n0 && i < 8192; ++i)
+            out.push_back(a0[i]);
+        const int n1 = *reinterpret_cast<const int*>(m + 0x3B4);
+        const uint32_t* a1 = *reinterpret_cast<const uint32_t* const*>(m + 0x3B8);
+        for (int i = 0; a1 && i < n1 && i < 8192; ++i)
+            out.push_back(reinterpret_cast<uint8_t*>(uintptr_t(a1[2 * i + 1])));
+        const int n2 = *reinterpret_cast<const int*>(m + 0x35C);
+        uint8_t* const* a2 = *reinterpret_cast<uint8_t* const* const*>(m + 0x360);
+        for (int i = 0; a2 && i < n2 && i < 8192; ++i)
+            out.push_back(a2[i]);
+        counts[0] = n0;
+        counts[1] = n1;
+        counts[2] = n2;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
 void AddCharacter(uint8_t* o, uint32_t id, const uint8_t* p1, const uint8_t* p2)
 {
+    if (!o || !id)
+        return;
     if (o == p1 || o == p2 || !IsCharacter(o))
         return;
     for (const Character& c : g_Chars)
@@ -338,8 +370,12 @@ std::string DescribeCharacters(size_t max)
     std::vector<Character> list = g_Chars;
     std::sort(list.begin(), list.end(), [](const Character& a, const Character& b) { return a.id < b.id; });
     std::string line;
-    for (size_t i = 0; i < list.size() && i < max; ++i)
-        line += DescribeCharacter(list[i].id, list[i].object) + "; ";
+    size_t n = 0;
+    for (size_t i = 0; i < list.size() && n < max; ++i)
+        if (CharacterActive(list[i].object)) {
+            line += DescribeCharacter(list[i].id, list[i].object) + "; ";
+            ++n;
+        }
     return line;
 }
 
@@ -361,6 +397,19 @@ int CharactersCapture(const uint8_t* player1, const uint8_t* player2, uint32_t* 
         }
         LOG_INFO("Online: %zu character(s) among %zu objects (%llu ms); new ones from id %u", g_Chars.size(), all.size(),
             GetTickCount64() - start, g_ProbeFrom);
+    }
+    if (g_ProbeCalls % 30 == 0) { // the manager's lists: the characters spawned
+        std::vector<uint8_t*> listed;
+        int counts[3];
+        ListedObjectsRaw(listed, counts);
+        const size_t before = g_Chars.size();
+        for (uint8_t* o : listed)
+            if (o && ObjectById(IdOf(o)) == o)
+                AddCharacter(o, IdOf(o), player1, player2);
+        static int logged = 0;
+        if ((g_Chars.size() != before || logged == 0) && logged++ < 40)
+            LOG_INFO("Online: the object manager's lists: %d, %d, %d object(s); %zu character(s) now", counts[0],
+                counts[1], counts[2], g_Chars.size());
     }
     if (++g_ProbeCalls % 30 == 0 && g_ProbeFrom) { // the new objects: ids after the last one known
         const uint32_t from = g_ProbeFrom;

@@ -64,6 +64,8 @@ uint32_t CharactersApplied();
 bool IsCharacter(const uint8_t* object);
 // A character's id, sequence, place and health (diagnostics).
 std::string DescribeCharacter(uint32_t id, const uint8_t* character);
+// Whether a character plays a sequence (a level's templates, waiting to be spawned from, do not).
+bool CharacterActive(const uint8_t* character);
 // Whether either fighter of the duel plays its intro or outro now, and a line about both and the camera (diagnostics).
 bool DuelStaged();
 std::string DescribeDuel();

@@ -1587,8 +1587,8 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             int count = 0;
             for (int i = 0; i < n; ++i) {
                 cm.chars[count].id = ids[i];
-                if (CaptureFighter(objects[i], cm.chars[count].state))
-                    ++count;
+                if (CaptureFighter(objects[i], cm.chars[count].state) && cm.chars[count].state.seq >= 0)
+                    ++count; // (not a level's template, which plays nothing)
             }
             if (count) {
                 cm.h = MakeHeader(Msg::Chars, g_S.token);
@@ -1657,6 +1657,11 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         for (auto it = g_GuestCharIds.begin(); it != g_GuestCharIds.end() && n < 4; ++n) {
             if (ObjectOfId(it->first) != it->second) {
                 it = g_GuestCharIds.erase(it);
+                continue;
+            }
+            if (!CharacterActive(it->second)) {
+                ++it;
+                --n;
                 continue;
             }
             line += DescribeCharacter(it->first, it->second) + "; ";

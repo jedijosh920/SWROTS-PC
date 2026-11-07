@@ -901,6 +901,13 @@ bool DuelStaged()
     return false;
 }
 
+bool CharacterActive(const uint8_t* character)
+{
+    SeqInfo seq;
+    ReadSeq(character, seq);
+    return seq.index >= 0;
+}
+
 std::string DescribeCharacter(uint32_t id, const uint8_t* character)
 {
     SeqInfo seq;
