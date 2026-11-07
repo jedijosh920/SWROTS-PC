@@ -1029,7 +1029,8 @@ bool IsSelectScreen(uint32_t screen)
 bool BothPlayLocked()
 {
     const uint32_t screen = g_S.screen;
-    return g_S.guestInDuel || IsSelectScreen(screen) || screen == game::MenuKey("select_arena");
+    return g_S.guestInDuel || IsSelectScreen(screen) || screen == game::MenuKey("select_arena") ||
+        screen == game::MenuKey("select_challenge"); // Cooperative's missions: the host picks, the guest joins
 }
 
 // Presses of the port's own: player 2 joins the fighters' select (Start), player 1 takes the arena (A).
@@ -1146,6 +1147,16 @@ float GuestDamage(uint8_t* character, float change)
                                                                                                              : change;
 }
 
+// A launch's map (its "map:" argument): empty for the menus.
+std::string LaunchMap(const std::string& arguments)
+{
+    const size_t at = arguments.find("map:");
+    if (at == std::string::npos || (at > 0 && arguments[at - 1] != ' '))
+        return {};
+    const size_t end = arguments.find(' ', at + 4);
+    return arguments.substr(at + 4, (end == std::string::npos ? arguments.size() : end) - at - 4);
+}
+
 // The game starts a level (or the menus) on its own (XLaunchNewImage). The host's goes to the guest, whose game
 // follows it; the guest's own waits for the host's and takes it instead.
 void LaunchObserved(std::string& arguments)
@@ -1177,6 +1188,12 @@ void LaunchObserved(std::string& arguments)
         if (arguments.find("v_roundsp1:") != std::string::npos && !g_S.room.rematch) {
             g_S.toRoom = true;
             g_S.toRoomAt = g_S.frame;
+        }
+        // Cooperative: a mission over (won, lost or quit), the game back at its menus: to the room
+        if (g_S.room.mode == 1 && g_S.inLevel && LaunchMap(arguments).empty()) {
+            g_S.toRoom = true;
+            g_S.toRoomAt = g_S.frame;
+            LOG_INFO("Online: the cooperative mission is over: back to the room");
         }
         LaunchMsg m = {};
         m.h = MakeHeader(Msg::Launch, g_S.token);
@@ -1416,7 +1433,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     }
     const bool host = g_S.host;
     const int pingMs = g_S.pingMs;
-    const uint8_t timeLimit = g_S.room.time;
+    const uint8_t timeLimit = g_S.room.mode == 0 ? g_S.room.time : 0; // Versus's alone
     if (host && g_S.frame % 600 == 0)
         LOG_INFO("Online: the guest's pad: %u change(s) received, read %u time(s) as player 2", g_S.remoteChanges,
             g_S.remoteReads);

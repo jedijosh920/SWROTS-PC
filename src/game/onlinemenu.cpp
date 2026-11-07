@@ -1132,6 +1132,7 @@ bool ShowYesNo(uint8_t* owner, const char* titleId, const char* messageId, bool 
 // joining" once its guest is in.
 enum class KeyboardFor { Code, Name, RoomName };
 bool GoToVersusSelect();
+bool GoToCoopSelect();
 void OpenKeyboard(KeyboardFor what);
 
 bool g_JoinNotice = false;      // the guest: a join just asked (its popup where it was asked: Public Rooms, the code)
@@ -1243,8 +1244,8 @@ char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
             LOG_INFO("Online menu: both players ready: Versus");
             GoToVersusSelect();
         } else {
-            LOG_INFO("Online menu: both players ready: Cooperative (not playable online yet)");
-            ShowNotice(handler, "Cooperative is not playable online yet.");
+            LOG_INFO("Online menu: both players ready: Cooperative");
+            GoToCoopSelect();
         }
     }
     if (row == kPubStatus)
@@ -1418,6 +1419,25 @@ bool GoToVersusSelect()
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
     return GoToShellScreen("select_jedi");
+}
+
+// Cooperative: both games to its missions' select (the Multi Player > Cooperative row's own way, 0x2CBEC0's case 3:
+// the profile's +0x31 cleared; the row asks for the mode unlocked, +0x2B6, which an online room does not), the shell
+// given both pads as for Versus.
+bool GoToCoopSelect()
+{
+    __try {
+        if (uint8_t* profile = CurrentProfile()) {
+            LOG_INFO("Online menu: Cooperative %s in the host's profile", profile[0x2B6] ? "unlocked" : "not unlocked");
+            profile[0x31] = 0;
+        }
+        if (uint8_t* shellState = *reinterpret_cast<uint8_t**>(uintptr_t(0x007F33F0))) {
+            *reinterpret_cast<int*>(shellState + 0x414) = 0;
+            *reinterpret_cast<int*>(shellState + 0x418) = 1;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return GoToShellScreen("select_challenge");
 }
 
 char __fastcall ButtonEvent(uint8_t* handler, void*, int event, int value)
@@ -2066,7 +2086,7 @@ bool OnlineFollowsScreen(uint32_t key)
                                                  LastShellScreen() == MenuKey(kCodeScreen)))
         return false; // the guest looks at the room's settings: it stays there while the host is in the room
     return key == MenuKey(kScreenNames[kRoom]) || key == MenuKey("select_jedi") || key == 0x8DC51DC9u ||
-        key == MenuKey("select_arena");
+        key == MenuKey("select_arena") || key == MenuKey("select_challenge");
 }
 
 bool OnlineGoToScreen(uint32_t key)
@@ -2077,6 +2097,8 @@ bool OnlineGoToScreen(uint32_t key)
         return GoToVersusSelect();
     if (key == MenuKey("select_arena"))
         return GoToShellScreen("select_arena");
+    if (key == MenuKey("select_challenge"))
+        return GoToCoopSelect();
     return false;
 }
 
