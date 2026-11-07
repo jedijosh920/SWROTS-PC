@@ -564,6 +564,23 @@ void BootInit(const void* launchData)
     SchedBoot(); // the deterministic scheduler, when a netplay match asked for it
     if (!launchData && !g_PendingLaunchData.empty())
         launchData = g_PendingLaunchData.data();
+    // Unattended tests (SWROTS_TEST_NOMOVIES): the first start as with the boot switches that leave out the licence
+    // movies and let the others be skipped, instead of a start as from the dashboard.
+    static bool firstBoot = true;
+    static std::vector<uint8_t> testLaunch;
+    if (!launchData && firstBoot && GetEnvironmentVariableA("SWROTS_TEST_NOMOVIES", nullptr, 0)) {
+        testLaunch.assign(4096, 0);
+        const uint32_t certificate = *reinterpret_cast<const uint32_t*>(uintptr_t(0x10118));
+        const uint32_t title = *reinterpret_cast<const uint32_t*>(uintptr_t(certificate + 8));
+        std::memcpy(testLaunch.data() + 4, &title, 4);
+        const char path[] = "d:\\default.xbe";
+        std::memcpy(testLaunch.data() + 8, path, sizeof path);
+        const char args[] = "playlicensemovie:0 allowskipmovie:1 allowgameskipmovie:1";
+        std::memcpy(testLaunch.data() + 0x400, args, sizeof args);
+        launchData = testLaunch.data();
+        LOG_INFO("Tests: the first start without the licence movies");
+    }
+    firstBoot = false;
     LaunchDataPage = nullptr;
     g_BootArguments.clear();
     if (launchData) {
