@@ -1033,15 +1033,28 @@ uint8_t* NoticeOwnerFor(uint8_t* owner)
     return reinterpret_cast<uint8_t*>(&g_NoticeOwner);
 }
 
-// A row's event while a notice is up: the notice's (true: taken).
-bool NoticeTakes(int event, int value)
+// Whether a notice of the port's is up: shown on this screen, owned by the stand-in, not closed (the game's restarts
+// take it away with their screens: InstallOnlineMenu forgets it).
+bool NoticeOpen()
 {
     if (!g_OpenNotice)
         return false;
-    if (LastShellScreen() != g_OpenNoticeScreen) { // its screen is gone: so is it
-        g_OpenNotice = nullptr;
-        return false;
+    bool open = LastShellScreen() == g_OpenNoticeScreen;
+    __try {
+        open = open && *reinterpret_cast<uint8_t**>(g_OpenNotice + 0xA4) == reinterpret_cast<uint8_t*>(&g_NoticeOwner);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        open = false;
     }
+    if (!open)
+        g_OpenNotice = nullptr;
+    return open;
+}
+
+// A row's event while a notice is up: the notice's (true: taken).
+bool NoticeTakes(int event, int value)
+{
+    if (!NoticeOpen())
+        return false;
     if (event == kChosen || event == kB) {
         __try {
             reinterpret_cast<ItemEventFn>((*reinterpret_cast<void* const* const*>(g_OpenNotice))[4])(g_OpenNotice,
@@ -1194,7 +1207,7 @@ void ReadyLegend(uint8_t* handler)
     LabelAsText(handler, "readytext", "IDS_PORT_LEGEND_READY");
     input::GamePad pad = {};
     input::ReadLivePad(0, pad);
-    const bool down = pad.analog[2] > 0x40 && !g_OpenNotice; // X (not under a notice)
+    const bool down = pad.analog[2] > 0x40 && !NoticeOpen(); // X (not under a notice)
     const ULONGLONG now = GetTickCount64();
     if (now - g_ReadySeenAt > 300) // the room just came: a press already held is not one
         g_ReadyHeld = true;
@@ -2284,6 +2297,7 @@ void InstallOnlineMenu()
     SetMenuText("IDS_PORT_NOTICE_TEXT", L"");
     SetMenuText("IDS_PORT_ONLINE_ENTER_CODE", L"Enter the Room Code");
     g_PasteDown = false;
+    g_OpenNotice = nullptr; // the last start's screens are gone, its popups with them
     for (int i = 0; i < kPictureCount; ++i) { // the last start's pictures are gone with it
         g_Pictures[i] = nullptr;
         g_PicturesTried[i] = false;
