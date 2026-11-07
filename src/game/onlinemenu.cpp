@@ -840,8 +840,7 @@ bool ShowYesNo(uint8_t* owner, const char* titleId, const char* messageId, bool 
             return false;
         reinterpret_cast<void(__fastcall*)(uint8_t*, void*, uint8_t*, int)>(
             (*reinterpret_cast<void* const* const*>(popup))[0x6C / 4])(popup, nullptr, owner, 0);
-        if (yesFirst)
-            popup[0x86] = 1; // the cursor on Yes (its choice: 1 Yes, which its close reads)
+        (void)yesFirst; // the game's popup opens on No (its own choice)
         reinterpret_cast<void(__fastcall*)(uint8_t*, void*, const void*)>(uintptr_t(kPopupTitle))(popup, nullptr,
             GameText(titleId));
         reinterpret_cast<void(__fastcall*)(uint8_t*, void*, const void*)>(uintptr_t(kPopupMessage))(popup, nullptr,
@@ -1492,20 +1491,23 @@ bool BuildCodeScreen(std::vector<uint8_t>& data)
     std::vector<uint8_t> text(data.begin() + textBegin, data.begin() + textEnd);
     size_t e = icon.size();
     MenuReplaceString(icon, 0, e, "backbutton", "pastebutton");
-    icon[18 + 11 + 82] = std::strcmp(mode, "icon0") == 0 ? 0 : std::strcmp(mode, "icon3") == 0 ? 3 : 1; // Y
+    icon[18 + 11 + 82] = std::strcmp(mode, "icon0") == 0 ? 0 : std::strcmp(mode, "icon3") == 0 ? 3 :
+        std::strcmp(mode, "icon2") == 0 ? 2 : 1; // Y
     e = text.size();
     MenuReplaceString(text, 0, e, "cancel", "pastetext");
     e = text.size();
     if (!MenuReplaceString(text, 0, e, "IDS_BACK", "IDS_PORT_ONLINE_PASTE"))
         return true;
     // the new prompt after the Back text; then the places, from the right: Back 485/518, Paste 375/408, Select 265/298
+    // test modes: y (the icon and the text), text (the text alone), icon / icon0 / icon2 / icon3 (the icon alone)
+    const bool iconOnly = std::strncmp(mode, "icon", 4) == 0, textOnly = std::strcmp(mode, "text") == 0;
     std::vector<uint8_t> both;
-    if (std::strcmp(mode, "text") != 0)
+    if (!textOnly)
         both = icon;
-    if (std::strcmp(mode, "icon3") != 0)
+    if (!iconOnly)
         both.insert(both.end(), text.begin(), text.end());
     data.insert(data.begin() + textEnd, both.begin(), both.end());
-    g_PastePrompt = std::strcmp(mode, "text") != 0 && std::strcmp(mode, "icon3") != 0;
+    g_PastePrompt = !iconOnly && !textOnly;
     const struct { const char* name; float x; } places[] = { { "selectbutton", 262 }, { "select", 295 },
         { "pastebutton", 375 }, { "pastetext", 408 }, { "backbutton", 488 }, { "cancel", 521 } };
     for (const auto& p : places) {
@@ -1519,7 +1521,7 @@ bool BuildCodeScreen(std::vector<uint8_t>& data)
     std::memcpy(&firstLength, data.data() + 4 + nameLength, 4);
     const size_t countAt = 4 + nameLength + 4 + firstLength;
     std::memcpy(&items, data.data() + countAt, 4);
-    items += std::strcmp(mode, "text") == 0 || std::strcmp(mode, "icon3") == 0 ? 1 : 2;
+    items += iconOnly || textOnly ? 1 : 2;
     std::memcpy(data.data() + countAt, &items, 4);
     return true;
 }
