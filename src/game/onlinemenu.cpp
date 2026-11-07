@@ -859,11 +859,21 @@ enum class KeyboardFor { Code, Name, RoomName };
 bool GoToVersusSelect();
 void OpenKeyboard(KeyboardFor what);
 
-bool g_JoinNotice = false;      // the guest: a join just asked (its popup at the room)
+bool g_JoinNotice = false;      // the guest: a join just asked (its popup where it was asked: Public Rooms, the code)
+bool g_JoinWatch = false;       // and its end watched there (a join that fails: the game's popup says why)
 bool g_GuestNoticeShown = false; // the host: its popup shown for this guest
-void ShowRoomNotice(uint8_t* handler)
+void ShowRoomNotice(uint8_t* handler, const char* popupName = "DefaultPopup")
 {
     const net::OnlineStatusInfo s = net::OnlineStatus();
+    if (g_JoinWatch && (s.matchOn || s.host)) {
+        g_JoinWatch = false;
+    } else if (g_JoinWatch && s.phase == net::OnlinePhase::Ended) {
+        g_JoinWatch = g_JoinNotice = false;
+        LOG_INFO("Online menu: the join failed: %s", s.message.c_str());
+        ShowNotice(handler, Shorten(s.message.empty() ? std::string("The room could not be joined.") : s.message, 60),
+            popupName);
+        return;
+    }
     const bool settingUp = s.phase == net::OnlinePhase::Connecting || s.phase == net::OnlinePhase::Preparing ||
         s.phase == net::OnlinePhase::Starting;
     if (!s.host && g_JoinNotice && settingUp) {
@@ -871,7 +881,7 @@ void ShowRoomNotice(uint8_t* handler)
         const std::string room = !s.room.name[0] ? g_PendingJoinName : std::string(s.room.name);
         SetMenuText("IDS_PORT_JOINING_TEXT", Wide(room.empty() ? std::string("Joining the room...") :
             "Joining " + Shorten(room, 24) + "..."));
-        ShowPopup(handler, "IDS_PORT_JOINING_TITLE", "IDS_PORT_JOINING_TEXT");
+        ShowPopup(handler, "IDS_PORT_JOINING_TITLE", "IDS_PORT_JOINING_TEXT", popupName);
     }
     if (!settingUp && s.phase != net::OnlinePhase::Playing)
         g_JoinNotice = g_JoinNotice && s.phase == net::OnlinePhase::Off; // a join that ended: nothing to say
@@ -903,6 +913,8 @@ char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
         LOG_INFO("Online menu: both players ready: Versus");
         GoToVersusSelect();
     }
+    if (row == kPubStatus)
+        ShowRoomNotice(handler);
     if (row == kMode) {
         ShowRoomNotice(handler);
         TitleAsRoomName(handler);
@@ -1283,8 +1295,10 @@ void __fastcall KeyboardDraw(uint8_t* keyboard, void*, uint32_t value)
     if (down && !g_PasteDown)
         Paste(keyboard);
     g_PasteDown = down;
-    if (!g_KeyboardForName)
+    if (!g_KeyboardForName) {
         g_CodeKeyboardAt = GetTickCount64();
+        ShowRoomNotice(keyboard, "popup"); // a join asked here: its popup (the code screen's own)
+    }
     DisableRefusedKeys(keyboard);
     reinterpret_cast<void(__fastcall*)(uint8_t*, void*, uint32_t)>(uintptr_t(kKeyboardDraw))(keyboard, nullptr, value);
 }
@@ -1394,10 +1408,9 @@ void __fastcall KeyboardDone(uint8_t* keyboard, void*)
         g_Note = Shorten(net::OnlineStatus().message, 60);
     reinterpret_cast<void(__fastcall*)(uint8_t*, void*)>(uintptr_t(kKeyboardClear))(keyboard, nullptr);
     UpdateTexts();
-    if (g_Note.empty()) {
+    if (g_Note.empty()) { // the game's popup here while joining (both games then restart, to the room)
         g_PendingJoinName.clear();
-        g_JoinNotice = true;
-        GoToShellScreen(kScreenNames[kRoom]);
+        g_JoinNotice = g_JoinWatch = true;
     } else {
         ShowNotice(keyboard, g_Note, "popup"); // the code screen's own popup (its item "popup")
     }
@@ -1688,10 +1701,8 @@ void __fastcall PopupYes(uint8_t* handler, void*)
     g_Typed = code.substr(0, 5) + "-" + code.substr(5, 5) + "-" + code.substr(10);
     g_Note.clear();
     LOG_INFO("Online menu: joining the public room %s", g_Typed.c_str());
-    if (net::OnlineJoin(code)) {
-        g_JoinNotice = true;
-        GoToShellScreen(kScreenNames[kRoom]);
-    }
+    if (net::OnlineJoin(code)) // the game's popup here while joining (both games then restart, to the room)
+        g_JoinNotice = g_JoinWatch = true;
     else
         ShowNotice(handler, Shorten(net::OnlineStatus().message, 60));
 }
