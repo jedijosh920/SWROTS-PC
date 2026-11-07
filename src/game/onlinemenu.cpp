@@ -44,6 +44,8 @@ namespace swrots::game {
 
 namespace {
 
+void CoopAllUnlocked(bool all); // (the online Cooperative select's missions, all unlocked or the game's own lock)
+
 constexpr const char* kRowName = "online";
 constexpr const char* kRowText = "IDS_PORT_ONLINE";
 constexpr const char* kCodeScreen = "online_code";
@@ -1250,6 +1252,8 @@ char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
     }
     if (row == kPubStatus)
         ShowRoomNotice(handler);
+    if (row == kMode)
+        CoopAllUnlocked(false); // (the online select's missions all unlocked: the game's own lock again)
     if (row == kMode && net::OnlineTakeDrawEnd())
         ShowNotice(handler, "Three draws: the match is over.");
     if (row == kMode) {
@@ -1421,6 +1425,28 @@ bool GoToVersusSelect()
     return GoToShellScreen("select_jedi");
 }
 
+// Online, every Cooperative mission can be played (whatever the host's profile has unlocked; nothing saved): the
+// select's list takes each mission's lock from the profile as it is built (ChallengeList's slot 5, 0x2D40D0: at
+// 0x2D41E3 `mov dl, [profile + mission + 0x2B6]; test dl, dl; setne dl`, its Unlocked), which the port makes
+// `mov dl, 1` for the online select, and gives back as the room or the main menu is up again.
+constexpr uint32_t kCoopUnlockedAt = 0x002D41E3;
+constexpr uint8_t kCoopUnlockedGame[12] = { 0x8A, 0x94, 0x01, 0xB6, 0x02, 0x00, 0x00, 0x84, 0xD2, 0x0F, 0x95, 0xC2 };
+constexpr uint8_t kCoopUnlockedAll[12] = { 0xB2, 0x01, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 };
+bool g_CoopAllUnlocked = false;
+
+void CoopAllUnlocked(bool all)
+{
+    if (all == g_CoopAllUnlocked)
+        return;
+    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kCoopUnlockedAt)), all ? kCoopUnlockedGame : kCoopUnlockedAll,
+            sizeof kCoopUnlockedGame) != 0) {
+        LOG_WARN("Online menu: the Cooperative select's lock is not as expected; left as it is");
+        return;
+    }
+    PatchBytes(kCoopUnlockedAt, all ? kCoopUnlockedAll : kCoopUnlockedGame, sizeof kCoopUnlockedGame);
+    g_CoopAllUnlocked = all;
+}
+
 // Cooperative: both games to its missions' select (the Multi Player > Cooperative row's own way, 0x2CBEC0's case 3:
 // the profile's +0x31 cleared; the row asks for the mode unlocked, +0x2B6, which an online room does not), the shell
 // given both pads as for Versus.
@@ -1431,6 +1457,7 @@ bool GoToCoopSelect()
             LOG_INFO("Online menu: Cooperative %s in the host's profile", profile[0x2B6] ? "unlocked" : "not unlocked");
             profile[0x31] = 0;
         }
+        CoopAllUnlocked(true);
         if (uint8_t* shellState = *reinterpret_cast<uint8_t**>(uintptr_t(0x007F33F0))) {
             *reinterpret_cast<int*>(shellState + 0x414) = 0;
             *reinterpret_cast<int*>(shellState + 0x418) = 1;
@@ -2203,6 +2230,7 @@ char __fastcall MainButtonDraw(uint8_t* handler, void*, uint32_t value)
         g_LostPopup = false;
         ShowPopup(handler, "IDS_PORT_LOST_TITLE", "IDS_PORT_LOST_TEXT");
     }
+    CoopAllUnlocked(false);
     return reinterpret_cast<DrawFn>(uintptr_t(g_PrevMainButtonDraw))(handler, nullptr, value);
 }
 
@@ -2320,6 +2348,7 @@ void InstallOnlineMenu()
     SetMenuText("IDS_PORT_ONLINE_ENTER_CODE", L"Enter the Room Code");
     g_PasteDown = false;
     g_OpenNotice = nullptr; // the last start's screens are gone, its popups with them
+    g_CoopAllUnlocked = false; // (a new start: the game's own code)
     for (int i = 0; i < kPictureCount; ++i) { // the last start's pictures are gone with it
         g_Pictures[i] = nullptr;
         g_PicturesTried[i] = false;
