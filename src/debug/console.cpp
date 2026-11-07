@@ -1060,6 +1060,12 @@ void Online(const std::vector<std::string>& words)
         room.rematch = uint8_t(std::atoi(words[4].c_str()) ? 1 : 0);
         room.open = uint8_t(words.size() > 5 && std::atoi(words[5].c_str()) ? 1 : 0); // [public 0|1]
         net::SetOnlineRoom(room);
+    } else if (_stricmp(what.c_str(), "boot") == 0) { // online boot: the main menu once, as soon as the shell is up (tests)
+        static bool done = false;
+        if (!done && game::GoToShellScreen("main_menu")) {
+            done = true;
+            Print(LineKind::Output, "  to the main menu");
+        }
     } else if (_stricmp(what.c_str(), "keyboard") == 0) { // online keyboard: the room code's keyboard (tests)
         game::OnlineOpenCodeKeyboard();
     } else if (_stricmp(what.c_str(), "ready") == 0) { // online ready [0|1]: this player's Ready in the room
