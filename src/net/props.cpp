@@ -99,7 +99,7 @@ void ScanRange(uintptr_t from, size_t size, std::vector<uint8_t*>& out)
             if (first < kCodeFrom || first >= kCodeTo)
                 continue;
             const uint32_t id = *reinterpret_cast<const uint32_t*>(a + 4);
-            if (!id || id > 0x00FFFFFF)
+            if (!id || (id & ~0x40000000u) > 0x00FFFFFF) // (a level's own; those made during it: from 0x40000000)
                 continue;
             if (ObjectById(id) == reinterpret_cast<uint8_t*>(a))
                 out.push_back(reinterpret_cast<uint8_t*>(a));
@@ -161,7 +161,7 @@ void ScanPropsLocked()
     std::map<std::string, int> classes;
     for (uint8_t* o : objects) {
         Prop p;
-        if (!ClassNameRaw(o, p.cls) || !IsProp(p.cls))
+        if ((IdOf(o) & 0x40000000u) || !ClassNameRaw(o, p.cls) || !IsProp(p.cls)) // (a level's own: the same ids)
             continue;
         p.object = o;
         p.id = IdOf(o);
@@ -294,184 +294,164 @@ std::string PropsStats()
 
 namespace {
 
+// A Cooperative mission's characters (other than the players). A level's own keep their instance id on both games;
+// those spawned during the mission have ids from 0x40000000 on, given in order to every object made (each blaster bolt
+// takes one), so not the same on both games: their key is their class and their rank among that class's spawned ones
+// (the same spawns, in the same order, on both games: the players' places decide them).
+constexpr uint32_t kSpawnedIds = 0x40000000;
 struct Character {
     uint8_t* object = nullptr;
     uint32_t id = 0;
-    bool byId = true; // the manager finds it by its id (else: seen in a fight only)
+    uint32_t key = 0;
 };
-std::vector<Character> g_Chars;
+std::unordered_map<uint32_t, Character> g_CharById;
+std::unordered_map<uint32_t, uint32_t> g_CharIdByKey;
+std::map<std::string, uint32_t> g_SpawnRank;
+std::vector<uint32_t> g_CharOrder; // the ids, for the host's turns
 bool g_CharsScanned = false;
-uint32_t g_ProbeFrom = 0, g_ProbeCalls = 0;
+uint32_t g_StaticMax = 0, g_SpawnedMax = kSpawnedIds, g_CharFrames = 0;
 size_t g_CharNext = 0;
 
-// The object manager ([[0x68D944]+0x58]; 0xB4CC0 finds an object by its id): besides its id map (+0x340), three
-// lists it looks through in turn: +0x3F0 count, +0x3F4 objects; +0x3B4 count, +0x3B8 (id, object) pairs; +0x35C count,
-// +0x360 objects. Characters spawned during a level (a mission's enemies, made from its templates) are found there.
-void ListedObjectsRaw(std::vector<uint8_t*>& out, int (&counts)[3])
+uint32_t ClassHash(const char* name)
 {
-    counts[0] = counts[1] = counts[2] = 0;
-    __try {
-        const uint8_t* root = *reinterpret_cast<uint8_t* const*>(uintptr_t(0x0068D944));
-        const uint8_t* m = root ? *reinterpret_cast<uint8_t* const*>(root + 0x58) : nullptr;
-        if (!m)
-            return;
-        const int n0 = *reinterpret_cast<const int*>(m + 0x3F0);
-        uint8_t* const* a0 = *reinterpret_cast<uint8_t* const* const*>(m + 0x3F4);
-        for (int i = 0; a0 && i < n0 && i < 8192; ++i)
-            out.push_back(a0[i]);
-        const int n1 = *reinterpret_cast<const int*>(m + 0x3B4);
-        const uint32_t* a1 = *reinterpret_cast<const uint32_t* const*>(m + 0x3B8);
-        for (int i = 0; a1 && i < n1 && i < 8192; ++i)
-            out.push_back(reinterpret_cast<uint8_t*>(uintptr_t(a1[2 * i + 1])));
-        const int n2 = *reinterpret_cast<const int*>(m + 0x35C);
-        uint8_t* const* a2 = *reinterpret_cast<uint8_t* const* const*>(m + 0x360);
-        for (int i = 0; a2 && i < n2 && i < 8192; ++i)
-            out.push_back(a2[i]);
-        counts[0] = n0;
-        counts[1] = n1;
-        counts[2] = n2;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
+    uint32_t h = 2166136261u;
+    for (; name && *name; ++name)
+        h = (h ^ uint8_t(*name)) * 16777619u;
+    return h;
 }
 
 void AddCharacter(uint8_t* o, uint32_t id, const uint8_t* p1, const uint8_t* p2)
 {
-    if (!o || !id)
+    if (!o || !id || o == p1 || o == p2 || g_CharById.count(id) || !IsCharacter(o))
         return;
-    if (o == p1 || o == p2 || !IsCharacter(o))
-        return;
-    for (const Character& c : g_Chars)
-        if (c.id == id)
-            return;
     char cls[48];
     ClassNameRaw(o, cls);
-    if (g_Chars.size() < 400 || g_Chars.size() % 50 == 0)
-        LOG_INFO("Online: character %u (%s) followed", id, cls);
-    g_Chars.push_back({ o, id });
+    uint32_t key = id;
+    if (id & kSpawnedIds) {
+        const uint32_t rank = g_SpawnRank[cls]++;
+        key = 0x80000000u | (ClassHash(cls) & 0x7FFF) << 16 | (rank & 0xFFFF);
+    }
+    g_CharById[id] = { o, id, key };
+    g_CharIdByKey[key] = id;
+    g_CharOrder.push_back(id);
+    if (g_CharById.size() < 300)
+        LOG_INFO("Online: character %u (%s) followed as %08X", id, cls, key);
+}
+
+// The ids after the last known (`from` to `to`), in order.
+void ProbeIds(uint32_t from, uint32_t to, uint32_t& max, const uint8_t* p1, const uint8_t* p2)
+{
+    for (uint32_t id = from; id < to; ++id) {
+        uint8_t* o = ObjectById(id);
+        if (!o)
+            continue;
+        max = std::max(max, id);
+        AddCharacter(o, id, p1, p2);
+    }
 }
 
 } // namespace
 
 void CharactersReset()
 {
-    g_Chars.clear();
+    g_CharById.clear();
+    g_CharIdByKey.clear();
+    g_SpawnRank.clear();
+    g_CharOrder.clear();
     g_CharsScanned = false;
-    g_ProbeFrom = 0;
-    g_ProbeCalls = 0;
+    g_StaticMax = 0;
+    g_SpawnedMax = kSpawnedIds;
+    g_CharFrames = 0;
     g_CharNext = 0;
 }
 
 size_t CharactersKnown()
 {
-    return g_Chars.size();
+    return g_CharById.size();
 }
 
-std::string DescribeCharacters(size_t max)
-{
-    std::vector<Character> list = g_Chars;
-    std::sort(list.begin(), list.end(), [](const Character& a, const Character& b) { return a.id < b.id; });
-    std::string line;
-    size_t n = 0;
-    for (size_t i = 0; i < list.size() && n < max; ++i)
-        if (CharacterActive(list[i].object)) {
-            line += DescribeCharacter(list[i].id, list[i].object) + "; ";
-            ++n;
-        }
-    return line;
-}
-
-static uint32_t VtableOf(const uint8_t* object)
-{
-    uint32_t vtable = 0;
-    __try {
-        vtable = *reinterpret_cast<const uint32_t*>(object);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
-    return vtable;
-}
-
-void CharacterSeen(uint8_t* character, const uint8_t* player1, const uint8_t* player2, const char* how)
-{
-    if (!character || character == player1 || character == player2)
-        return;
-    for (const Character& c : g_Chars)
-        if (c.object == character)
-            return;
-    const uint32_t id = IdOf(character);
-    uint8_t* found = id ? ObjectById(id) : nullptr;
-    const uint32_t vtable = VtableOf(character);
-    char cls[48];
-    ClassNameRaw(character, cls);
-    static int logged = 0;
-    if (logged++ < 60)
-        LOG_INFO("Online: a character %s: %08X vtable %08X id %u (the manager's by that id: %08X) %s, character %d: %s",
-            how, uint32_t(uintptr_t(character)), vtable, id, uint32_t(uintptr_t(found)), cls, IsCharacter(character) ? 1 : 0,
-            DescribeCharacter(id, character).c_str());
-    if (!IsCharacter(character) || !id)
-        return;
-    g_Chars.push_back({ character, id, found == character });
-}
-
-uint8_t* ObjectOfId(uint32_t id)
-{
-    return id ? ObjectById(id) : nullptr;
-}
-
-int CharactersCapture(const uint8_t* player1, const uint8_t* player2, uint32_t* ids, uint8_t** objects, int max)
+void CharactersUpdate(const uint8_t* player1, const uint8_t* player2)
 {
     if (!g_CharsScanned) {
         g_CharsScanned = true;
         const ULONGLONG start = GetTickCount64();
-        const std::vector<uint8_t*> all = ScanObjects();
-        for (uint8_t* o : all) {
-            const uint32_t id = IdOf(o);
-            g_ProbeFrom = std::max(g_ProbeFrom, id + 1);
+        std::vector<std::pair<uint32_t, uint8_t*>> all;
+        for (uint8_t* o : ScanObjects())
+            all.push_back({ IdOf(o), o });
+        std::sort(all.begin(), all.end()); // (the spawned ones' ranks: in their order)
+        for (const auto& [id, o] : all) {
+            if (id & kSpawnedIds)
+                g_SpawnedMax = std::max(g_SpawnedMax, id);
+            else
+                g_StaticMax = std::max(g_StaticMax, id);
             AddCharacter(o, id, player1, player2);
         }
-        LOG_INFO("Online: %zu character(s) among %zu objects (%llu ms); new ones from id %u", g_Chars.size(), all.size(),
-            GetTickCount64() - start, g_ProbeFrom);
+        LOG_INFO("Online: %zu character(s) among %zu objects (%llu ms); the last ids %u, %u", g_CharById.size(),
+            all.size(), GetTickCount64() - start, g_StaticMax, g_SpawnedMax);
     }
-    if (g_ProbeCalls % 30 == 0) { // the manager's lists: the characters spawned
-        std::vector<uint8_t*> listed;
-        int counts[3];
-        ListedObjectsRaw(listed, counts);
-        const size_t before = g_Chars.size();
-        for (uint8_t* o : listed)
-            if (o && ObjectById(IdOf(o)) == o)
-                AddCharacter(o, IdOf(o), player1, player2);
-        static int logged = 0;
-        if ((g_Chars.size() != before || logged == 0) && logged++ < 40)
-            LOG_INFO("Online: the object manager's lists: %d, %d, %d object(s); %zu character(s) now", counts[0],
-                counts[1], counts[2], g_Chars.size());
-    }
-    if (++g_ProbeCalls % 30 == 0 && g_ProbeFrom) { // the new objects: ids after the last one known
-        const uint32_t from = g_ProbeFrom;
-        for (uint32_t id = from; id < from + 512; ++id) {
-            uint8_t* o = ObjectById(id);
-            if (!o)
-                continue;
-            g_ProbeFrom = id + 1;
-            AddCharacter(o, id, player1, player2);
+    if (++g_CharFrames % 30)
+        return;
+    // every half second: those gone, then the new ones (the ids after the last known: a few thousand lookups)
+    for (auto it = g_CharById.begin(); it != g_CharById.end();) {
+        if (ObjectById(it->first) != it->second.object) {
+            g_CharIdByKey.erase(it->second.key);
+            it = g_CharById.erase(it);
+        } else {
+            ++it;
         }
     }
-    g_Chars.erase(std::remove_if(g_Chars.begin(), g_Chars.end(),
-                      [](const Character& c) {
-                          return c.byId ? ObjectById(c.id) != c.object : !IsCharacter(c.object) || IdOf(c.object) != c.id;
-                      }),
-        g_Chars.end());
+    g_CharOrder.erase(std::remove_if(g_CharOrder.begin(), g_CharOrder.end(),
+                          [](uint32_t id) { return !g_CharById.count(id); }),
+        g_CharOrder.end());
+    ProbeIds(g_StaticMax + 1, g_StaticMax + 256, g_StaticMax, player1, player2);
+    ProbeIds(std::max(kSpawnedIds + 1, g_SpawnedMax > kSpawnedIds + 2048 ? g_SpawnedMax - 2048 : kSpawnedIds + 1),
+        g_SpawnedMax + 4096, g_SpawnedMax, player1, player2);
+}
+
+int CharactersCapture(uint32_t* keys, uint8_t** objects, int max)
+{
     int count = 0;
-    const size_t n = g_Chars.size();
-    for (size_t k = 0; k < n && count < max; ++k) {
-        const Character& c = g_Chars[(g_CharNext + k) % n];
-        if (c.object == player1 || c.object == player2)
-            continue;
-        ids[count] = c.id;
+    const size_t n = g_CharOrder.size();
+    size_t k = 0;
+    for (; k < n && count < max; ++k) {
+        const Character& c = g_CharById[g_CharOrder[(g_CharNext + k) % n]];
+        if (ObjectById(c.id) != c.object || !CharacterActive(c.object))
+            continue; // (gone since, or a level's template: it plays nothing)
+        keys[count] = c.key;
         objects[count] = c.object;
         ++count;
     }
     if (n)
-        g_CharNext = (g_CharNext + size_t(count)) % n;
+        g_CharNext = (g_CharNext + k) % n;
     return count;
+}
+
+uint8_t* CharacterByKey(uint32_t key)
+{
+    const auto k = g_CharIdByKey.find(key);
+    if (k == g_CharIdByKey.end())
+        return nullptr;
+    const auto c = g_CharById.find(k->second);
+    if (c == g_CharById.end() || ObjectById(c->first) != c->second.object)
+        return nullptr;
+    return c->second.object;
+}
+
+std::string DescribeCharacters(size_t max)
+{
+    std::vector<uint32_t> keys;
+    for (const auto& [id, c] : g_CharById)
+        if (ObjectById(id) == c.object && CharacterActive(c.object))
+            keys.push_back(c.key);
+    std::sort(keys.begin(), keys.end());
+    std::string line;
+    for (size_t i = 0; i < keys.size() && i < max; ++i) {
+        const Character& c = g_CharById[g_CharIdByKey[keys[i]]];
+        char k[16];
+        std::snprintf(k, sizeof(k), "%08X ", c.key);
+        line += k + DescribeCharacter(c.id, c.object) + "; ";
+    }
+    return line;
 }
 
 std::string ObjectsCommand(const std::string& verb, const std::string& cls, float amount)

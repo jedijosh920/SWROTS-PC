@@ -600,13 +600,19 @@ the main menu is (nothing written to the profile). A mission is then followed as
 game's player slots: their states, the props).
 
 Both games load the same objects with the same instance ids (`objects list`: 209 objects, the same ids, in Cruiser
-Cargo Hold). The mission's other characters (enemies, allies: an object whose +0x434 is a CharState) are the host's:
-the host finds them at the mission's start (one full scan) and the new ones as they come (the 512 ids after the last
-one known, every half second; ids are given in order), and sends five a frame in turn (`Chars`, protocol 9: each a
-fighter's state, its id). The guest writes each into its own of that id as it does the other player's fighter (its
-place, its sequence where it went its own way, its health through the game's own change: its death the game's), and
-keeps its own damage to them out (the host's hits decide). Every two seconds both games log the four lowest ids' place
-and health (`characters, frame`), to compare.
+Cargo Hold), but these are only the level's own: its characters there are templates (no sequence, no health, out of
+sight). The enemies met are spawned from them during the mission, with ids from 0x40000000 on, given in order to every
+object made (each blaster bolt, an `IDeflectionProjectile`, takes one), so not the same on both games; the object
+manager's lists (+0x3F0, +0x3B4, +0x35C, which its lookup by id, 0xB4CC0, goes through after its map) were empty.
+
+The mission's other characters (an object whose +0x434 is a CharState, other than the players) are therefore known on
+both games by a key: a level's own by its id, a spawned one by its class and its rank among that class's spawned ones
+(the same spawns in the same order on both games: the players' places decide them). Both games find them at the
+mission's start (one full scan) and the new ones every half second (the ids after the last known: a few thousand
+lookups). The host sends five a frame in turn (`Chars`, protocol 9: each a fighter's state and its key); the guest
+writes each into its own of that key as it does the other player's fighter (its place, its sequence where it went its
+own way, its health through the game's own change: its death the game's), and keeps its own damage to them out (the
+host's hits decide). Every two seconds both games log the four lowest keys' place and health (`characters, frame`).
 
 ### Phases
 

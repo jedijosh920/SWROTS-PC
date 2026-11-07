@@ -207,7 +207,7 @@ struct PropsMsg {
 // A Cooperative mission's other characters on the host's game (enemies, allies), a few a frame in turn.
 constexpr int kCharsPerMsg = 5;
 struct CharState {
-    uint32_t id; // the character's instance id (the same on both games: the same level)
+    uint32_t key; // the character's key on both games (props.h: its instance id, or its class and spawn rank)
     FighterState state;
 };
 struct CharsMsg {
@@ -1161,18 +1161,7 @@ bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
 std::atomic<uint8_t*> g_GuestFighters[2] = {};
 // The guest's Cooperative characters following the host's (their damage the host's too).
 std::unordered_set<uint8_t*> g_GuestFollowed;
-std::map<uint32_t, uint8_t*> g_GuestCharIds; // (diagnostics: by id)
-
-// A Cooperative mission: the characters in a fight (the hits' attackers, those hit) are followed (the host's; the
-// guest's are logged, to compare).
-uint8_t* g_HostPlayers[2] = {};
-void HostDamageSeen(uint8_t* character, float change, uint32_t source, uint8_t* attacker)
-{
-    (void)change;
-    (void)source;
-    CharacterSeen(character, g_HostPlayers[0], g_HostPlayers[1], "hit");
-    CharacterSeen(attacker, g_HostPlayers[0], g_HostPlayers[1], "hitting");
-}
+std::unordered_set<uint32_t> g_GuestKeys; // their keys (the set above made again from them: gone ones out)
 
 float GuestDamage(uint8_t* character, float change)
 {
@@ -1501,24 +1490,17 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             CharactersReset();
             ApplyCharactersReset();
             g_GuestFollowed.clear();
-            g_GuestCharIds.clear();
+            g_GuestKeys.clear();
             std::lock_guard<std::mutex> relock(g_S.lock);
             g_S.matchDraws = 0;
             g_S.drawEndAt = {};
         }
         wasDuel = duel;
     }
-    g_HostPlayers[0] = duel ? fighters[0] : nullptr; // a Cooperative mission's fights (both games: diagnostics)
-    g_HostPlayers[1] = duel ? fighters[1] : nullptr;
-    {
-        static bool observing = false;
-        if (duel && coopMission && !observing) {
-            game::SetDamageObserver(&HostDamageSeen);
-            observing = true;
-        } else if ((!duel || !coopMission) && observing) {
-            game::SetDamageObserver(nullptr);
-            observing = false;
-        }
+    if (duel && coopMission) { // a Cooperative mission's other characters: known on both games (props.h)
+        CharactersUpdate(fighters[0], fighters[1]);
+        if (frame % 120 == 0)
+            LOG_INFO("Online: characters, frame %u: %s", frame, DescribeCharacters(4).c_str());
     }
     if (duel && frame % 120 == 0) { // diagnostics: both fighters' places on both games (a small one's, Yoda's)
         static uint32_t described = 0;
@@ -1604,14 +1586,14 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             LOG_INFO("Online: %s", PropsStats().c_str());
         if (coopMission && m.seq > 30) { // the mission's other characters: a few a frame, in turn
             CharsMsg cm = {};
-            uint32_t ids[kCharsPerMsg] = {};
+            uint32_t keys[kCharsPerMsg] = {};
             uint8_t* objects[kCharsPerMsg] = {};
-            const int n = CharactersCapture(fighters[0], fighters[1], ids, objects, kCharsPerMsg);
+            const int n = CharactersCapture(keys, objects, kCharsPerMsg);
             int count = 0;
             for (int i = 0; i < n; ++i) {
-                cm.chars[count].id = ids[i];
-                if (CaptureFighter(objects[i], cm.chars[count].state) && cm.chars[count].state.seq >= 0)
-                    ++count; // (not a level's template, which plays nothing)
+                cm.chars[count].key = keys[i];
+                if (CaptureFighter(objects[i], cm.chars[count].state))
+                    ++count;
             }
             if (count) {
                 cm.h = MakeHeader(Msg::Chars, g_S.token);
@@ -1622,8 +1604,6 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             }
             if (m.seq % 600 == 1)
                 LOG_INFO("Online: %zu character(s) followed, %u message(s) sent", CharactersKnown(), g_S.charsSeqOut);
-            if (frame % 120 == 0)
-                LOG_INFO("Online: characters, frame %u: %s", frame, DescribeCharacters(4).c_str());
         }
         return;
     }
@@ -1655,43 +1635,26 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     for (int i = 0; i < 2; ++i)
         ApplyFighter(i, fighters[i], state.fighters[i], lead, i == 1);
     // a Cooperative mission's other characters: the host's (the latest of each)
-    static uint32_t missing = 0, notCharacter = 0;
+    static uint32_t missing = 0;
+    if (frame % 30 == 0) { // the followed ones still there (gone ones' memory is not theirs any more)
+        g_GuestFollowed.clear();
+        for (uint32_t key : g_GuestKeys)
+            if (uint8_t* o = CharacterByKey(key))
+                g_GuestFollowed.insert(o);
+    }
     for (const CharsMsg& cm : charsIn)
         for (int i = 0; i < std::min<int>(cm.count, kCharsPerMsg); ++i) {
             const CharState& c = cm.chars[i];
-            uint8_t* o = ObjectOfId(c.id);
+            uint8_t* o = CharacterByKey(c.key);
             if (!o) {
                 if (missing++ < 40 || missing % 500 == 0)
-                    LOG_INFO("Online: the host's character %u is not in this game (%u so far)", c.id, missing);
-                continue;
-            }
-            if (o == fighters[0] || o == fighters[1] || !IsCharacter(o)) {
-                if (notCharacter++ < 20)
-                    LOG_INFO("Online: the host's character %u is another object here", c.id);
+                    LOG_INFO("Online: the host's character %08X is not in this game yet (%u so far)", c.key, missing);
                 continue;
             }
             g_GuestFollowed.insert(o);
-            g_GuestCharIds[c.id] = o;
-            ApplyCharacter(c.id, o, c.state, lead);
+            g_GuestKeys.insert(c.key);
+            ApplyCharacter(c.key, o, c.state, lead);
         }
-    if (frame % 120 == 0 && coopMission && !g_GuestCharIds.empty()) {
-        std::string line;
-        size_t n = 0;
-        for (auto it = g_GuestCharIds.begin(); it != g_GuestCharIds.end() && n < 4; ++n) {
-            if (ObjectOfId(it->first) != it->second) {
-                it = g_GuestCharIds.erase(it);
-                continue;
-            }
-            if (!CharacterActive(it->second)) {
-                ++it;
-                --n;
-                continue;
-            }
-            line += DescribeCharacter(it->first, it->second) + "; ";
-            ++it;
-        }
-        LOG_INFO("Online: characters, frame %u: %s", frame, line.c_str());
-    }
     if (frame % 600 == 0 && coopMission)
         LOG_INFO("Online: %u character state(s) applied, %zu character(s) followed, %u missing here", CharactersApplied(),
             g_GuestFollowed.size(), missing);

@@ -28,19 +28,18 @@ void PropsReceive(uint32_t frame, const PropState* props, int count, const uint3
 void PropsApply(uint32_t frame);
 std::string PropsStats();
 
-// Client/server netplay in a Cooperative mission: its other characters (enemies, allies) are the host's. The host
-// finds them at the mission's start (a full scan) and the new ones as they come (the ids after the last one known,
-// a few hundred every half second), and gives up to `max` of them a frame, in turn (net/duelstate.h's ApplyCharacter
-// on the guest).
+// Client/server netplay in a Cooperative mission: its other characters (enemies, allies) are the host's. Both games
+// keep them known (a full scan at the mission's start, then the new ones every half second): each by a key the same on
+// both games (a level's own: its instance id; one spawned during the mission: its class and its rank among that
+// class's spawned ones, as ids from 0x40000000 go to every object made and differ). The host gives up to `max` of them
+// a frame, in turn (net/duelstate.h's ApplyCharacter on the guest, by key).
 void CharactersReset();
-int CharactersCapture(const uint8_t* player1, const uint8_t* player2, uint32_t* ids, uint8_t** objects, int max);
+void CharactersUpdate(const uint8_t* player1, const uint8_t* player2);
+int CharactersCapture(uint32_t* keys, uint8_t** objects, int max);
+uint8_t* CharacterByKey(uint32_t key);
 size_t CharactersKnown();
-// A character met in a fight (a hit dealt or taken: the host's damage observer), followed from then on when it is one.
-void CharacterSeen(uint8_t* character, const uint8_t* player1, const uint8_t* player2, const char* how);
-// The host's characters followed, by id (diagnostics: the lowest `max`).
+// The characters (diagnostics: the lowest `max` keys of the active ones).
 std::string DescribeCharacters(size_t max);
-// The object of this instance id on this game, or null.
-uint8_t* ObjectOfId(uint32_t id);
 
 // The console's `objects` (research and tests): the level's objects by class (the log has each), and a prop of a
 // class moved up (`move`) or taken away (`destroy`) on this game.

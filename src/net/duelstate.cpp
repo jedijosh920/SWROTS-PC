@@ -861,7 +861,7 @@ void ApplyCharacter(uint32_t id, uint8_t* character, const FighterState& s, uint
         a.starts = s.starts;
     }
     char who[24];
-    std::snprintf(who, sizeof(who), "character %u", id);
+    std::snprintf(who, sizeof(who), "character %08X", id);
     static const Applied kNone;
     ApplyInto(who, a, kNone, character, s, leadTicks, false);
     ++g_CharsApplied;
