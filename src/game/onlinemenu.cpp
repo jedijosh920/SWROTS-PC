@@ -1749,7 +1749,7 @@ bool BuildCodeScreen(std::vector<uint8_t>& data)
 }
 
 // The room's footer: a third prompt, X Ready (its text the port's: ReadyLegend), a copy of Back's icon (its icon X, 3)
-// and text after Back's; the prompts spread again as the code screen's: Scroll, Select, Ready, Back.
+// and text after Back's; the prompts spread again: Scroll, Select, Ready, Back (Not Ready the longest).
 void ReadyPrompt(std::vector<uint8_t>& data)
 {
     size_t iconBegin, iconEnd, textBegin, textEnd;
@@ -1772,8 +1772,8 @@ void ReadyPrompt(std::vector<uint8_t>& data)
     std::vector<uint8_t> both = icon;
     both.insert(both.end(), text.begin(), text.end());
     data.insert(data.begin() + textEnd, both.begin(), both.end());
-    const struct { const char* name; float x; } places[] = { { "selectbutton", 262 }, { "select", 295 },
-        { "readybutton", 375 }, { "readytext", 408 }, { "backbutton", 488 }, { "back", 521 } };
+    const struct { const char* name; float x; } places[] = { { "selectbutton", 230 }, { "select", 263 },
+        { "readybutton", 340 }, { "readytext", 373 }, { "backbutton", 488 }, { "back", 521 } }; // room for "Not Ready"
     for (const auto& p : places) {
         size_t b, en;
         if (LeafItem(data, p.name, b, en))
