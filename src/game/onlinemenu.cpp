@@ -1503,11 +1503,11 @@ bool BuildCodeScreen(std::vector<uint8_t>& data)
         if (LeafItem(data, p.name, b, en))
             SetItemX(data, b, p.x);
     }
-    // The game's own prompt hangs the front end as made so far (2026-10-31: the shell stays on LOADING once it is in
-    // the screen: its Y picture, never loaded in the front end?); until that is understood it is only made for tests
-    // (SWROTS_TEST_PASTEMODE=y, icon0, icon3, text).
-    char mode[16] = "";
-    if (!GetEnvironmentVariableA("SWROTS_TEST_PASTEMODE", mode, sizeof(mode)))
+    // The game's own Paste prompt (Y; the key bound to Y's cap with the keyboard's prompts: prompts.cpp), Back's icon
+    // and text copied (the screen's item count: the word before its first item). SWROTS_TEST_PASTEMODE: test modes
+    // (text, icon..., -end, dup...; none: no prompt, the HUD's).
+    char mode[16] = "y";
+    if (GetEnvironmentVariableA("SWROTS_TEST_PASTEMODE", mode, sizeof(mode)) && std::strcmp(mode, "none") == 0)
         return true;
     if (std::strncmp(mode, "dup", 3) == 0) { // tests: an exact copy of an item (dup: Back's prompt after it; dup-veil:
                                              // the screen's first item after it), the count one more
