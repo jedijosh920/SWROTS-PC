@@ -660,7 +660,7 @@ constexpr int kVtableSlots = 32;
 constexpr int kChosen = 0x23, kLeft = 0x1F, kRight = 0x20, kB = 0x26;
 using DrawFn = char(__fastcall*)(uint8_t*, void*, uint32_t);
 using ItemEventFn = char(__fastcall*)(uint8_t*, void*, int, int);
-uint32_t g_ValueVtable[kVtableSlots], g_ButtonVtable[kVtableSlots];
+uint32_t g_ValueVtable[kVtableSlots], g_ButtonVtable[kVtableSlots], g_KeyboardVtable[kVtableSlots];
 DrawFn g_OnOffDraw = nullptr;
 ItemEventFn g_OnOffEvent = nullptr, g_ButtonEvent = nullptr;
 
@@ -1001,8 +1001,62 @@ float HudItemAlpha()
     return g_HudAlpha >= 0 && GetTickCount64() - g_HudAlphaAt < 500 ? g_HudAlpha : -1.0f;
 }
 
+// A notice's owner (the popup gives its owner's item the focus back as it closes, then calls the owner's slot 8 for A,
+// slot 9 for B): a stand-in for the row that showed it, its item that row's, its slots doing nothing but noting the
+// popup closed (the rows' own would act: the main menu's slot 8 starts a new game, a settings control's saves). While
+// the notice is up, the port's rows give it the events they get (NoticeTakes), so that it closes whatever has the focus.
+struct NoticeOwner {
+    const uint32_t* vtable;
+    uint32_t unused;
+    uint8_t* item;
+    uint8_t rest[0x240];
+};
+uint32_t g_NoticeOwnerVtable[kVtableSlots];
+NoticeOwner g_NoticeOwner = {};
+uint8_t* g_OpenNotice = nullptr;   // the notice up, or null
+uint32_t g_OpenNoticeScreen = 0;   // on that screen
+
+void __fastcall NoticeClosed(uint8_t*, void*)
+{
+    g_OpenNotice = nullptr;
+    LOG_INFO("Online menu: the notice closed");
+}
+
+uint8_t* NoticeOwnerFor(uint8_t* owner)
+{
+    if (!g_NoticeOwnerVtable[0]) {
+        std::memcpy(g_NoticeOwnerVtable, g_ValueVtable, sizeof g_NoticeOwnerVtable);
+        g_NoticeOwnerVtable[8] = g_NoticeOwnerVtable[9] = uint32_t(reinterpret_cast<uintptr_t>(&NoticeClosed));
+    }
+    g_NoticeOwner.vtable = g_NoticeOwnerVtable;
+    g_NoticeOwner.item = owner ? *reinterpret_cast<uint8_t**>(owner + 8) : nullptr;
+    return reinterpret_cast<uint8_t*>(&g_NoticeOwner);
+}
+
+// A row's event while a notice is up: the notice's (true: taken).
+bool NoticeTakes(int event, int value)
+{
+    if (!g_OpenNotice)
+        return false;
+    if (LastShellScreen() != g_OpenNoticeScreen) { // its screen is gone: so is it
+        g_OpenNotice = nullptr;
+        return false;
+    }
+    if (event == kChosen || event == kB) {
+        __try {
+            reinterpret_cast<ItemEventFn>((*reinterpret_cast<void* const* const*>(g_OpenNotice))[4])(g_OpenNotice,
+                nullptr, event, value);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            g_OpenNotice = nullptr;
+        }
+    }
+    return true;
+}
+
 bool ShowPopup(uint8_t* owner, const char* titleId, const char* messageId, const char* name = "DefaultPopup")
 {
+    // a keyboard (the code screen's) owns its popup as the game's Codes keyboard does; any other owner a stand-in
+    const bool keyboard = owner && *reinterpret_cast<uint32_t**>(owner) == g_KeyboardVtable;
     __try {
         uint8_t* shell = *reinterpret_cast<uint8_t**>(uintptr_t(kShellObject));
         if (!shell)
@@ -1016,7 +1070,12 @@ bool ShowPopup(uint8_t* owner, const char* titleId, const char* messageId, const
         reinterpret_cast<void(__fastcall*)(uint8_t*, void*, const void*)>(uintptr_t(kPopupMessage))(popup, nullptr,
             GameText(messageId));
         reinterpret_cast<void(__fastcall*)(uint8_t*, void*, uint8_t*)>(
-            (*reinterpret_cast<void* const* const*>(popup))[0x58 / 4])(popup, nullptr, owner);
+            (*reinterpret_cast<void* const* const*>(popup))[0x58 / 4])(popup, nullptr,
+            keyboard ? owner : NoticeOwnerFor(owner));
+        if (!keyboard) {
+            g_OpenNotice = popup;
+            g_OpenNoticeScreen = LastShellScreen();
+        }
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         LOG_WARN("Online menu: the popup could not be shown");
@@ -1135,7 +1194,7 @@ void ReadyLegend(uint8_t* handler)
     LabelAsText(handler, "readytext", "IDS_PORT_LEGEND_READY");
     input::GamePad pad = {};
     input::ReadLivePad(0, pad);
-    const bool down = pad.analog[2] > 0x40; // X
+    const bool down = pad.analog[2] > 0x40 && !g_OpenNotice; // X (not under a notice)
     const ULONGLONG now = GetTickCount64();
     if (now - g_ReadySeenAt > 300) // the room just came: a press already held is not one
         g_ReadyHeld = true;
@@ -1177,6 +1236,8 @@ char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
     }
     if (row == kPubStatus)
         ShowRoomNotice(handler);
+    if (row == kMode && net::OnlineTakeDrawEnd())
+        ShowNotice(handler, "Three draws: the match is over.");
     if (row == kMode) {
         ShowRoomNotice(handler);
         TitleAsRoomName(handler);
@@ -1243,6 +1304,8 @@ char Back(uint8_t* handler, int event, int value)
 
 char __fastcall ValueEvent(uint8_t* handler, void*, int event, int value)
 {
+    if (NoticeTakes(event, value))
+        return 1;
     if (event == kB)
         return Back(handler, event, value);
     if (event != kLeft && event != kRight && event != kChosen)
@@ -1346,6 +1409,8 @@ bool GoToVersusSelect()
 
 char __fastcall ButtonEvent(uint8_t* handler, void*, int event, int value)
 {
+    if (NoticeTakes(event, value))
+        return 1;
     const int row = RowOf(handler);
     if (event == kB)
         return Back(handler, event, value);
@@ -1433,7 +1498,6 @@ constexpr int kInitSlot = 0, kDrawSlot = 3, kMakeSlot = 10, kSoundSlot = 11, kDo
 constexpr int kErrorSound = 0x10;
 constexpr int kTextAt = 0x28, kTextEnd = 0x48, kMaxLength = 0x24, kBackKey = 0x50, kSpaceKey = 0x54, kDoneKey = 0x58;
 constexpr int kCodeLength = 15; // the text holds 16 characters, its end mark one
-uint32_t g_KeyboardVtable[kVtableSlots];
 bool g_PasteDown = false;
 KeyboardFor g_KeyboardFor = KeyboardFor::Code; // what the keyboard types: a room code, the player's name, the room's
 bool g_KeyboardForName = false;                 // a name (the player's or the room's), not a room code
@@ -1966,8 +2030,12 @@ bool OnlineCodeKeyboardShown()
 bool OnlineShowLost(const std::string& why)
 {
     const bool left = why.find("left") != std::string::npos;
-    SetMenuText("IDS_PORT_LOST_TEXT", left ? L"The other player left the room." :
-        L"The connection to the other player was lost.");
+    const bool otherIdle = why.find("other player was removed") != std::string::npos;
+    const bool idle = !otherIdle && why.find("inactivity") != std::string::npos;
+    SetMenuText("IDS_PORT_LOST_TEXT", otherIdle ? L"The other player was removed from the room for inactivity." :
+        idle ? L"You were removed from the room after five minutes without any action." :
+        left ? L"The other player left the room." : L"The connection to the other player was lost.");
+    SetMenuText("IDS_PORT_LOST_TITLE", idle ? L"Removed from the Room" : L"Connection Lost");
     g_LostPopup = true; // shown by the Online row once the main menu is up (MainButtonDraw)
     if (LastShellScreen() == MenuKey(kScreenNames[kOnline]))
         return true;
@@ -2007,6 +2075,14 @@ bool OnlineGoToScreen(uint32_t key)
 constexpr uint32_t kSwitchVtable = 0x005D5580, kSwitchEvent = 0x002CBEC0;
 constexpr uint32_t kMainButtonVtable = 0x005D5410, kMainButtonDraw = 0x002CC550;
 uint32_t g_PrevSwitchEvent = kSwitchEvent, g_PrevMainButtonDraw = kMainButtonDraw; // the slots as they were
+uint32_t g_PrevMainButtonEvent = 0;
+
+char __fastcall MainButtonEvent(uint8_t* handler, void*, int event, int value)
+{
+    if (NoticeTakes(event, value)) // the main menu's rows: a notice over it closes first
+        return 1;
+    return reinterpret_cast<ItemEventFn>(uintptr_t(g_PrevMainButtonEvent))(handler, nullptr, event, value);
+}
 
 uint32_t ItemKey(uint8_t* handler)
 {
@@ -2068,6 +2144,8 @@ void __fastcall PopupNo(uint8_t* handler, void*)
 
 char __fastcall SwitchEvent(uint8_t* handler, void*, int event, int value)
 {
+    if (NoticeTakes(event, value))
+        return 1;
     // The entries' screens are opened by the game's own choice (as Versus's: the main menu then closes the submenu
     // when it is left), after what each needs first.
     if (event == kChosen) {
@@ -2161,6 +2239,9 @@ void InstallOnlineMenu()
     }
     { // the main menu's buttons: after the port's other hooks there (Heroes vs Villains'), which are called on
         g_PrevSwitchEvent = *reinterpret_cast<const uint32_t*>(uintptr_t(kSwitchVtable + 4 * 4));
+        g_PrevMainButtonEvent = *reinterpret_cast<const uint32_t*>(uintptr_t(kMainButtonVtable + 4 * 4));
+        const uint32_t mainEvent = uint32_t(reinterpret_cast<uintptr_t>(&MainButtonEvent));
+        PatchBytes(kMainButtonVtable + 4 * 4, &mainEvent, 4);
         g_PrevMainButtonDraw = *reinterpret_cast<const uint32_t*>(uintptr_t(kMainButtonVtable + 4 * 3));
         const uint32_t event = uint32_t(reinterpret_cast<uintptr_t>(&SwitchEvent));
         const uint32_t draw = uint32_t(reinterpret_cast<uintptr_t>(&MainButtonDraw));

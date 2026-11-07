@@ -80,7 +80,7 @@ uint32_t HashEvery()
     }();
     return every;
 }
-constexpr int kSilenceMs = 20000;       // the other PC is gone after that long without a word
+constexpr int kSilenceMs = 10000;       // the other PC is gone after that long without a word (a closed game says so)
 constexpr int kConnectMs = 20000;       // the guest gives up calling after that long
 
 enum class Msg : uint8_t {
@@ -537,6 +537,10 @@ struct Session {
     int clockTenths = -1;               // a duel with a time limit: the round's time left (the host's; the guest's as it came)
     uint32_t draws = 0;                 // the duels' draws (the host's count; the guest's as it came)
     bool drawsKnown = false;            // the guest: the host's count has come once (a change after is a draw)
+    uint32_t matchDraws = 0;            // this duel's draws (three end the match: back to the room)
+    bool drawEnded = false;             // the last match ended so (the room says it once: OnlineTakeDrawEnd)
+    Clock::time_point drawEndAt = {};   // the host: when the match ends (after the third draw's own end)
+    std::string menuArgs;               // the host: the match's start at its main menu (its profile), to end a duel
     uint32_t remoteScreen = 0;          // the other's front-end screen (the guest follows the host's)
     uint32_t screen = 0, screenSince = 0; // this game's, and the frame it came
     bool toRoom = false;                // to the room's screen once the front end is up
@@ -931,6 +935,7 @@ bool Living(const uint8_t* fighter)
 // round; the guest's game ends its round alike when the draws' count moves). The clock stays at 0 through the round's
 // end and starts again with the next round's fight.
 constexpr uint32_t kTicksPerSecond = 60;
+constexpr uint32_t kDrawsToEnd = 3; // a duel's draws that end its match (back to the room: no room held forever)
 struct DuelClock {
     bool fighting = false;     // the game's round is being fought (state 4) since the last frame
     bool over = false;         // the time ran out this round
@@ -998,8 +1003,14 @@ void HostDuelClock(uint8_t* const fighters[2], uint8_t limit, int& tenths, uint3
     const float h1 = FighterHealth(fighters[0]), h2 = FighterHealth(fighters[1]);
     if (std::fabs(h1 - h2) < 0.05f) {
         const bool ended = game::VersusRoundDraw();
-        if (ended)
+        if (ended) {
             ++draws;
+            std::lock_guard<std::mutex> lock(g_S.lock);
+            if (++g_S.matchDraws >= kDrawsToEnd && g_S.drawEndAt == Clock::time_point{}) {
+                g_S.drawEndAt = Clock::now() + std::chrono::milliseconds(4500); // the draw's own end shown first
+                LOG_INFO("Online: %u draws: the match ends after this one", g_S.matchDraws);
+            }
+        }
         LOG_INFO("Online: time out, the same health (%.1f): %s (%u so far)", h1,
             ended ? "the game's draw" : "the round could not be ended", draws);
         return;
@@ -1420,8 +1431,12 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     const bool duel = DuelFighters(fighters[0], fighters[1]);
     { // the arena's props: found again at each duel's start
         static bool wasDuel = false;
-        if (duel && !wasDuel)
+        if (duel && !wasDuel) {
             PropsReset();
+            std::lock_guard<std::mutex> relock(g_S.lock);
+            g_S.matchDraws = 0;
+            g_S.drawEndAt = {};
+        }
         wasDuel = duel;
     }
     if (duel && frame % 120 == 0) { // diagnostics: both fighters' places on both games (a small one's, Yoda's)
@@ -1456,10 +1471,25 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         }
         int tenths = -1;
         uint32_t draws = 0;
+        std::string endArgs;
         {
             std::lock_guard<std::mutex> relock(g_S.lock);
             tenths = g_S.clockTenths;
             draws = g_S.draws;
+            if (g_S.drawEndAt != Clock::time_point{} && Clock::now() >= g_S.drawEndAt) {
+                g_S.drawEndAt = {};
+                g_S.drawEnded = true;
+                g_S.toRoom = true; // the front end up: the room (as after a match)
+                g_S.toRoomAt = g_S.frame;
+                endArgs = g_S.menuArgs;
+                if (endArgs.empty())
+                    LOG_WARN("Online: three draws, but no start at the main menu to end the match with");
+            }
+        }
+        if (!endArgs.empty()) { // three draws: the match over, both games back to the room
+            LOG_INFO("Online: three draws: the match ends, back to the room");
+            kernel::LaunchGame(endArgs);
+            return;
         }
         HostDuelClock(fighters, timeLimit, tenths, draws);
         StateMsg m = {};
@@ -1506,8 +1536,12 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             g_S.drawsKnown = true;
         }
     }
-    if (followDraw) // the host's round ended as a draw (its time out): this game's too
+    if (followDraw) { // the host's round ended as a draw (its time out): this game's too
         LOG_INFO("Online: the host's round is a draw: %s", game::VersusRoundDraw() ? "this game's too" : "not here");
+        std::lock_guard<std::mutex> relock(g_S.lock);
+        if (++g_S.matchDraws >= kDrawsToEnd)
+            g_S.drawEnded = true; // the host's game ends the match (this one follows it to the room)
+    }
     g_GuestFighters[0] = duel ? fighters[0] : nullptr;
     g_GuestFighters[1] = duel ? fighters[1] : nullptr;
     game::SetDamageFilter(duel ? &GuestDamage : nullptr);
@@ -1550,6 +1584,7 @@ void BuildPackageLocked()
     }
     if (args.empty())
         LOG_WARN("Online: no profile to bring along (the match starts as the game does, at its title)");
+    g_S.menuArgs = args;
     const std::wstring saves = kernel::SaveDrivePath();
     std::vector<std::wstring> list;
     ListFiles(saves, L"", list);
@@ -1881,7 +1916,8 @@ void HandleLocked(const uint8_t* data, size_t size, const Endpoint& from)
             RejectMsg r;
             std::memcpy(&r, data, sizeof(r));
             r.text[sizeof(r.text) - 1] = 0;
-            EndLocked("the other player left", false);
+            EndLocked(std::strstr(r.text, "inactivity") ? "the other player was removed for inactivity"
+                                                       : "the other player left", false);
         }
         break;
     default:
@@ -2314,6 +2350,34 @@ bool OnlineTakeStart()
     return true;
 }
 
+bool OnlineTakeDrawEnd()
+{
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    const bool ended = g_S.drawEnded;
+    g_S.drawEnded = false;
+    return ended;
+}
+
+void OnlineGoodbye()
+{
+    // the message loop's thread: the lock tried a little (the game's thread may hold it), then the other PC told
+    for (int i = 0; i < 20; ++i) {
+        if (g_S.lock.try_lock()) {
+            std::lock_guard<std::mutex> lock(g_S.lock, std::adopt_lock);
+            if (g_S.phase != OnlinePhase::Off && g_S.phase != OnlinePhase::Ended && g_S.peer.Valid()) {
+                RejectMsg bye = {};
+                bye.h = MakeHeader(Msg::Bye, g_S.token);
+                std::snprintf(bye.text, sizeof(bye.text), "%s", "left");
+                for (int k = 0; k < 3; ++k)
+                    SendLocked(bye);
+                LOG_INFO("Online: the game is closing: the other player told");
+            }
+            return;
+        }
+        Sleep(10);
+    }
+}
+
 bool OnlineActive()
 {
     std::lock_guard<std::mutex> lock(g_S.lock);
@@ -2342,6 +2406,49 @@ void OnlineReboot()
     g_S.toRoomAt = g_S.frame;
     SetMessage(std::string("the match starts: player ") + (g_S.host ? "1 (host)" : "2 (guest)") + ", input delay " +
         std::to_string(g_S.inputDelay) + " frames");
+}
+
+// A player who does nothing for five minutes while the other is in the room with them (the room, the select screens,
+// a duel) is taken out of it, so that a room is never held by someone away: this PC's own devices watched (a button,
+// a trigger, a stick or the keyboard), the session ended as a Leave would (the other PC told why), this player's game
+// back at its main menu with the game's popup saying why. SWROTS_TEST_IDLE_SECONDS: another time (tests).
+bool IdleKickLocked()
+{
+    static Clock::time_point lastActive = Clock::now();
+    static uint32_t lastState = 0;
+    static int limitSeconds = -1;
+    if (limitSeconds < 0) {
+        char value[16] = "";
+        limitSeconds = GetEnvironmentVariableA("SWROTS_TEST_IDLE_SECONDS", value, sizeof(value)) ? std::max(10, atoi(value))
+                                                                                               : 300;
+    }
+    const auto now = Clock::now();
+    const bool live = g_S.phase != OnlinePhase::Off && g_S.phase != OnlinePhase::Ended;
+    const bool together = live && (g_S.host ? g_S.peer.Valid() : g_S.phase == OnlinePhase::Playing);
+    if (!together) {
+        lastActive = now;
+        return false;
+    }
+    input::GamePad pad = {};
+    input::ReadLivePad(0, pad);
+    uint32_t state = pad.buttons; // what the player holds, without the sticks' and triggers' small drift
+    for (int i = 0; i < 8; ++i)
+        state = state * 3 + (pad.analog[i] > 0x40 ? 1 : 0);
+    for (int i = 0; i < 4; ++i)
+        state = state * 3 + (pad.thumbs[i] > 12000 ? 1 : pad.thumbs[i] < -12000 ? 2 : 0);
+    if (state != lastState) {
+        lastState = state;
+        lastActive = now;
+        return false;
+    }
+    if (now - lastActive < std::chrono::seconds(limitSeconds))
+        return false;
+    lastActive = now;
+    const bool matchOn = g_S.armed || g_S.bootPending;
+    LOG_INFO("Online: no action for %d s: this player leaves the room", limitSeconds);
+    EndLocked("removed for inactivity", true);
+    g_S.lostPopup = matchOn; // its popup at the main menu (the other PC's says why too)
+    return true;
 }
 
 void OnlineFrame()
@@ -2380,6 +2487,8 @@ void OnlineFrame()
             }
         }
     }
+    if (IdleKickLocked())
+        return;
     if (g_S.packageWanted && g_S.host) { // the host's profile, saved by the game's code
         g_S.packageWanted = false;
         BuildPackageLocked();

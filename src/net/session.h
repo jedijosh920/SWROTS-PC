@@ -80,6 +80,10 @@ void SetOnlineRoom(const OnlineRoomSettings& room);
 void SetOnlineReady(bool ready);
 // The host: true once (both cleared for the next time) when both players are ready in the room.
 bool OnlineTakeStart();
+// True once after a match that three draws ended (its room says so).
+bool OnlineTakeDrawEnd();
+// The game is closing (its window closed, Alt+F4): the other PC is told at once that this player left.
+void OnlineGoodbye();
 
 // The host opens a room. False when it could not (the message says why).
 bool OnlineHost();

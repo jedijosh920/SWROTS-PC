@@ -389,6 +389,14 @@ finds both living and says IDS_ROUND_DRAW, gives no point and plays the next rou
 when the host's count of draws moves). The clock starts again with the next round's fight. Each PC draws it at the
 bottom between the health bars in the HUD's font (none without a time limit).
 
+Ending and leaving (2026-11-07): three draws in a duel end its match (the host's game starts again at its main menu
+with the match's profile, both games go to the room, which says why). A player who does nothing for five minutes while
+the other is with them is taken out of the room (`SWROTS_TEST_IDLE_SECONDS` for tests): the session ends as a Leave,
+the other PC is told why, each shows the game's popup. A game whose window is closed (Alt+F4) tells the other PC at
+once; a game that stops answering is given up after 10 s. The port's notices are owned by a stand-in for the row that
+shows them (the popup gives the focus back to that row's item and calls its owner's slot 8 or 9 as it closes: the main
+menu's slot 8 starts a new game), and while one is up the port's rows hand it the events they get.
+
 UPnP (net/upnp.cpp): before STUN, the host asks its router (SSDP, then the WANIPConnection/WANPPPConnection
 service's AddPortMapping) to open its UDP port, the same port outside, leased for 6 hours (permanent only on routers
 that take no other, error 725), taken back when the session ends; `[Online] Upnp=0` or `SWROTS_ONLINE_UPNP=0` turns it

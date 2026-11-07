@@ -14,6 +14,7 @@
 #include <mutex>
 
 #include "core/log.h"
+#include "core/window.h"
 #include "core/patch.h"
 #include "d3d/recorder.h"
 #include "game/freecam.h"
@@ -1089,6 +1090,10 @@ void Online(const std::vector<std::string>& words)
         Print(LineKind::Output, fighter ? "  hurt" : "  no such fighter");
     } else if (_stricmp(what.c_str(), "start") == 0) { // the room's Start (tests)
         Print(LineKind::Output, game::OnlineStartVersus() ? "  to the Versus select" : "  not in the front end");
+        return;
+    } else if (_stricmp(what.c_str(), "close") == 0) { // online close: the window closed as Alt+F4 does (tests)
+        if (HWND game = GameWindow())
+            PostMessageW(GetAncestor(game, GA_ROOT), WM_CLOSE, 0, 0);
         return;
     } else if (_stricmp(what.c_str(), "menu") == 0) { // the Online screen (from any front-end screen; tests)
         Print(LineKind::Output, game::GoToShellScreen("main_menu") ? "  to the main menu" : "  not in the front end");
