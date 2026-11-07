@@ -1500,13 +1500,24 @@ bool BuildCodeScreen(std::vector<uint8_t>& data)
         return true;
     // the new prompt after the Back text; then the places, from the right: Back 485/518, Paste 375/408, Select 265/298
     // test modes: y (the icon and the text), text (the text alone), icon / icon0 / icon2 / icon3 (the icon alone)
-    const bool iconOnly = std::strncmp(mode, "icon", 4) == 0, textOnly = std::strcmp(mode, "text") == 0;
+    const bool iconOnly = std::strncmp(mode, "icon", 4) == 0, textOnly = std::strncmp(mode, "text", 4) == 0;
     std::vector<uint8_t> both;
     if (!textOnly)
         both = icon;
     if (!iconOnly)
         both.insert(both.end(), text.begin(), text.end());
-    data.insert(data.begin() + textEnd, both.begin(), both.end());
+    // "-end" modes: after the screen's last item (before the transition controllers' count) instead of after Back's
+    size_t at = textEnd;
+    if (std::strstr(mode, "-end")) {
+        const size_t sets = MenuFind(data, MenuString("textureSet"), 0, data.size());
+        uint32_t transitions = 1;
+        if (sets != std::string::npos && sets >= 8)
+            std::memcpy(&transitions, data.data() + sets - 8, 4);
+        if (sets == std::string::npos || transitions != 0)
+            return true;
+        at = sets - 8;
+    }
+    data.insert(data.begin() + at, both.begin(), both.end());
     g_PastePrompt = !iconOnly && !textOnly;
     const struct { const char* name; float x; } places[] = { { "selectbutton", 262 }, { "select", 295 },
         { "pastebutton", 375 }, { "pastetext", 408 }, { "backbutton", 488 }, { "cancel", 521 } };
