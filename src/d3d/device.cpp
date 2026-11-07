@@ -3,6 +3,7 @@
 #include "d3d/d3d.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <vector>
 
@@ -729,8 +730,65 @@ static void DrawMenu()
 
 // Scales the rendered frame into the window at the chosen aspect ratio (the
 // game renders 16:9 anamorphic when widescreen is on), with black bars.
+// A watch on the frames: none presented for 8 s (the game's thread stuck: a loop, a wait that never ends) has the
+// presenting thread's place logged a few times (where the game's code is, its stack's game-code words).
+static std::atomic<DWORD> g_PresentThread{ 0 };
+static std::atomic<ULONGLONG> g_PresentAt{ 0 };
+
+static DWORD WINAPI WatchFrames(void*)
+{
+    int reports = 0;
+    for (;;) {
+        Sleep(1000);
+        const DWORD thread = g_PresentThread.load();
+        const ULONGLONG since = GetTickCount64() - g_PresentAt.load();
+        if (!thread || since < 8000) {
+            reports = 0;
+            continue;
+        }
+        if (reports >= 4 || kernel::Rebooting())
+            continue;
+        ++reports;
+        HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, thread);
+        if (!h)
+            continue;
+        CONTEXT context = {};
+        context.ContextFlags = CONTEXT_FULL;
+        uint32_t stack[512] = {};
+        SIZE_T read = 0;
+        bool got = false;
+        if (SuspendThread(h) != DWORD(-1)) { // no allocation, no lock while it is held
+            got = GetThreadContext(h, &context) != 0;
+            if (got)
+                ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(uintptr_t(context.Esp)), stack,
+                    sizeof(stack), &read);
+            ResumeThread(h);
+        }
+        CloseHandle(h);
+        if (!got)
+            continue;
+        char words[1200] = "";
+        size_t used = 0;
+        for (size_t i = 0; i < read / 4 && used + 20 < sizeof(words); ++i)
+            if (stack[i] >= 0x00011000 && stack[i] < 0x005D0000)
+                used += size_t(std::snprintf(words + used, sizeof(words) - used, " %X@%zX", stack[i], i * 4));
+        LOG_WARN("Frames: none for %llu s: eip %08lX esp %08lX eax %08lX ebx %08lX ecx %08lX edx %08lX esi %08lX "
+                 "edi %08lX; stack:%s", since / 1000, context.Eip, context.Esp, context.Eax, context.Ebx, context.Ecx,
+            context.Edx, context.Esi, context.Edi, words);
+    }
+}
+
 static void PresentFrame()
 {
+    {
+        static bool watching = false;
+        if (!watching) {
+            watching = true;
+            CloseHandle(CreateThread(nullptr, 0, &WatchFrames, nullptr, 0, nullptr));
+        }
+        g_PresentThread = GetCurrentThreadId();
+        g_PresentAt = GetTickCount64();
+    }
     g_Device->EndScene();
     FlightEndFrame(g_HostBackBuffer);
     if (!EnsureWindowChain()) {
