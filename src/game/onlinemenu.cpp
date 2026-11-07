@@ -1252,8 +1252,8 @@ char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
     }
     if (row == kPubStatus)
         ShowRoomNotice(handler);
-    if (row == kMode)
-        CoopAllUnlocked(false); // (the online select's missions all unlocked: the game's own lock again)
+    if (row == kMode && LastShellScreen() == MenuKey(kScreenNames[kRoom]))
+        CoopAllUnlocked(false); // (back in the room: the game's own lock again; not while it fades to the select)
     if (row == kMode && net::OnlineTakeDrawEnd())
         ShowNotice(handler, "Three draws: the match is over.");
     if (row == kMode) {
@@ -1445,6 +1445,7 @@ void CoopAllUnlocked(bool all)
     }
     PatchBytes(kCoopUnlockedAt, all ? kCoopUnlockedAll : kCoopUnlockedGame, sizeof kCoopUnlockedGame);
     g_CoopAllUnlocked = all;
+    LOG_INFO("Online menu: Cooperative missions %s", all ? "all unlocked for the online select" : "locked as the profile has them");
 }
 
 // Cooperative: both games to its missions' select (the Multi Player > Cooperative row's own way, 0x2CBEC0's case 3:
@@ -2230,7 +2231,8 @@ char __fastcall MainButtonDraw(uint8_t* handler, void*, uint32_t value)
         g_LostPopup = false;
         ShowPopup(handler, "IDS_PORT_LOST_TITLE", "IDS_PORT_LOST_TEXT");
     }
-    CoopAllUnlocked(false);
+    if (LastShellScreen() != MenuKey("select_challenge"))
+        CoopAllUnlocked(false);
     return reinterpret_cast<DrawFn>(uintptr_t(g_PrevMainButtonDraw))(handler, nullptr, value);
 }
 
