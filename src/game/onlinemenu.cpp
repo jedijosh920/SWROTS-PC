@@ -1495,6 +1495,23 @@ bool BuildCodeScreen(std::vector<uint8_t>& data)
     char mode[16] = "";
     if (!GetEnvironmentVariableA("SWROTS_TEST_PASTEMODE", mode, sizeof(mode)))
         return true;
+    if (std::strncmp(mode, "dup", 3) == 0) { // tests: an exact copy of an item (dup: Back's prompt after it; dup-veil:
+                                             // the screen's first item after it), the count one more
+        size_t b, en;
+        if (!LeafItem(data, std::strcmp(mode, "dup-veil") == 0 ? "screenveil" : "backbutton", b, en))
+            return true;
+        const std::vector<uint8_t> copy(data.begin() + b, data.begin() + en);
+        data.insert(data.begin() + en, copy.begin(), copy.end());
+        uint32_t nameLength, firstLength, items;
+        std::memcpy(&nameLength, data.data(), 4);
+        std::memcpy(&firstLength, data.data() + 4 + nameLength, 4);
+        const size_t countAt = 4 + nameLength + 4 + firstLength;
+        std::memcpy(&items, data.data() + countAt, 4);
+        ++items;
+        std::memcpy(data.data() + countAt, &items, 4);
+        LOG_INFO("Online menu: test: %s (%zu bytes copied, %u items)", mode, copy.size(), items);
+        return true;
+    }
     if (!LeafItem(data, "backbutton", iconBegin, iconEnd) || !LeafItem(data, "cancel", textBegin, textEnd) ||
         iconBegin + 18 + 10 + 82 >= iconEnd) {
         LOG_WARN("Online menu: the Codes screen's prompts are not as expected; no Paste prompt");
