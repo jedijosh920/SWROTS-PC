@@ -2263,6 +2263,7 @@ constexpr uint32_t kRestartVtable = 0x005CFE38, kQuitVtable = 0x005CFC78;
 constexpr float kVoteColumn = 352.0f, kVoteColumnStep = 120.0f; // the voters' column (the menus' 640 x 480)
 constexpr uint32_t kRestartEvent = 0x002B3F20, kQuitEvent = 0x002B3DE0, kRowDraw = 0x002B1D10;
 constexpr uint32_t kRestartGo = 0x002B0F90, kQuitGo = 0x002B0E10;
+constexpr uint32_t kGameOverChild = 0x45D00363; // the pause screen's game_over child, as the front end switches to it
 uint8_t* g_VoteRows[2] = {};          // the Restart and Quit rows drawn last (their handlers)
 float g_VoteRowY[2] = { -1, -1 }, g_VoteRowX = 0;
 ULONGLONG g_VoteRowsAt = 0;           // when they were last drawn
@@ -2331,7 +2332,7 @@ char __fastcall VoteRowDraw(uint8_t* handler, void*, uint32_t value)
             DrawPicture(kBoxOn, bx, by, bx + 20.0f, by + 20.0f, 1.0f, 1.0f);
         }
     if (restart) { // once a frame: the vote's turn (its outcome carried out here once)
-        const bool gameOver = LastShellChildScreen() == MenuKey("game_over");
+        const bool gameOver = LastShellChildScreen() == kGameOverChild;
         const net::CoopVote outcome = net::OnlineCoopVoteFrame(gameOver);
         if (outcome != net::CoopVote::None && !g_VoteCarried && g_VoteRows[0] && g_VoteRows[1])
             CarryOut(outcome);
