@@ -35,6 +35,7 @@ namespace {
 
 HANDLE g_RebootEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr); // manual reset
 std::atomic<bool> g_Rebooting = false;
+std::atomic<bool> g_RebootRequested = false; // a reboot asked for, until its new game starts
 RebootHandlers g_Handlers;
 
 std::mutex g_HandleLock;
@@ -172,6 +173,7 @@ DWORD WINAPI RebootWorker(void* param)
     ResetKernelForReboot();
     ResetEvent(g_RebootEvent);
     g_Rebooting = false;
+    g_RebootRequested = false;
     LOG_INFO("Reboot: starting the game");
     if (g_Handlers.boot)
         g_Handlers.boot(request->launchData.empty() ? nullptr : request->launchData.data());
@@ -302,6 +304,12 @@ DWORD GameWait(DWORD count, const HANDLE* handles, BOOL waitAll, DWORD ms, BOOL 
 
 void RebootInProcess(const void* launchData)
 {
+    // One at a time: two game threads may ask at once (an online guest following the host's launch while its own game
+    // launches the same level); the second only stops, the first's reboot takes the game's threads down.
+    if (g_RebootRequested.exchange(true)) {
+        LOG_INFO("Reboot: one is already on its way; this thread stops");
+        ExitGameThread();
+    }
     auto* request = new RebootRequest();
     if (launchData) {
         auto* p = static_cast<const uint8_t*>(launchData);

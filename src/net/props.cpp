@@ -312,6 +312,17 @@ bool g_CharsScanned = false;
 uint32_t g_StaticMax = 0, g_SpawnedMax = kSpawnedIds, g_CharFrames = 0;
 size_t g_CharNext = 0;
 
+std::vector<std::pair<uintptr_t, size_t>> g_Regions; // the game's memory (a character's +0x434 read only inside it)
+
+bool Inside(const uint8_t* object, size_t bytes)
+{
+    const uintptr_t a = uintptr_t(object);
+    for (const auto& [base, size] : g_Regions)
+        if (a >= base && a + bytes <= base + size)
+            return true;
+    return false;
+}
+
 uint32_t ClassHash(const char* name)
 {
     uint32_t h = 2166136261u;
@@ -322,7 +333,7 @@ uint32_t ClassHash(const char* name)
 
 void AddCharacter(uint8_t* o, uint32_t id, const uint8_t* p1, const uint8_t* p2)
 {
-    if (!o || !id || o == p1 || o == p2 || g_CharById.count(id) || !IsCharacter(o))
+    if (!o || !id || o == p1 || o == p2 || g_CharById.count(id) || !Inside(o, 0x438) || !IsCharacter(o))
         return;
     char cls[48];
     ClassNameRaw(o, cls);
@@ -372,6 +383,8 @@ size_t CharactersKnown()
 
 void CharactersUpdate(const uint8_t* player1, const uint8_t* player2)
 {
+    if (!g_CharsScanned || g_CharFrames % 30 == 29)
+        g_Regions = kernel::GameMemoryRegions();
     if (!g_CharsScanned) {
         g_CharsScanned = true;
         const ULONGLONG start = GetTickCount64();
