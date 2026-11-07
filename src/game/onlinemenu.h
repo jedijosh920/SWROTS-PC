@@ -33,5 +33,8 @@ void OnlineOpenCodeKeyboard();
 // In a level: the game's HUD's opacity now (its vitals' fade in and out, as the game last stepped it), 0-1; 1 when it
 // cannot be read.
 float GameHudAlpha();
+// Cooperative online's vote rows (the pause screen's Restart and Quit) as drawn this moment: their places in the menus'
+// 640 x 480 and the voters' column (player 1's at `column`, player 2's `step` right); false when they are not up.
+bool CoopVoteRows(float& restartY, float& quitY, float& column, float& step);
 
 } // namespace swrots::game

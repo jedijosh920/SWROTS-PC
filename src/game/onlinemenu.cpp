@@ -2249,6 +2249,132 @@ void PatchMainMenuOnline(std::vector<uint8_t>& data)
     data.swap(copy);
 }
 
+namespace {
+
+// --- Cooperative online: the mission's Restart and Quit as the two players' vote ---------------------------------------
+// The pause screen's Restart and Quit rows (its game_over child's too: RESTART MISSION, QUIT MISSION) are items of the
+// classes Restart (vtable 0x5CFE38) and Quit (0x5CFC78): their slot 4 (0x2B3F20, 0x2B3DE0) takes A (0x23) to their
+// confirmation or, at a game over, straight to their slot 8 (0x2B0F90: the mission again; 0x2B0E10: out of it). Online
+// in a Cooperative mission, A there is a vote (net::OnlineCoopVote: the host's game counts both players' pads, its pad
+// [shell+0x418] player 2's); the outcome is carried out on both games through those slots 8 (the host's as it
+// decides, the guest's as the host's comes). Each row shows the players who chose it: the game's box, lit, and their
+// name beside it (the online HUD's); at a game over the time left to vote under the rows.
+constexpr uint32_t kRestartVtable = 0x005CFE38, kQuitVtable = 0x005CFC78;
+constexpr float kVoteColumn = 352.0f, kVoteColumnStep = 120.0f; // the voters' column (the menus' 640 x 480)
+constexpr uint32_t kRestartEvent = 0x002B3F20, kQuitEvent = 0x002B3DE0, kRowDraw = 0x002B1D10;
+constexpr uint32_t kRestartGo = 0x002B0F90, kQuitGo = 0x002B0E10;
+uint8_t* g_VoteRows[2] = {};          // the Restart and Quit rows drawn last (their handlers)
+float g_VoteRowY[2] = { -1, -1 }, g_VoteRowX = 0;
+ULONGLONG g_VoteRowsAt = 0;           // when they were last drawn
+bool g_VoteCarried = false;           // the outcome carried out (once, until the rows go)
+
+bool CoopOnline()
+{
+    const net::OnlineStatusInfo s = net::OnlineStatus();
+    return s.matchOn && s.room.mode == 1 && s.phase != net::OnlinePhase::Ended && s.phase != net::OnlinePhase::Off;
+}
+
+char __fastcall VoteRowEvent(uint8_t* handler, void*, int event, int pad)
+{
+    const bool restart = *reinterpret_cast<const uint32_t*>(handler) == kRestartVtable;
+    const uint32_t original = restart ? kRestartEvent : kQuitEvent;
+    if (event != kChosen || !CoopOnline())
+        return reinterpret_cast<ItemEventFn>(uintptr_t(original))(handler, nullptr, event, pad);
+    int player = 0;
+    if (uint8_t* shell = *reinterpret_cast<uint8_t**>(uintptr_t(0x007F33F0)))
+        player = pad == *reinterpret_cast<int*>(shell + 0x418) ? 1 : 0;
+    net::OnlineCoopVote(player, restart ? net::CoopVote::Retry : net::CoopVote::Quit); // (the guest's game: its host's)
+    HandlerSound(handler, kReadySound);
+    return 1;
+}
+
+void CarryOut(net::CoopVote outcome)
+{
+    uint8_t* row = g_VoteRows[outcome == net::CoopVote::Retry ? 0 : 1];
+    if (!row)
+        return;
+    g_VoteCarried = true;
+    LOG_INFO("Online menu: the vote carried out here: %s", outcome == net::CoopVote::Retry ? "Restart" : "Quit");
+    __try {
+        reinterpret_cast<void(__fastcall*)(uint8_t*, void*)>(uintptr_t(outcome == net::CoopVote::Retry ? kRestartGo :
+            kQuitGo))(row, nullptr);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        LOG_WARN("Online menu: the vote's outcome could not be carried out");
+    }
+}
+
+char __fastcall VoteRowDraw(uint8_t* handler, void*, uint32_t value)
+{
+    const char result = reinterpret_cast<DrawFn>(uintptr_t(kRowDraw))(handler, nullptr, value);
+    if (!CoopOnline())
+        return result;
+    const bool restart = *reinterpret_cast<const uint32_t*>(handler) == kRestartVtable;
+    const int which = restart ? 0 : 1;
+    const ULONGLONG now = GetTickCount64();
+    if (now - g_VoteRowsAt > 600) { // the rows up again: a new vote
+        g_VoteCarried = false;
+        g_VoteRows[0] = g_VoteRows[1] = nullptr;
+        g_VoteRowY[0] = g_VoteRowY[1] = -1;
+    }
+    g_VoteRowsAt = now;
+    g_VoteRows[which] = handler;
+    float x = 0, y = 0;
+    if (ItemPlace(handler, x, y)) {
+        g_VoteRowY[which] = y;
+        g_VoteRowX = x;
+    }
+    // the players who chose this row: the game's box, lit, in their column right of the rows
+    const net::OnlineStatusInfo s = net::OnlineStatus();
+    for (int p = 0; p < 2; ++p)
+        if (s.coopVotes[p] == uint8_t(restart ? net::CoopVote::Retry : net::CoopVote::Quit) && g_VoteRowY[which] >= 0) {
+            const float bx = kVoteColumn + kVoteColumnStep * float(p), by = g_VoteRowY[which] + 1.0f;
+            DrawPicture(kBoxOn, bx, by, bx + 20.0f, by + 20.0f, 1.0f, 1.0f);
+        }
+    if (restart) { // once a frame: the vote's turn (its outcome carried out here once)
+        const bool gameOver = LastShellChildScreen() == MenuKey("game_over");
+        const net::CoopVote outcome = net::OnlineCoopVoteFrame(gameOver);
+        if (outcome != net::CoopVote::None && !g_VoteCarried && g_VoteRows[0] && g_VoteRows[1])
+            CarryOut(outcome);
+    }
+    return result;
+}
+
+} // namespace
+
+bool CoopVoteRows(float& restartY, float& quitY, float& column, float& step)
+{
+    if (GetTickCount64() - g_VoteRowsAt > 200 || g_VoteRowY[0] < 0 || g_VoteRowY[1] < 0)
+        return false;
+    restartY = g_VoteRowY[0];
+    quitY = g_VoteRowY[1];
+    column = kVoteColumn;
+    step = kVoteColumnStep;
+    return true;
+}
+
+namespace {
+
+void InstallVoteRows()
+{
+    if (!SlotIs(kRestartVtable, 4, kRestartEvent) || !SlotIs(kQuitVtable, 4, kQuitEvent) ||
+        !SlotIs(kRestartVtable, 3, kRowDraw) || !SlotIs(kQuitVtable, 3, kRowDraw) || !SlotIs(kRestartVtable, 8, kRestartGo) ||
+        !SlotIs(kQuitVtable, 8, kQuitGo)) {
+        LOG_WARN("Online menu: the pause screen's Restart and Quit are not as expected; no vote online");
+        return;
+    }
+    const uint32_t event = uint32_t(reinterpret_cast<uintptr_t>(&VoteRowEvent));
+    const uint32_t draw = uint32_t(reinterpret_cast<uintptr_t>(&VoteRowDraw));
+    for (uint32_t vtable : { kRestartVtable, kQuitVtable }) {
+        PatchBytes(vtable + 4 * 4, &event, 4);
+        PatchBytes(vtable + 4 * 3, &draw, 4);
+    }
+    g_VoteRows[0] = g_VoteRows[1] = nullptr;
+    g_VoteRowsAt = 0;
+    g_VoteCarried = false;
+}
+
+} // namespace
+
 void InstallOnlineMenu()
 {
     if (!SlotIs(kCodesKeyboardVtable, kInitSlot, kCodesKeyboardInit) ||
@@ -2271,6 +2397,7 @@ void InstallOnlineMenu()
     } else {
         LOG_WARN("Online menu: the HUD's vitals are not as expected; the duel's names do not fade with it");
     }
+    InstallVoteRows();
     if (SlotIs(kIntroVtable, 0, kIntroInit)) {
         const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(&IntroInit));
         PatchBytes(kIntroVtable, &hook, 4);

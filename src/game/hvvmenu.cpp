@@ -934,9 +934,12 @@ uint32_t __fastcall TransitionHook(void* self, void*, const uint32_t* name)
     return g_Transition(self, nullptr, name);
 }
 
+uint32_t g_LastChild = 0; // the child screen the front end last switched to (LastShellChildScreen)
+
 uint32_t __fastcall ChildSwitchHook(void* self, void*, const uint32_t* key)
 {
     if (key) {
+        g_LastChild = *key;
         LOG_DEBUG("Menus: child screen 0x%08X", *key);
         input::NoteMenuScreen(&ScreenMatches, *key);
     }
@@ -958,6 +961,11 @@ uint8_t* Trampoline(uint32_t address, const uint8_t* bytes, uint32_t length)
 uint32_t LastShellScreen()
 {
     return g_LastScreen;
+}
+
+uint32_t LastShellChildScreen()
+{
+    return g_LastChild;
 }
 
 bool ArenaCursorToRandom()
@@ -986,6 +994,7 @@ bool ArenaCursorToRandom()
 void InstallHvvMenu()
 {
     g_LastScreen = 0;
+    g_LastChild = 0;
     g_ArenaList = nullptr;
     InstallScreens();
     // made again at every start (ResetStubsForBoot), as the jumps into every new image

@@ -196,6 +196,55 @@ void DuelClock(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u,
         Text(cx, cy - h / 2, h, colour, text, 0.5f);
 }
 
+// The game's picture in the window (as d3d's PresentFrame fits it: 16:9 or 4:3, black bars): its top left and the
+// menus' 640 x 480 scale.
+void MenuSpace(const ImGuiViewport* vp, float& left, float& top, float& sx, float& sy)
+{
+    float w = vp->Size.x, hh = vp->Size.y;
+    if (!GetSettings().stretch) {
+        const float aspect = GetSettings().widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
+        if (w > hh * aspect)
+            w = hh * aspect;
+        else
+            hh = w / aspect;
+    }
+    left = vp->Pos.x + (vp->Size.x - w) / 2;
+    top = vp->Pos.y + (vp->Size.y - hh) / 2;
+    sx = w / 640.0f;
+    sy = hh / 480.0f;
+}
+
+// Cooperative online's Restart and Quit vote (onlinemenu.cpp draws each voter's lit box right of the row chosen): the
+// voters' names beside their boxes, and at a game over the rule and the time left under the rows, in the menus' font
+// and colours.
+void CoopVote(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u)
+{
+    float restartY = 0, quitY = 0, column = 0, step = 0;
+    if (!game::CoopVoteRows(restartY, quitY, column, step))
+        return;
+    float left, top, sx, sy;
+    MenuSpace(vp, left, top, sx, sy);
+    const std::string names[2] = { Upper(s.host ? s.localName : s.remoteName), Upper(s.host ? s.remoteName : s.localName) };
+    const float h = 22 * u;
+    for (int p = 0; p < 2; ++p) {
+        const uint8_t vote = s.coopVotes[p];
+        if (vote != uint8_t(net::CoopVote::Retry) && vote != uint8_t(net::CoopVote::Quit))
+            continue;
+        const float rowY = vote == uint8_t(net::CoopVote::Retry) ? restartY : quitY;
+        const ImVec2 at(left + (column + step * float(p) + 26.0f) * sx, top + (rowY + 11.0f) * sy - h / 2);
+        if (!GameFontTextOf(GameFont::Menu, g_Draw, at, h, kNameText, names[p], false))
+            Text(at.x, at.y, h, kNameText, names[p], 0.0f);
+    }
+    if (s.coopVoteSeconds < 0)
+        return;
+    const std::string line = "RESTART NEEDS BOTH PLAYERS - BACK TO THE ROOM IN " + std::to_string(s.coopVoteSeconds);
+    const float lh = 20 * u;
+    const ImVec2 at(left + 155.0f * sx, top + (quitY + 46.0f) * sy);
+    const ImU32 colour = s.coopVoteSeconds <= 10 ? kClockLow : kNameText;
+    if (!GameFontTextOf(GameFont::Menu, g_Draw, at, lh, colour, line, false))
+        Text(at.x, at.y, lh, colour, line, 0.0f);
+}
+
 // The room code's keyboard: a fourth legend among its own (Scroll, Select, Paste, Back: the code screen spreads them,
 // onlinemenu.cpp), in the third place: the key's picture as the keyboard prompts draw one (a dark key with a frosty
 // blue rim) and the action in the menus' font, on their line (the screen's 640 x 480: icons at y 333, 32 high; the
@@ -287,8 +336,12 @@ void DrawOnlineHud()
             VersusNames(s, vp, u, fade);
             DuelClock(s, vp, u, fade);
         }
-        else if (!s.remoteName.empty())
-            OtherPlayer(s, vp, u);
+        else if (!s.remoteName.empty()) {
+            float ry, qy, col, step;
+            if (!game::CoopVoteRows(ry, qy, col, step))
+                OtherPlayer(s, vp, u); // (not over the pause screen's rows)
+            CoopVote(s, vp, u);
+        }
         if (s.desync)
             Banner(vp, u, 0.12f, kRed, "Desync", "The two games no longer match: leave and start again");
         break;

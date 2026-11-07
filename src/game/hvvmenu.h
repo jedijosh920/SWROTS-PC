@@ -13,6 +13,8 @@ void InstallHvvMenu();
 
 // The key (MenuKey) of the screen the front end last switched to since the game started, or 0.
 uint32_t LastShellScreen();
+// The child screen (a screen's part: the pause screen's game_over, ...) the front end last switched to (its key).
+uint32_t LastShellChildScreen();
 // The arena screen's cursor on its Random row (online play's room: a random arena); false off that screen.
 bool ArenaCursorToRandom();
 

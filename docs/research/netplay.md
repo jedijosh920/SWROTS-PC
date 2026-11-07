@@ -614,6 +614,15 @@ writes each into its own of that key as it does the other player's fighter (its 
 own way, its health through the game's own change: its death the game's), and keeps its own damage to them out (the
 host's hits decide). Every two seconds both games log the four lowest keys' place and health (`characters, frame`).
 
+A mission's Restart and Quit online (the pause screen's rows, its `game_over` child's RESTART MISSION and QUIT
+MISSION: items of the classes Restart, vtable 0x5CFE38, and Quit, 0x5CFC78; slot 4 takes A to a confirmation or at a
+game over straight to slot 8, 0x2B0F90 the mission again, 0x2B0E10 out of it) are the two players' vote: A there is
+counted by the host's game (both pads; [shell+0x418] is player 2's), the mission again once both chose Restart, back to
+the room as soon as either chose Quit, and at a game over a missing vote counts as Quit after 30 seconds (protocol 10:
+the votes, the time left and the outcome in the host's state). The outcome is carried out on both games through those
+slots 8 (the host's as it decides, the guest's as the host's comes). Each row shows its voters (the game's lit box,
+their name), the game over the rule and the time left.
+
 ### Phases
 
 1. **Duel state capture/apply** on one PC: the state's size (a few KiB expected), and whether writing it into a

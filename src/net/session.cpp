@@ -46,8 +46,9 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr uint32_t kMagic = 0x4E525753; // 'SWRN'
-constexpr uint16_t kProtocol = 9; // 2: the players' names; 3: client/server matches; 4: the arena's picker; 5: props; 6: a public room;
-                                  // 7: the room's name, the players' Ready; 8: Versus's time limit (the room, the duel's clock); 9: Cooperative's characters
+constexpr uint16_t kProtocol = 10; // 2: the players' names; 3: client/server matches; 4: the arena's picker; 5: props; 6: a public room;
+                                  // 7: the room's name, the players' Ready; 8: Versus's time limit (the room, the duel's clock); 9: Cooperative's characters;
+                                  // 10: Cooperative's Restart/Quit vote
 constexpr uint16_t kDefaultPort = 27960;
 constexpr uint32_t kHistory = 512;      // frames of inputs kept (a power of two)
 constexpr uint32_t kMaxSend = 48;       // inputs in one packet at most
@@ -194,6 +195,9 @@ struct StateMsg {
     FighterState fighters[2];
     int16_t clockTenths; // the round's time left (the room's time limit; -1 none)
     uint16_t draws;      // the duels' draws so far (DRAW shown as it moves)
+    uint8_t votes[2];    // Cooperative's game over: each player's vote (CoopVote)
+    int8_t voteSeconds;  // its time left (-1: none, a pause's Restart/Quit has none)
+    uint8_t decided;     // the votes' outcome (CoopVote: none, Retry, Quit), each game making it once
 };
 // The arena's props that moved or are gone on the host's game (props.h).
 struct PropsMsg {
@@ -556,6 +560,10 @@ struct Session {
     int clockTenths = -1;               // a duel with a time limit: the round's time left (the host's; the guest's as it came)
     uint32_t draws = 0;                 // the duels' draws (the host's count; the guest's as it came)
     bool drawsKnown = false;            // the guest: the host's count has come once (a change after is a draw)
+    uint8_t votes[2] = {};              // Cooperative's Restart/Quit vote: each player's (the host's; the guest's as it came)
+    int voteSeconds = -1;               // the game over's time left to vote (-1 none)
+    uint8_t decided = 0;                // the outcome (the host's; the guest's as it came)
+    Clock::time_point voteMenuAt{}, voteDeadline{}; // the host: the vote's menu last drawn; the game over's deadline
     uint32_t matchDraws = 0;            // this duel's draws (three end the match: back to the room)
     bool drawEnded = false;             // the last match ended so (the room says it once: OnlineTakeDrawEnd)
     Clock::time_point drawEndAt = {};   // the host: when the match ends (after the third draw's own end)
@@ -1566,6 +1574,16 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             return;
         m.clockTenths = int16_t(tenths);
         m.draws = uint16_t(draws);
+        if (g_S.voteMenuAt != Clock::time_point{} && Clock::now() - g_S.voteMenuAt > std::chrono::milliseconds(600)) {
+            g_S.votes[0] = g_S.votes[1] = 0; // the vote's menu gone (a mission started again, a pause over)
+            g_S.voteSeconds = -1;
+            g_S.decided = 0;
+            g_S.voteMenuAt = g_S.voteDeadline = {};
+        }
+        m.votes[0] = g_S.votes[0];
+        m.votes[1] = g_S.votes[1];
+        m.voteSeconds = int8_t(g_S.voteSeconds);
+        m.decided = g_S.decided;
         m.h = MakeHeader(Msg::State, g_S.token);
         m.seq = ++g_S.stateSeqOut;
         m.hostFrame = frame;
@@ -1615,6 +1633,10 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             g_S.clockTenths = -1;
         else if (haveState) {
             g_S.clockTenths = state.clockTenths;
+            g_S.votes[0] = state.votes[0];
+            g_S.votes[1] = state.votes[1];
+            g_S.voteSeconds = state.voteSeconds;
+            g_S.decided = state.decided;
             followDraw = state.draws != g_S.draws && g_S.drawsKnown;
             g_S.draws = state.draws;
             g_S.drawsKnown = true;
@@ -2234,6 +2256,9 @@ void ResetSessionLocked(bool host)
     g_S.clockTenths = -1;
     g_S.draws = 0;
     g_S.drawsKnown = false;
+    g_S.votes[0] = g_S.votes[1] = g_S.decided = 0;
+    g_S.voteSeconds = -1;
+    g_S.voteMenuAt = g_S.voteDeadline = {};
     g_S.propsIn.clear();
     g_S.charsIn.clear();
     g_S.haveState = false;
@@ -2360,6 +2385,50 @@ void OnlineLeave()
     g_S.socket.Close();
 }
 
+void OnlineCoopVote(int player, CoopVote choice)
+{
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    if (!g_S.host || !g_S.server || player < 0 || player > 1 || g_S.decided)
+        return;
+    if (g_S.votes[player] != uint8_t(choice))
+        LOG_INFO("Online: player %d votes %s", player + 1, choice == CoopVote::Retry ? "Retry" : "Quit");
+    g_S.votes[player] = uint8_t(choice);
+}
+
+CoopVote OnlineCoopVoteFrame(bool gameOver)
+{
+    constexpr int kVoteSeconds = 30;
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    if (!g_S.server || !g_S.armed)
+        return CoopVote::None;
+    if (!g_S.host) // the guest: the host's outcome, as it came
+        return CoopVote(g_S.decided);
+    const auto now = Clock::now();
+    g_S.voteMenuAt = now;
+    if (g_S.decided)
+        return CoopVote::None; // made once (the host's game is on its way)
+    if (gameOver && g_S.voteDeadline == Clock::time_point{}) {
+        g_S.voteDeadline = now + std::chrono::seconds(kVoteSeconds);
+        LOG_INFO("Online: game over: the players vote (%d s)", kVoteSeconds);
+    }
+    if (g_S.voteDeadline != Clock::time_point{})
+        g_S.voteSeconds = std::max(0, int(std::chrono::duration_cast<std::chrono::milliseconds>(g_S.voteDeadline - now).count() + 999) / 1000);
+    const uint8_t retry = uint8_t(CoopVote::Retry), quit = uint8_t(CoopVote::Quit);
+    CoopVote outcome = CoopVote::None;
+    if (g_S.votes[0] == quit || g_S.votes[1] == quit)
+        outcome = CoopVote::Quit; // one wants out: back to the room
+    else if (g_S.votes[0] == retry && g_S.votes[1] == retry)
+        outcome = CoopVote::Retry;
+    else if (g_S.voteDeadline != Clock::time_point{} && now >= g_S.voteDeadline)
+        outcome = CoopVote::Quit; // the time out: a missing vote counts as Quit
+    if (outcome != CoopVote::None) {
+        g_S.decided = uint8_t(outcome);
+        LOG_INFO("Online: the vote: %s (player 1 %u, player 2 %u)", outcome == CoopVote::Retry ? "the mission again" :
+            "back to the room", g_S.votes[0], g_S.votes[1]);
+    }
+    return outcome;
+}
+
 OnlineStatusInfo OnlineStatus()
 {
     std::lock_guard<std::mutex> lock(g_S.lock);
@@ -2383,6 +2452,9 @@ OnlineStatusInfo OnlineStatus()
     i.remoteReady = g_S.remoteReady;
     i.clockTenths = g_S.inLevel ? g_S.clockTenths : -1;
     i.draws = g_S.draws;
+    i.coopVotes[0] = g_S.votes[0];
+    i.coopVotes[1] = g_S.votes[1];
+    i.coopVoteSeconds = g_S.voteSeconds;
     i.entering = g_S.entering && (g_S.phase == OnlinePhase::Starting || g_S.phase == OnlinePhase::Playing);
     i.leaving = g_S.leaving && g_S.phase == OnlinePhase::Ended;
     if (g_S.inLevel && !g_S.lastMap.empty()) { // U170_EP4_Deathstar_02: EP4 DEATHSTAR 02
