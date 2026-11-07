@@ -1465,6 +1465,20 @@ void SetItemX(std::vector<uint8_t>& data, size_t item, float x)
 // copy of the Back prompt (its ButtonIcon's icon, 82 bytes after its name, item +0x84: 0 A, 1 Y, 2 B, 3 X; the
 // texture interfc\front_end\s_buttons_xbox_<letter>, 0x2C4C90) and of its text. The
 // prompts are spread again: Scroll, Select, Paste, Back.
+// A screen's top-level item count raised by `added`: the word just before its first item ("screenItem", its tag).
+bool AddScreenItems(std::vector<uint8_t>& data, uint32_t added)
+{
+    const size_t first = MenuFind(data, MenuString("screenItem"), 0, data.size());
+    if (first == std::string::npos || first < 4)
+        return false;
+    uint32_t items;
+    std::memcpy(&items, data.data() + first - 4, 4);
+    LOG_INFO("Online menu: the screen's items: %u at %zu, now %u", items, first - 4, items + added);
+    items += added;
+    std::memcpy(data.data() + first - 4, &items, 4);
+    return true;
+}
+
 bool BuildCodeScreen(std::vector<uint8_t>& data)
 {
     if (!ReadDiscResource(kCodesFile, data))
@@ -1502,13 +1516,9 @@ bool BuildCodeScreen(std::vector<uint8_t>& data)
             return true;
         const std::vector<uint8_t> copy(data.begin() + b, data.begin() + en);
         data.insert(data.begin() + en, copy.begin(), copy.end());
-        uint32_t nameLength, firstLength, items;
-        std::memcpy(&nameLength, data.data(), 4);
-        std::memcpy(&firstLength, data.data() + 4 + nameLength, 4);
-        const size_t countAt = 4 + nameLength + 4 + firstLength;
-        std::memcpy(&items, data.data() + countAt, 4);
-        ++items;
-        std::memcpy(data.data() + countAt, &items, 4);
+        if (!AddScreenItems(data, 1))
+            return true;
+        uint32_t items = 0;
         LOG_INFO("Online menu: test: %s (%zu bytes copied, %u items)", mode, copy.size(), items);
         return true;
     }
@@ -1556,14 +1566,7 @@ bool BuildCodeScreen(std::vector<uint8_t>& data)
         if (LeafItem(data, p.name, b, en))
             SetItemX(data, b, p.x);
     }
-    // the screen's item count: after its name and its first item's
-    uint32_t nameLength, firstLength, items;
-    std::memcpy(&nameLength, data.data(), 4);
-    std::memcpy(&firstLength, data.data() + 4 + nameLength, 4);
-    const size_t countAt = 4 + nameLength + 4 + firstLength;
-    std::memcpy(&items, data.data() + countAt, 4);
-    items += iconOnly || textOnly ? 1 : 2;
-    std::memcpy(data.data() + countAt, &items, 4);
+    AddScreenItems(data, iconOnly || textOnly ? 1 : 2);
     return true;
 }
 
