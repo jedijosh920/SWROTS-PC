@@ -130,6 +130,7 @@ and controller layouts: [controls](docs/controls.md).
 | [Co-op](docs/coop.md) | Two players in the story missions: how to play, settings, known issues |
 | [Heroes vs Villains](docs/research/heroes-vs-villains.md#playing-it) | The team mode: setting up a match, what's on screen |
 | [Battlefront](docs/battlefront.md) | The conquest mode: command posts, tickets, heroes |
+| [Missions and modes](docs/modding/missions.md) | Missions of your own: install, play from the main menu, write your own |
 | [Debug menu](docs/debug-menu.md) | The game's console, variables and debug displays |
 | [Modding](docs/modding/README.md) | Loose-file mods, dumping assets, textures, character swaps |
 | [How it works](docs/architecture.md) | The port's design, for the curious and for contributors |

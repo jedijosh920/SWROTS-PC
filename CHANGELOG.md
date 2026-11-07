@@ -3,6 +3,58 @@
 What changed in each release of SWROTS-PC, newest first. Downloads are on the
 [releases page](https://github.com/jedijosh920/SWROTS-PC/releases).
 
+## [v0.6.0](https://github.com/jedijosh920/SWROTS-PC/releases/tag/v0.6.0) - 2026-11-06
+
+Missions of your own: scripted missions with cutscenes, dialogue and voices.
+
+### Added
+
+- **Missions and modes of your own** (`mods\missions\<id>\`): a mission is a folder with a short Lua script, played on
+  the developer map or a custom map with the game's characters or custom ones. Every installed mission is in the main
+  menu under **Single Player > Custom Missions**, on the game's own mission select screen with its pictures,
+  character, location and description; also in the debug menu's **Missions** tab and the debug console (`mission
+  <id>`). Scripts get the game's own pieces where they can:
+  - **Cutscenes** with the game's letterbox and camera shots (fixed, moving, orbiting, tracking, any lens), skippable
+    by the player (A or Start twice, or `mission next` / F8 while testing). Cutscenes can be played by stand-ins
+    (`hide`), so a scene plays the same every time whatever the fight left the fighters in.
+  - **Dialogue** through the game's own dialogue system and subtitles, with voices from WAV files; the characters'
+    own battle cries stay out of cutscenes, and a line being said when a cutscene starts or is skipped stops.
+  - **Animations** from any character (`play_anim`, borrowed in `[Animations]`): ranges, loops, held poses, and the
+    game's paired kill moves with slow motion; slow motion of its own (`slow_motion`).
+  - **Objectives**, tips, the boss health bar, timers and counters, force fields (`[Fields]`, any colour), named
+    places to walk to (`[Markers]`), spawning, sides, AI targets, Force powers and sabers (lit or put away, any
+    colour), music and sounds.
+  - **The end**: "Mission Complete" or "Mission Failed" over the last shot in the game's message style, then a fade
+    (a failed mission starts again).
+
+  See [missions and modes](https://github.com/jedijosh920/SWROTS-PC/blob/main/docs/modding/missions.md).
+- **Custom characters**: a Versus mirror gives player 2 a body and voice of its own (`Mesh2=`, `[Voice2]`); any number
+  of voice lines, a pack's own dialogue archive, related lines for events a character has none for, and Vader's
+  breathing off for his class (`Breathing=0`). Up to nineteen custom characters on the Versus select screen.
+- **Debug console**: `kill` makes your character fall at once, to see what a defeat does.
+- **Custom maps**: collision of their own (`Brushes=`), a sky (`Sky=`), deadly falls (`KillHeight=`), point lights and
+  the player's own light (`[PointLights]`, `PlayerAmbient=`), draw distance (`FarClip=`), and `Modes=` to offer a map
+  only to some modes.
+
+### Fixed
+
+- Heroes vs Villains on a custom map crashed now and then (a character set up late).
+- Battlefront on custom maps: troopers come back at clear places near their post, and command posts on raised floors
+  (bridges, pads) work.
+- An ally on your side no longer turns on you when your saber catches it.
+- Live character swaps to a mod's character with a missing animation, and loose weapons' attachment points.
+
+Thanks to [@firestar300](https://github.com/firestar300) for the custom character and map fixes
+([#60](https://github.com/jedijosh920/SWROTS-PC/pull/60), [#61](https://github.com/jedijosh920/SWROTS-PC/pull/61),
+[#66](https://github.com/jedijosh920/SWROTS-PC/pull/66)).
+
+### Known issues
+
+- The Custom Missions screen shows a mission's description on one line (about 55 characters), with no briefing
+  screen.
+- On custom maps the computer's characters have no paths: a mission's fighters can stand still against a wall or a
+  doorway, so start them in the open.
+
 ## [v0.5.0](https://github.com/jedijosh920/SWROTS-PC/releases/tag/v0.5.0) - 2026-10-24
 
 Heroes vs Villains, Battlefront, Commander Cody and the Droid Commander, and custom characters and maps.
