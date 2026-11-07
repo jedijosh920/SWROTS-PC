@@ -135,7 +135,9 @@ void OtherPlayer(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float 
 }
 
 // A Versus duel: each player's name over their health bar (the game's own bars, at the bottom: player 1's on the
-// left, player 2's on the right), in the game's font.
+// left, player 2's on the right), in the menus' font and the menus' colours (a title's light blue, a dark blue rim).
+constexpr ImU32 kNameText = IM_COL32(153, 191, 243, 255);
+constexpr ImU32 kNameRim = IM_COL32(16, 30, 72, 235);
 void VersusNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u)
 {
     if (!game::GamePlayerSlot(0) || !game::GamePlayerSlot(1))
@@ -146,8 +148,13 @@ void VersusNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float 
     const auto name = [&](float x, const std::string& text, float align) {
         const std::string t = Upper(text);
         const ImVec2 at(x - GameFontWidthOf(GameFont::Menu, h, t) * align, y);
-        if (!GameFontTextOf(GameFont::Menu, g_Draw, at, h, kWhite, t))
-            Text(x, y, h, kWhite, text, align);
+        const float r = 1.6f * u;
+        static const float kAround[8][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 }, { -0.7f, -0.7f }, { 0.7f, -0.7f },
+            { -0.7f, 0.7f }, { 0.7f, 0.7f } };
+        for (const auto& d : kAround)
+            GameFontTextOf(GameFont::Menu, g_Draw, ImVec2(at.x + d[0] * r, at.y + d[1] * r), h, kNameRim, t, false);
+        if (!GameFontTextOf(GameFont::Menu, g_Draw, at, h, kNameText, t, false))
+            Text(x, y, h, kNameText, text, align);
     };
     name(vp->Pos.x + vp->Size.x * 0.170f, p1, 0.0f);
     name(vp->Pos.x + vp->Size.x * 0.836f, p2, 1.0f);
@@ -155,47 +162,29 @@ void VersusNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float 
 
 // A Versus duel with a time limit (the room's): the round's time left at the bottom, between the two health bars, in
 // the game's HUD font and the HUD's colours (the bars' frosty white on a dark navy panel with the frames' blue rim; the
-// health's red for the last ten seconds). A round that ends with the same health is a draw: DRAW for a moment.
+// health's red for the last ten seconds). A draw at the time's end is the game's own (its IDS_ROUND_DRAW).
 constexpr ImU32 kClockPanel = IM_COL32(6, 16, 38, 215);
 constexpr ImU32 kClockRim = IM_COL32(70, 150, 235, 255);
 constexpr ImU32 kClockInner = IM_COL32(30, 72, 140, 200);
 constexpr ImU32 kClockText = IM_COL32(205, 232, 255, 255);
 constexpr ImU32 kClockLow = IM_COL32(240, 70, 60, 255);
-constexpr ULONGLONG kDrawShownMs = 2500;
 
 void DuelClock(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u)
 {
-    static uint32_t drawsSeen = 0;
-    static bool drawsKnown = false;
-    static ULONGLONG drawAt = 0;
-    if (!drawsKnown || s.draws < drawsSeen) {
-        drawsKnown = true;
-        drawsSeen = s.draws;
-    } else if (s.draws != drawsSeen) {
-        drawsSeen = s.draws;
-        drawAt = GetTickCount64();
-    }
-    if (s.clockTenths >= 0) {
-        const int seconds = (s.clockTenths + 9) / 10;
-        const std::string text = std::to_string(seconds);
-        const float cx = vp->Pos.x + vp->Size.x / 2, cy = vp->Pos.y + vp->Size.y * 0.883f;
-        const float h = 34 * u, w = std::max(72 * u, Width(h, "88") + 28 * u), ph = 46 * u;
-        const ImVec2 a(cx - w / 2, cy - ph / 2), b(cx + w / 2, cy + ph / 2);
-        g_Draw->AddRectFilled(a, b, kClockPanel, 8 * u);
-        g_Draw->AddRect(ImVec2(a.x + 3 * u, a.y + 3 * u), ImVec2(b.x - 3 * u, b.y - 3 * u), kClockInner, 6 * u, 0, 1.0f * u);
-        g_Draw->AddRect(a, b, kClockRim, 8 * u, 0, 2.0f * u);
-        const ImU32 colour = seconds <= 10 ? kClockLow : kClockText;
-        const ImVec2 at(cx - GameFontWidthOf(GameFont::Hud, h, text) / 2, cy - h / 2);
-        if (!GameFontTextOf(GameFont::Hud, g_Draw, at, h, colour, text))
-            Text(cx, cy - h / 2, h, colour, text, 0.5f);
-    }
-    if (drawAt && GetTickCount64() - drawAt < kDrawShownMs) {
-        const float h = 64 * u, cx = vp->Pos.x + vp->Size.x / 2, y = vp->Pos.y + vp->Size.y * 0.36f;
-        const std::string text = "DRAW";
-        const ImVec2 at(cx - GameFontWidthOf(GameFont::Hud, h, text) / 2, y);
-        if (!GameFontTextOf(GameFont::Hud, g_Draw, at, h, kClockText, text))
-            Text(cx, y, h, kClockText, text, 0.5f);
-    }
+    if (s.clockTenths < 0)
+        return;
+    const int seconds = (s.clockTenths + 9) / 10;
+    const std::string text = std::to_string(seconds);
+    const float cx = vp->Pos.x + vp->Size.x / 2, cy = vp->Pos.y + vp->Size.y * 0.883f;
+    const float h = 34 * u, w = std::max(72 * u, Width(h, "88") + 28 * u), ph = 46 * u;
+    const ImVec2 a(cx - w / 2, cy - ph / 2), b(cx + w / 2, cy + ph / 2);
+    g_Draw->AddRectFilled(a, b, kClockPanel, 8 * u);
+    g_Draw->AddRect(ImVec2(a.x + 3 * u, a.y + 3 * u), ImVec2(b.x - 3 * u, b.y - 3 * u), kClockInner, 6 * u, 0, 1.0f * u);
+    g_Draw->AddRect(a, b, kClockRim, 8 * u, 0, 2.0f * u);
+    const ImU32 colour = seconds <= 10 ? kClockLow : kClockText;
+    const ImVec2 at(cx - GameFontWidthOf(GameFont::Hud, h, text) / 2, cy - h / 2);
+    if (!GameFontTextOf(GameFont::Hud, g_Draw, at, h, colour, text))
+        Text(cx, cy - h / 2, h, colour, text, 0.5f);
 }
 
 // The room code's keyboard: a fourth legend among its own (Scroll, Select, Paste, Back: the code screen spreads them,

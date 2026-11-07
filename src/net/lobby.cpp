@@ -152,8 +152,9 @@ std::string Announcement(std::string& code)
     static const char* const kArenas[] = { "HOST PICKS", "RANDOM", "LOSER PICKS", "WINNER PICKS" };
     const std::string arena = !s.arenaPlayed.empty() ? s.arenaPlayed : kArenas[s.room.arena < 4 ? s.room.arena : 0];
     const std::string name = s.room.name[0] ? std::string(s.room.name) : s.localName + "'S ROOM";
-    return "{\"code\":" + Json(code) + ",\"name\":" + Json(name) + ",\"host\":" + Json(s.localName) + ",\"mode\":\"VERSUS\",\"arena\":" +
-        Json(arena) + ",\"players\":" + std::to_string(s.guestHere ? 2 : 1) + ",\"version\":" +
+    const std::string mode = s.room.mode == 1 ? "COOPERATIVE" : "VERSUS";
+    return "{\"code\":" + Json(code) + ",\"name\":" + Json(name) + ",\"host\":" + Json(s.localName) + ",\"mode\":" +
+        Json(mode) + ",\"arena\":" + Json(arena) + ",\"players\":" + std::to_string(s.guestHere ? 2 : 1) + ",\"version\":" +
         std::to_string(OnlineProtocol()) + "}";
 }
 

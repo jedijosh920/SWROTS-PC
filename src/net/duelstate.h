@@ -56,11 +56,6 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
 std::string ApplyStats();
 // Whether either fighter of the duel plays its intro or outro now, and a line about both and the camera (diagnostics).
 bool DuelStaged();
-// Versus's time limit (session.cpp): the fight's start kept (both fighters' gameplay fields: places, health, Force, the
-// action), and both brought back to it (a draw: the round again). False when there is no duel, or for Restore when the
-// fighters are no longer those kept (a new round makes them again).
-bool SaveDuelFightStart();
-bool RestoreDuelFightStart();
 std::string DescribeDuel();
 
 } // namespace swrots::net

@@ -25,6 +25,7 @@
 #include "game/menus.h"
 #include "game/onlinemenu.h"
 #include "game/roster.h"
+#include "game/versus.h"
 #include "input/controls.h"
 #include "kernel/clock.h"
 #include "kernel/kernel.h"
@@ -535,6 +536,7 @@ struct Session {
     uint16_t starts = 0;                // the matches started from the room (the host's count; the guest's as it came)
     int clockTenths = -1;               // a duel with a time limit: the round's time left (the host's; the guest's as it came)
     uint32_t draws = 0;                 // the duels' draws (the host's count; the guest's as it came)
+    bool drawsKnown = false;            // the guest: the host's count has come once (a change after is a draw)
     uint32_t remoteScreen = 0;          // the other's front-end screen (the guest follows the host's)
     uint32_t screen = 0, screenSince = 0; // this game's, and the frame it came
     bool toRoom = false;                // to the room's screen once the front end is up
@@ -921,17 +923,18 @@ bool Living(const uint8_t* fighter)
 }
 
 // --- Versus's time limit (the host's: its duel is the match) ---------------------------------------------------------
-// The round's clock counts the fighters' game ticks (player 1's +0x314: one per game step, 60 a second, from the
-// round's start; none in slow motion or a hitch's catch-up) from the fight's start (the intros over, both living). At
-// its end the fighter with less health is put down (the game's own health change: its round's end follows, on both
-// games through the host's state); with the same health it is a draw: both fighters back as the fight started (their
-// gameplay fields: places, health, Force; DuelFightStart) and the clock again. A round over (a fighter down) stops it.
+// The round's clock runs while the game's Versus logic has the round fought (its state 4: the intros over, nobody down;
+// game::VersusRoundState) and counts the fighters' game ticks (player 1's +0x314: one per game step, 60 a second;
+// none in slow motion or a hitch's catch-up). At its end the fighter with less health is put down (the game's own
+// health change: the game's round end and its winner's outro follow, on both games through the host's state); with
+// the same health the round ends as the game ends a draw (game::VersusRoundDraw: IDS_ROUND_DRAW, no point, the next
+// round; the guest's game ends its round alike when the draws' count moves). The clock stays at 0 through the round's
+// end and starts again with the next round's fight.
 constexpr uint32_t kTicksPerSecond = 60;
 struct DuelClock {
-    uint8_t* fighters[2] = {}; // this round's (the game makes them again at each round)
-    bool started = false;      // the fight is on
-    bool over = false;         // the round is over (a fighter down, or the time out)
-    uint32_t startTick = 0, lastTick = 0;
+    bool fighting = false;     // the game's round is being fought (state 4) since the last frame
+    bool over = false;         // the time ran out this round
+    uint32_t startTick = 0;
     ULONGLONG startedAt = 0;   // (the ticks' pace checked once in the log)
     bool paceLogged = false;
 };
@@ -960,73 +963,51 @@ float FighterHealth(const uint8_t* fighter)
 void HostDuelClock(uint8_t* const fighters[2], uint8_t limit, int& tenths, uint32_t& draws)
 {
     DuelClock& c = g_Clock;
-    const uint32_t tick = FighterTick(fighters[0]);
-    if (fighters[0] != c.fighters[0] || fighters[1] != c.fighters[1] || tick + 30 < c.lastTick) { // a new round
-        c = DuelClock();
-        c.fighters[0] = fighters[0];
-        c.fighters[1] = fighters[1];
-    }
-    c.lastTick = tick;
     if (!limit) {
+        c = DuelClock();
         tenths = -1;
         return;
     }
-    const uint32_t full = uint32_t(limit) * kTicksPerSecond;
-    const bool both = Living(fighters[0]) && Living(fighters[1]);
-    if (!c.started) {
-        tenths = int(limit) * 10;
-        if (both && !DuelStaged() && tick > 0) {
-            c.started = true;
-            c.startTick = tick;
-            c.startedAt = GetTickCount64();
-            const bool saved = SaveDuelFightStart();
-            LOG_INFO("Online: the round's clock starts (%u s, tick %u%s)", unsigned(limit), tick,
-                saved ? "" : "; its start could not be kept: a draw puts both down");
-        }
+    const uint32_t tick = FighterTick(fighters[0]);
+    const bool fighting = game::VersusRoundState() == 4;
+    if (fighting && !c.fighting) { // a round's fight starts: the clock from the full time
+        c = DuelClock();
+        c.startTick = tick;
+        c.startedAt = GetTickCount64();
+        LOG_INFO("Online: the round's clock starts (%u s, tick %u)", unsigned(limit), tick);
+    }
+    c.fighting = fighting;
+    if (!fighting) { // the intros (the full time shown), or the round's end (the time it ended at)
+        if (c.startedAt == 0)
+            tenths = int(limit) * 10;
         return;
     }
     if (tick < c.startTick)
         c.startTick = tick;
-    const uint32_t elapsed = tick - c.startTick;
+    const uint32_t full = uint32_t(limit) * kTicksPerSecond, elapsed = tick - c.startTick;
     const uint32_t left = elapsed >= full ? 0 : full - elapsed;
-    if (!c.over)
-        tenths = int((left * 10 + kTicksPerSecond - 1) / kTicksPerSecond);
+    tenths = int((left * 10 + kTicksPerSecond - 1) / kTicksPerSecond);
     if (!c.paceLogged && GetTickCount64() - c.startedAt >= 10000) {
         c.paceLogged = true;
         LOG_INFO("Online: the round's clock: %u ticks in %llu ms", elapsed,
             static_cast<unsigned long long>(GetTickCount64() - c.startedAt));
     }
-    if (c.over)
+    if (left > 0 || c.over)
         return;
-    if (!both) { // a fighter down before the time: the round's own end
-        c.over = true;
-        return;
-    }
-    if (left > 0)
-        return;
+    c.over = true;
     const float h1 = FighterHealth(fighters[0]), h2 = FighterHealth(fighters[1]);
     if (std::fabs(h1 - h2) < 0.05f) {
-        ++draws;
-        const bool again = RestoreDuelFightStart();
-        LOG_INFO("Online: time out, the same health (%.1f): a draw (%u so far)%s", h1, draws,
-            again ? ", the round again" : "");
-        if (again) {
-            c.startTick = c.lastTick = FighterTick(fighters[0]);
-            tenths = int(limit) * 10;
-            return;
-        }
-        // the fight's start not kept: both down, the game's round end
-        game::ChangeHealthDirect(fighters[0], -1.0e6f);
-        game::ChangeHealthDirect(fighters[1], -1.0e6f);
-        c.over = true;
+        const bool ended = game::VersusRoundDraw();
+        if (ended)
+            ++draws;
+        LOG_INFO("Online: time out, the same health (%.1f): %s (%u so far)", h1,
+            ended ? "the game's draw" : "the round could not be ended", draws);
         return;
     }
     uint8_t* loser = h1 < h2 ? fighters[0] : fighters[1];
     LOG_INFO("Online: time out: P%d has less health (%.1f against %.1f): down", h1 < h2 ? 1 : 2, std::min(h1, h2),
         std::max(h1, h2));
     game::ChangeHealthDirect(loser, -1.0e6f);
-    c.over = true;
-    tenths = 0;
 }
 
 bool IsSelectScreen(uint32_t screen)
@@ -1512,6 +1493,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             LOG_INFO("Online: %s", PropsStats().c_str());
         return;
     }
+    bool followDraw = false;
     {
         std::lock_guard<std::mutex> relock(g_S.lock);
         g_S.guestInDuel = duel;
@@ -1519,9 +1501,13 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             g_S.clockTenths = -1;
         else if (haveState) {
             g_S.clockTenths = state.clockTenths;
+            followDraw = state.draws != g_S.draws && g_S.drawsKnown;
             g_S.draws = state.draws;
+            g_S.drawsKnown = true;
         }
     }
+    if (followDraw) // the host's round ended as a draw (its time out): this game's too
+        LOG_INFO("Online: the host's round is a draw: %s", game::VersusRoundDraw() ? "this game's too" : "not here");
     g_GuestFighters[0] = duel ? fighters[0] : nullptr;
     g_GuestFighters[1] = duel ? fighters[1] : nullptr;
     game::SetDamageFilter(duel ? &GuestDamage : nullptr);
@@ -2102,6 +2088,7 @@ void ResetSessionLocked(bool host)
     g_S.propsSeqOut = g_S.propsSeqIn = 0;
     g_S.clockTenths = -1;
     g_S.draws = 0;
+    g_S.drawsKnown = false;
     g_S.propsIn.clear();
     g_S.haveState = false;
     g_S.guestInDuel = false;

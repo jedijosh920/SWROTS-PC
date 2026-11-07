@@ -377,12 +377,17 @@ The room (2026-11-07): the players' table under the menu shows each player's Rea
 (the pause screen's `s_pause_obj_off` / `_on`, copied from a level's PAK and loaded through the game's texture
 interface, drawn with its quad over the row) and the other player's connection as five bars (the menus' row stroke,
 `s_main_bar_off`; those it does not reach greyed) before its time. **X** is Ready / Not Ready, a third prompt in the
-footer (a copy of Back's ButtonIcon with icon X, its text the port's). Room Settings has **Time Limit** (Versus:
-Infinite, 99, 60 or 30 s; protocol 8): the host's duel counts the fighters' game ticks from the fight's start (the
-intros over); at its end the fighter with less health is put down through the game's own health change (the round's
-end then follows on both games); with the same health the round is a draw and is played again (both fighters' gameplay
-fields written back as the fight started, the clock again). The clock goes to the guest with the host's state; each PC
-draws it at the bottom between the health bars in the HUD's font (none without a time limit), and DRAW for a moment.
+footer (a copy of Back's ButtonIcon with icon X, its text the port's). Game Mode (the host's: Versus or Cooperative;
+Cooperative cannot be played online yet) is in the room; Room Settings has the room's name, Public Room, Arena, and in
+Versus only Rounds to Win, **Time Limit** (Infinite, 99, 60 or 30 s; protocol 8) and Auto Rematch (out of sight in
+another mode: those rows and their veils moved below the screen). The host's duel counts the fighters' game ticks while
+the game's Versus logic has the round fought (its game mode object `[0x7EB964]`, state `+0x240` 4); at the time's end
+the fighter with less health is put down through the game's own health change (the game's round end and winner's
+outro follow on both games); with the same health the round ends as the game ends a draw (the round-end block at
+0x27D35A done by the port: both fighters' controllers taken away, the round's end staged, state 5; 2.7 s later the game
+finds both living and says IDS_ROUND_DRAW, gives no point and plays the next round; the guest's game does the same
+when the host's count of draws moves). The clock starts again with the next round's fight. Each PC draws it at the
+bottom between the health bars in the HUD's font (none without a time limit).
 
 UPnP (net/upnp.cpp): before STUN, the host asks its router (SSDP, then the WANIPConnection/WANPPPConnection
 service's AddPortMapping) to open its UDP port, the same port outside, leased for 6 hours (permanent only on routers

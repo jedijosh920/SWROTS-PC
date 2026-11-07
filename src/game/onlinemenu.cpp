@@ -385,8 +385,8 @@ constexpr const char* kRoomSettingsFileName = "interfc\\front_end\\xml\\online_r
 enum Row {
     kHost, kJoin, kSettings, kStatus,
     kName,
-    kMode, kArena, kRoomSettings, kCode, kLeave, kGap, kPlayer1, kPlayer2,
-    kRoomName, kRounds, kTime, kRematch, kPublic,
+    kMode, kRoomSettings, kCode, kLeave, kGap, kPlayer1, kPlayer2,
+    kRoomName, kPublic, kArena, kRounds, kTime, kRematch, // Rounds, Time Limit and Auto Rematch: Versus only (VersusRow)
     kPubStatus, kPub0, kPubLast = kPub0 + 7,
     kRowCount
 };
@@ -403,7 +403,6 @@ constexpr RowDef kRowDefs[kRowCount] = {
     { "onlinestatus", "IDS_PORT_ONLINE_STATUS", false, kOnline },
     { "onlinename", "IDS_PORT_ONLINE_NAME", false, kSettingsScreen },
     { "roommode", "IDS_PORT_ROOM_MODE", false, kRoom },
-    { "roomarena", "IDS_PORT_ROOM_ARENA", false, kRoom },
     { "roomsettings", "IDS_PORT_ROOM_SETTINGS", true, kRoom },
     { "roomcode", "IDS_PORT_ROOM_CODE", false, kRoom },
     { "roomleave", "IDS_PORT_ROOM_LEAVE", true, kRoom },
@@ -411,10 +410,11 @@ constexpr RowDef kRowDefs[kRowCount] = {
     { "roomp1", "IDS_PORT_ROOM_P1", false, kRoom },
     { "roomp2", "IDS_PORT_ROOM_P2", false, kRoom },
     { "roomname", "IDS_PORT_ROOM_NAME", false, kRoomSettingsScreen },
-    { "roomrounds", "IDS_PORT_ROOM_ROUNDS", false, kRoomSettingsScreen },
-    { "roomtime", "IDS_PORT_ROOM_TIME", false, kRoomSettingsScreen }, // Versus: a round's time limit
-    { "roomrematch", "IDS_PORT_ROOM_REMATCH", false, kRoomSettingsScreen },
     { "roompublic", "IDS_PORT_ROOM_PUBLIC", false, kRoomSettingsScreen },
+    { "roomarena", "IDS_PORT_ROOM_ARENA", false, kRoomSettingsScreen },
+    { "roomrounds", "IDS_PORT_ROOM_ROUNDS", false, kRoomSettingsScreen },
+    { "roomtime", "IDS_PORT_ROOM_TIME", false, kRoomSettingsScreen }, // a round's time limit
+    { "roomrematch", "IDS_PORT_ROOM_REMATCH", false, kRoomSettingsScreen },
     { "pubstatus", "IDS_PORT_PUB_STATUS", false, kPublicScreen },
     { "pubroom1", "IDS_PORT_PUB_ROOM1", false, kPublicScreen },
     { "pubroom2", "IDS_PORT_PUB_ROOM2", false, kPublicScreen },
@@ -532,7 +532,7 @@ void UpdateTexts()
     SetMenuText(ValueId(kStatus).c_str(), Wide(Shorten(status, 40)));
     SetMenuText(ValueId(kName).c_str(), Wide(net::OnlinePlayerName()));
     // the room
-    SetMenuText(ValueId(kMode).c_str(), L"VERSUS");
+    SetMenuText(ValueId(kMode).c_str(), s.room.mode == 1 ? L"COOPERATIVE" : L"VERSUS");
     SetMenuText(ValueId(kRounds).c_str(), Wide(std::to_string(s.room.rounds)));
     static const wchar_t* const kArenaTexts[] = { L"HOST PICKS", L"RANDOM", L"LOSER PICKS", L"WINNER PICKS" };
     SetMenuText(ValueId(kArena).c_str(), kArenaTexts[s.room.arena < std::size(kArenaTexts) ? s.room.arena : 0]);
@@ -605,6 +605,12 @@ void UpdateTexts()
     SetMenuText(ValueId(kCode).c_str(), Wide(code));
 }
 
+// A row shown in the room's game mode: Rounds to Win, Time Limit and Auto Rematch are Versus's alone.
+bool VersusRow(int row)
+{
+    return (row != kRounds && row != kTime && row != kRematch) || net::OnlineStatus().room.mode == 0;
+}
+
 // Rows that cannot be chosen now: skipped by the cursor and dimmed (rows that only tell are never chosen either).
 bool RowDisabled(int row)
 {
@@ -615,8 +621,8 @@ bool RowDisabled(int row)
     case kSettings: return false;
     case kStatus: return true;
     case kName: return !idle;
-    case kMode: return true; // Versus only for now
-    case kRoomName: case kRounds: case kTime: case kArena: case kRematch: case kPublic: return !s.host || idle;
+    case kMode: case kRoomName: case kArena: case kPublic: return !s.host || idle; // the host's alone
+    case kRounds: case kTime: case kRematch: return !s.host || idle || !VersusRow(row);
     case kRoomSettings: return idle;
     case kPlayer1: case kPlayer2: case kGap: return true;
     case kCode: return !(s.host && !idle && !s.roomCode.empty());
@@ -632,7 +638,8 @@ bool RowDisabled(int row)
 // Rows shown dimmed: the disabled ones, but not the rows that only tell.
 bool RowDimmed(int row)
 {
-    if (row == kRoomName || row == kRounds || row == kTime || row == kArena || row == kRematch || row == kPublic) { // the guest sees the host's settings, not dimmed
+    if (row == kMode || row == kRoomName || row == kRounds || row == kTime || row == kArena || row == kRematch ||
+        row == kPublic) { // the guest sees the host's settings, not dimmed
         const net::OnlineStatusInfo s = net::OnlineStatus();
         if (!s.host && !Idle(s))
             return false;
@@ -754,6 +761,48 @@ void TitleAsRoomName(uint8_t* handler)
             *reinterpret_cast<const void**>(title + 0x44) = text;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
+}
+
+// Room Settings in another mode than Versus: its Versus rows (the last three) and their veils out of sight, as if the
+// screen had three rows fewer: each item put below the screen (+0xE6: y in 1/32 pixels; its children, the rows' bars,
+// placed from it) and see-through (+0x97: its colour's alpha), both given back for Versus.
+struct HiddenItem {
+    uint8_t* item = nullptr;
+    int16_t y = 0;
+    uint8_t alpha = 0xFF;
+};
+HiddenItem g_HiddenItems[6];
+
+void ShowItem(uint8_t* handler, int slot, const char* name, bool shown)
+{
+    __try {
+        const uint8_t* own = *reinterpret_cast<uint8_t* const*>(handler + 8);
+        uint8_t* items = own ? *reinterpret_cast<uint8_t* const*>(own + 0x24) : nullptr;
+        uint8_t* item = items ? reinterpret_cast<uint8_t*(__fastcall*)(uint8_t*, void*, const char*)>(
+            uintptr_t(kFindItem))(items, nullptr, name) : nullptr;
+        if (!item)
+            return;
+        HiddenItem& h = g_HiddenItems[slot];
+        if (h.item != item) { // this screen's item (the screen made again): its place and alpha as they are
+            h.item = item;
+            h.y = *reinterpret_cast<int16_t*>(item + 0xE6);
+            h.alpha = item[0x97];
+            if (h.y >= 600 * 32) // (already put away)
+                h.y = int16_t(h.y - 1000 * 32);
+        }
+        *reinterpret_cast<int16_t*>(item + 0xE6) = shown ? h.y : int16_t(h.y + 1000 * 32 > 32767 ? 32767 : h.y + 1000 * 32);
+        item[0x97] = shown ? h.alpha : 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+void PlaceVersusRows(uint8_t* handler)
+{
+    const bool versus = net::OnlineStatus().room.mode == 0;
+    static const char* const kItems[6] = { "roomrounds", "roomtime", "roomrematch", "mvolumeveil", "evolumeveil",
+        "dvolumeveil" };
+    for (int i = 0; i < 6; ++i)
+        ShowItem(handler, i, kItems[i], versus);
 }
 
 // --- The room's pictures --------------------------------------------------------------------------------------------
@@ -1084,8 +1133,13 @@ char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
     if (row == kStatus || row == kMode || row == kRoomName)
         KeepOnRightScreen(row);
     if ((row == kMode || row == kRoomName) && net::OnlineTakeStart()) { // both players ready: the host's game starts
-        LOG_INFO("Online menu: both players ready: Versus");
-        GoToVersusSelect();
+        if (net::OnlineStatus().room.mode == 0) {
+            LOG_INFO("Online menu: both players ready: Versus");
+            GoToVersusSelect();
+        } else {
+            LOG_INFO("Online menu: both players ready: Cooperative (not playable online yet)");
+            ShowNotice(handler, "Cooperative is not playable online yet.");
+        }
     }
     if (row == kPubStatus)
         ShowRoomNotice(handler);
@@ -1094,6 +1148,10 @@ char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
         TitleAsRoomName(handler);
         ReadyLegend(handler);
     }
+    if (row == kRoomName)
+        PlaceVersusRows(handler);
+    if (!VersusRow(row)) // not in this game mode: nothing of it drawn
+        return 1;
     if (row == kStatus && g_LostPopup) {
         g_LostPopup = false;
         ShowPopup(handler, "IDS_PORT_LOST_TITLE", "IDS_PORT_LOST_TEXT");
@@ -1156,8 +1214,15 @@ char __fastcall ValueEvent(uint8_t* handler, void*, int event, int value)
     if (event != kLeft && event != kRight && event != kChosen)
         return g_OnOffEvent(handler, nullptr, event, value);
     const int row = RowOf(handler);
-    if (row < 0 || RowDisabled(row))
+    if (row < 0 || RowDisabled(row)) {
+        static int refused = 0;
+        if (row >= 0 && refused < 20 && kRowDefs[row].screen == kRoomSettingsScreen) {
+            ++refused;
+            LOG_INFO("Online menu: %s refused (%s)", kRowDefs[row].name,
+                net::OnlineStatus().host ? "not now" : "the host's setting");
+        }
         return 1;
+    }
     const net::OnlineStatusInfo s = net::OnlineStatus();
     if (row == kCode && event == kChosen) { // Copy Code (the row says CODE COPIED for 2 s)
         if (CopyToClipboard(s.roomCode)) {
@@ -1192,7 +1257,9 @@ char __fastcall ValueEvent(uint8_t* handler, void*, int event, int value)
     }
     net::OnlineRoomSettings room = s.room;
     const int step = event == kLeft ? -1 : 1;
-    if (row == kRounds) {
+    if (row == kMode) {
+        room.mode = room.mode ? 0 : 1; // Versus, Cooperative
+    } else if (row == kRounds) {
         int at = 0;
         for (int i = 0; i < int(std::size(kRoundChoices)); ++i)
             if (kRoundChoices[i] == room.rounds)

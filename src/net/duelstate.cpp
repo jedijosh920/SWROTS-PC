@@ -835,38 +835,6 @@ void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t le
     }
 }
 
-namespace {
-Snap g_FightStart; // Versus's time limit: the fight's start
-} // namespace
-
-bool SaveDuelFightStart()
-{
-    g_FightStart.valid = false;
-    uint8_t* p[2] = {};
-    if (!DuelFighters(p[0], p[1]))
-        return false;
-    for (int i = 0; i < 2; ++i) {
-        g_FightStart.bytes[i].resize(kObjectBytes);
-        if (!ReadObject(p[i], g_FightStart.bytes[i].data()))
-            return false;
-        g_FightStart.object[i] = p[i];
-    }
-    g_FightStart.valid = true;
-    return true;
-}
-
-bool RestoreDuelFightStart()
-{
-    uint8_t* p[2] = {};
-    if (!g_FightStart.valid || !DuelFighters(p[0], p[1]) || p[0] != g_FightStart.object[0] ||
-        p[1] != g_FightStart.object[1])
-        return false;
-    for (int i = 0; i < 2; ++i)
-        if (!Write(p[i], g_FightStart.bytes[i].data(), kFields, std::size(kFields)))
-            return false;
-    return true;
-}
-
 bool DuelStaged()
 {
     uint8_t* p[2] = {};
