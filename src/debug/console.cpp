@@ -1130,7 +1130,8 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         command != "infiniteforce" && command != "memory" && command != "team" &&
         command != "findrefs" && command != "despawn" && command != "characters" && command != "scale" &&
         command != "screenshot" && command != "coop" &&
-        command != "devmap" && command != "hvv" && command != "versus" && command != "mission" && command != "kill" && command != "synctest" && command != "nettest" & && command != "press" && command != "objects"&
+        command != "devmap" && command != "hvv" && command != "versus" && command != "mission" && command != "kill" && command != "synctest" && command != "nettest" &&
+        command != "press" && command != "objects" &&
         command != "online" && command != "duelrec" && command != "duelsnap" && command != "duelplay")
         return false;
     Print(LineKind::Output, "> %s", line.c_str());
