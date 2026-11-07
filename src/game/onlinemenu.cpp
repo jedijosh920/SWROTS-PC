@@ -713,6 +713,38 @@ char DrawUnfocused(uint8_t* handler, bool unfocused, Draw draw)
     return result;
 }
 
+// A row's label as its text is now: an item takes its label once, as its screen comes ([item+0x44]: the length, then
+// the characters); the rows whose label changes (the players' names, the public rooms') are drawn with the port's
+// text buffer in its place, their own given back after.
+template <typename Draw>
+char DrawLabelled(uint8_t* handler, int row, Draw draw)
+{
+    uint8_t* item = *reinterpret_cast<uint8_t**>(handler + 8);
+    const wchar_t* text = MenuTextBuffer(kRowDefs[row].text);
+    if (!item || !text)
+        return draw();
+    const void* own = *reinterpret_cast<const void**>(item + 0x44);
+    *reinterpret_cast<const void**>(item + 0x44) = text;
+    const char result = draw();
+    *reinterpret_cast<const void**>(item + 0x44) = own;
+    return result;
+}
+
+// The room's title as its name: the screen's "title" item pointed at the port's text (its buffers are never freed).
+void TitleAsRoomName(uint8_t* handler)
+{
+    __try {
+        const uint8_t* item = *reinterpret_cast<uint8_t* const*>(handler + 8);
+        uint8_t* items = item ? *reinterpret_cast<uint8_t* const*>(item + 0x24) : nullptr;
+        uint8_t* title = items ? reinterpret_cast<uint8_t*(__fastcall*)(uint8_t*, void*, const char*)>(
+            uintptr_t(kFindItem))(items, nullptr, "title") : nullptr;
+        const wchar_t* text = MenuTextBuffer("IDS_PORT_ROOM_TITLE");
+        if (title && text)
+            *reinterpret_cast<const void**>(title + 0x44) = text;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
 uint8_t* CurrentProfile()
 {
     uint8_t* profiles = *reinterpret_cast<uint8_t**>(uintptr_t(kProfiles));
@@ -798,7 +830,7 @@ bool ShowNotice(uint8_t* owner, const std::string& text, const char* name = "Def
 
 // The game's Yes/No popup (the screen's YesNoPopup item): shown with its slot 27 (+0x6C: (owner, 0)); once closed it
 // calls its owner's slot 8 (+0x20) for Yes, slot 9 (+0x24) for No (0x2E6C80).
-bool ShowYesNo(uint8_t* owner, const char* titleId, const char* messageId)
+bool ShowYesNo(uint8_t* owner, const char* titleId, const char* messageId, bool yesFirst = false)
 {
     __try {
         uint8_t* shell = *reinterpret_cast<uint8_t**>(uintptr_t(kShellObject));
@@ -808,6 +840,8 @@ bool ShowYesNo(uint8_t* owner, const char* titleId, const char* messageId)
             return false;
         reinterpret_cast<void(__fastcall*)(uint8_t*, void*, uint8_t*, int)>(
             (*reinterpret_cast<void* const* const*>(popup))[0x6C / 4])(popup, nullptr, owner, 0);
+        if (yesFirst)
+            popup[0x86] = 1; // the cursor on Yes (its choice: 1 Yes, which its close reads)
         reinterpret_cast<void(__fastcall*)(uint8_t*, void*, const void*)>(uintptr_t(kPopupTitle))(popup, nullptr,
             GameText(titleId));
         reinterpret_cast<void(__fastcall*)(uint8_t*, void*, const void*)>(uintptr_t(kPopupMessage))(popup, nullptr,
@@ -870,8 +904,10 @@ char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
         LOG_INFO("Online menu: both players ready: Versus");
         GoToVersusSelect();
     }
-    if (row == kMode)
+    if (row == kMode) {
         ShowRoomNotice(handler);
+        TitleAsRoomName(handler);
+    }
     if (row == kStatus && g_LostPopup) {
         g_LostPopup = false;
         ShowPopup(handler, "IDS_PORT_LOST_TITLE", "IDS_PORT_LOST_TEXT");
@@ -887,7 +923,9 @@ char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
     const std::string text = ValueId(row);
     SetOnOffTexts(text.c_str(), text.c_str());
     const char result = DrawUnfocused(handler, RowDisabled(row), [&] {
-        return DrawDimmed(handler, RowDimmed(row), [&] { return g_OnOffDraw(handler, nullptr, value); });
+        return DrawDimmed(handler, RowDimmed(row), [&] {
+            return DrawLabelled(handler, row, [&] { return g_OnOffDraw(handler, nullptr, value); });
+        });
     });
     SetOnOffTexts(nullptr, nullptr);
     if (profile)
@@ -966,7 +1004,7 @@ char __fastcall ValueEvent(uint8_t* handler, void*, int event, int value)
         g_PendingJoin = r.code;
         g_PendingJoinName = r.name;
         SetMenuText("IDS_PORT_JOIN_TEXT", Wide("Join " + Shorten(r.name, 24) + "?"));
-        if (!ShowYesNo(handler, "IDS_PORT_JOIN_TITLE", "IDS_PORT_JOIN_TEXT"))
+        if (!ShowYesNo(handler, "IDS_PORT_JOIN_TITLE", "IDS_PORT_JOIN_TEXT", true))
             g_PendingJoin.clear();
         return 1;
     }

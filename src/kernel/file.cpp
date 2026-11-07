@@ -444,6 +444,12 @@ NTSTATUS XBAPI NtCreateFile(HANDLE* FileHandle, ACCESS_MASK DesiredAccess, xbox:
         IoStatusBlock->Status = status;
         return status;
     }
+    // Unattended tests: no movies (SWROTS_TEST_NOMOVIES), so that the game goes straight to its title.
+    static const bool noMovies = GetEnvironmentVariableA("SWROTS_TEST_NOMOVIES", nullptr, 0) != 0;
+    if (noMovies && xpath.size() > 4 && _stricmp(xpath.c_str() + xpath.size() - 4, ".sfd") == 0) {
+        IoStatusBlock->Status = xbox::X_STATUS_OBJECT_NAME_NOT_FOUND;
+        return xbox::X_STATUS_OBJECT_NAME_NOT_FOUND;
+    }
 
     // A generated file created on the disc drive goes to cache\disc (see IsGeneratedFile).
     std::wstring discRoot = L"\\??\\" + g_GameData;
