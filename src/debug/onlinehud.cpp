@@ -153,6 +153,51 @@ void VersusNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float 
     name(vp->Pos.x + vp->Size.x * 0.836f, p2, 1.0f);
 }
 
+// A Versus duel with a time limit (the room's): the round's time left at the bottom, between the two health bars, in
+// the game's HUD font and the HUD's colours (the bars' frosty white on a dark navy panel with the frames' blue rim; the
+// health's red for the last ten seconds). A round that ends with the same health is a draw: DRAW for a moment.
+constexpr ImU32 kClockPanel = IM_COL32(6, 16, 38, 215);
+constexpr ImU32 kClockRim = IM_COL32(70, 150, 235, 255);
+constexpr ImU32 kClockInner = IM_COL32(30, 72, 140, 200);
+constexpr ImU32 kClockText = IM_COL32(205, 232, 255, 255);
+constexpr ImU32 kClockLow = IM_COL32(240, 70, 60, 255);
+constexpr ULONGLONG kDrawShownMs = 2500;
+
+void DuelClock(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u)
+{
+    static uint32_t drawsSeen = 0;
+    static bool drawsKnown = false;
+    static ULONGLONG drawAt = 0;
+    if (!drawsKnown || s.draws < drawsSeen) {
+        drawsKnown = true;
+        drawsSeen = s.draws;
+    } else if (s.draws != drawsSeen) {
+        drawsSeen = s.draws;
+        drawAt = GetTickCount64();
+    }
+    if (s.clockTenths >= 0) {
+        const int seconds = (s.clockTenths + 9) / 10;
+        const std::string text = std::to_string(seconds);
+        const float cx = vp->Pos.x + vp->Size.x / 2, cy = vp->Pos.y + vp->Size.y * 0.883f;
+        const float h = 34 * u, w = std::max(72 * u, Width(h, "88") + 28 * u), ph = 46 * u;
+        const ImVec2 a(cx - w / 2, cy - ph / 2), b(cx + w / 2, cy + ph / 2);
+        g_Draw->AddRectFilled(a, b, kClockPanel, 8 * u);
+        g_Draw->AddRect(ImVec2(a.x + 3 * u, a.y + 3 * u), ImVec2(b.x - 3 * u, b.y - 3 * u), kClockInner, 6 * u, 0, 1.0f * u);
+        g_Draw->AddRect(a, b, kClockRim, 8 * u, 0, 2.0f * u);
+        const ImU32 colour = seconds <= 10 ? kClockLow : kClockText;
+        const ImVec2 at(cx - GameFontWidthOf(GameFont::Hud, h, text) / 2, cy - h / 2);
+        if (!GameFontTextOf(GameFont::Hud, g_Draw, at, h, colour, text))
+            Text(cx, cy - h / 2, h, colour, text, 0.5f);
+    }
+    if (drawAt && GetTickCount64() - drawAt < kDrawShownMs) {
+        const float h = 64 * u, cx = vp->Pos.x + vp->Size.x / 2, y = vp->Pos.y + vp->Size.y * 0.36f;
+        const std::string text = "DRAW";
+        const ImVec2 at(cx - GameFontWidthOf(GameFont::Hud, h, text) / 2, y);
+        if (!GameFontTextOf(GameFont::Hud, g_Draw, at, h, kClockText, text))
+            Text(cx, y, h, kClockText, text, 0.5f);
+    }
+}
+
 // The room code's keyboard: a fourth legend among its own (Scroll, Select, Paste, Back: the code screen spreads them,
 // onlinemenu.cpp), in the third place: the key's picture as the keyboard prompts draw one (a dark key with a frosty
 // blue rim) and the action in the menus' font, on their line (the screen's 640 x 480: icons at y 333, 32 high; the
@@ -239,8 +284,10 @@ void DrawOnlineHud()
     case net::OnlinePhase::Playing: {
         if (s.pingMs >= 0)
             Text(vp->Pos.x + vp->Size.x - 16 * u, vp->Pos.y + 10 * u, 14 * u, kDim, std::to_string(s.pingMs) + " ms", 1.0f);
-        if (game::BootIsVersusDuel())
+        if (game::BootIsVersusDuel()) {
             VersusNames(s, vp, u);
+            DuelClock(s, vp, u);
+        }
         else if (!s.remoteName.empty())
             OtherPlayer(s, vp, u);
         if (s.desync)

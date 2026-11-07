@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -42,8 +43,8 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr uint32_t kMagic = 0x4E525753; // 'SWRN'
-constexpr uint16_t kProtocol = 7; // 2: the players' names; 3: client/server matches; 4: the arena's picker; 5: props; 6: a public room;
-                                  // 7: the room's name, the players' Ready
+constexpr uint16_t kProtocol = 8; // 2: the players' names; 3: client/server matches; 4: the arena's picker; 5: props; 6: a public room;
+                                  // 7: the room's name, the players' Ready; 8: Versus's time limit (the room, the duel's clock)
 constexpr uint16_t kDefaultPort = 27960;
 constexpr uint32_t kHistory = 512;      // frames of inputs kept (a power of two)
 constexpr uint32_t kMaxSend = 48;       // inputs in one packet at most
@@ -187,6 +188,8 @@ struct StateMsg {
     uint32_t seq;
     uint32_t hostFrame;
     FighterState fighters[2];
+    int16_t clockTenths; // the round's time left (the room's time limit; -1 none)
+    uint16_t draws;      // the duels' draws so far (DRAW shown as it moves)
 };
 // The arena's props that moved or are gone on the host's game (props.h).
 struct PropsMsg {
@@ -530,6 +533,8 @@ struct Session {
     OnlineRoomSettings room;            // the host's (the guest: as it last came)
     bool localReady = false, remoteReady = false; // the players' Ready in the room (this PC's, the other's)
     uint16_t starts = 0;                // the matches started from the room (the host's count; the guest's as it came)
+    int clockTenths = -1;               // a duel with a time limit: the round's time left (the host's; the guest's as it came)
+    uint32_t draws = 0;                 // the duels' draws (the host's count; the guest's as it came)
     uint32_t remoteScreen = 0;          // the other's front-end screen (the guest follows the host's)
     uint32_t screen = 0, screenSince = 0; // this game's, and the frame it came
     bool toRoom = false;                // to the room's screen once the front end is up
@@ -913,6 +918,115 @@ bool Living(const uint8_t* fighter)
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return true;
     }
+}
+
+// --- Versus's time limit (the host's: its duel is the match) ---------------------------------------------------------
+// The round's clock counts the fighters' game ticks (player 1's +0x314: one per game step, 60 a second, from the
+// round's start; none in slow motion or a hitch's catch-up) from the fight's start (the intros over, both living). At
+// its end the fighter with less health is put down (the game's own health change: its round's end follows, on both
+// games through the host's state); with the same health it is a draw: both fighters back as the fight started (their
+// gameplay fields: places, health, Force; DuelFightStart) and the clock again. A round over (a fighter down) stops it.
+constexpr uint32_t kTicksPerSecond = 60;
+struct DuelClock {
+    uint8_t* fighters[2] = {}; // this round's (the game makes them again at each round)
+    bool started = false;      // the fight is on
+    bool over = false;         // the round is over (a fighter down, or the time out)
+    uint32_t startTick = 0, lastTick = 0;
+    ULONGLONG startedAt = 0;   // (the ticks' pace checked once in the log)
+    bool paceLogged = false;
+};
+DuelClock g_Clock;
+
+uint32_t FighterTick(const uint8_t* fighter)
+{
+    __try {
+        return *reinterpret_cast<const uint32_t*>(fighter + 0x314);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+float FighterHealth(const uint8_t* fighter)
+{
+    __try {
+        return *reinterpret_cast<const float*>(fighter + 0x130);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0.0f;
+    }
+}
+
+// The host, every frame of a duel (the game thread, the session's lock not held): the round's clock; its time left
+// (tenths of a second; -1 none) and the draws so far, for the state sent to the guest.
+void HostDuelClock(uint8_t* const fighters[2], uint8_t limit, int& tenths, uint32_t& draws)
+{
+    DuelClock& c = g_Clock;
+    const uint32_t tick = FighterTick(fighters[0]);
+    if (fighters[0] != c.fighters[0] || fighters[1] != c.fighters[1] || tick + 30 < c.lastTick) { // a new round
+        c = DuelClock();
+        c.fighters[0] = fighters[0];
+        c.fighters[1] = fighters[1];
+    }
+    c.lastTick = tick;
+    if (!limit) {
+        tenths = -1;
+        return;
+    }
+    const uint32_t full = uint32_t(limit) * kTicksPerSecond;
+    const bool both = Living(fighters[0]) && Living(fighters[1]);
+    if (!c.started) {
+        tenths = int(limit) * 10;
+        if (both && !DuelStaged() && tick > 0) {
+            c.started = true;
+            c.startTick = tick;
+            c.startedAt = GetTickCount64();
+            const bool saved = SaveDuelFightStart();
+            LOG_INFO("Online: the round's clock starts (%u s, tick %u%s)", unsigned(limit), tick,
+                saved ? "" : "; its start could not be kept: a draw puts both down");
+        }
+        return;
+    }
+    if (tick < c.startTick)
+        c.startTick = tick;
+    const uint32_t elapsed = tick - c.startTick;
+    const uint32_t left = elapsed >= full ? 0 : full - elapsed;
+    if (!c.over)
+        tenths = int((left * 10 + kTicksPerSecond - 1) / kTicksPerSecond);
+    if (!c.paceLogged && GetTickCount64() - c.startedAt >= 10000) {
+        c.paceLogged = true;
+        LOG_INFO("Online: the round's clock: %u ticks in %llu ms", elapsed,
+            static_cast<unsigned long long>(GetTickCount64() - c.startedAt));
+    }
+    if (c.over)
+        return;
+    if (!both) { // a fighter down before the time: the round's own end
+        c.over = true;
+        return;
+    }
+    if (left > 0)
+        return;
+    const float h1 = FighterHealth(fighters[0]), h2 = FighterHealth(fighters[1]);
+    if (std::fabs(h1 - h2) < 0.05f) {
+        ++draws;
+        const bool again = RestoreDuelFightStart();
+        LOG_INFO("Online: time out, the same health (%.1f): a draw (%u so far)%s", h1, draws,
+            again ? ", the round again" : "");
+        if (again) {
+            c.startTick = c.lastTick = FighterTick(fighters[0]);
+            tenths = int(limit) * 10;
+            return;
+        }
+        // the fight's start not kept: both down, the game's round end
+        game::ChangeHealthDirect(fighters[0], -1.0e6f);
+        game::ChangeHealthDirect(fighters[1], -1.0e6f);
+        c.over = true;
+        return;
+    }
+    uint8_t* loser = h1 < h2 ? fighters[0] : fighters[1];
+    LOG_INFO("Online: time out: P%d has less health (%.1f against %.1f): down", h1 < h2 ? 1 : 2, std::min(h1, h2),
+        std::max(h1, h2));
+    game::ChangeHealthDirect(loser, -1.0e6f);
+    c.over = true;
+    tenths = 0;
 }
 
 bool IsSelectScreen(uint32_t screen)
@@ -1310,6 +1424,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     }
     const bool host = g_S.host;
     const int pingMs = g_S.pingMs;
+    const uint8_t timeLimit = g_S.room.time;
     if (host && g_S.frame % 600 == 0)
         LOG_INFO("Online: the guest's pad: %u change(s) received, read %u time(s) as player 2", g_S.remoteChanges,
             g_S.remoteReads);
@@ -1358,13 +1473,25 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
                     int(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count()));
             }
         }
+        int tenths = -1;
+        uint32_t draws = 0;
+        {
+            std::lock_guard<std::mutex> relock(g_S.lock);
+            tenths = g_S.clockTenths;
+            draws = g_S.draws;
+        }
+        HostDuelClock(fighters, timeLimit, tenths, draws);
         StateMsg m = {};
         bool ok = true;
         for (int i = 0; i < 2; ++i)
             ok = CaptureFighter(fighters[i], m.fighters[i]) && ok;
+        std::lock_guard<std::mutex> relock(g_S.lock);
+        g_S.clockTenths = tenths;
+        g_S.draws = draws;
         if (!ok)
             return;
-        std::lock_guard<std::mutex> relock(g_S.lock);
+        m.clockTenths = int16_t(tenths);
+        m.draws = uint16_t(draws);
         m.h = MakeHeader(Msg::State, g_S.token);
         m.seq = ++g_S.stateSeqOut;
         m.hostFrame = frame;
@@ -1388,6 +1515,12 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     {
         std::lock_guard<std::mutex> relock(g_S.lock);
         g_S.guestInDuel = duel;
+        if (!duel)
+            g_S.clockTenths = -1;
+        else if (haveState) {
+            g_S.clockTenths = state.clockTenths;
+            g_S.draws = state.draws;
+        }
     }
     g_GuestFighters[0] = duel ? fighters[0] : nullptr;
     g_GuestFighters[1] = duel ? fighters[1] : nullptr;
@@ -1967,6 +2100,8 @@ void ResetSessionLocked(bool host)
     g_S.pendingLaunchSet = g_S.followingLaunch = g_S.followStarted = false;
     g_S.stateSeqOut = g_S.stateSeqIn = g_S.statesIn = 0;
     g_S.propsSeqOut = g_S.propsSeqIn = 0;
+    g_S.clockTenths = -1;
+    g_S.draws = 0;
     g_S.propsIn.clear();
     g_S.haveState = false;
     g_S.guestInDuel = false;
@@ -2113,6 +2248,8 @@ OnlineStatusInfo OnlineStatus()
     i.room = g_S.room;
     i.localReady = g_S.localReady;
     i.remoteReady = g_S.remoteReady;
+    i.clockTenths = g_S.inLevel ? g_S.clockTenths : -1;
+    i.draws = g_S.draws;
     i.entering = g_S.entering && (g_S.phase == OnlinePhase::Starting || g_S.phase == OnlinePhase::Playing);
     i.leaving = g_S.leaving && g_S.phase == OnlinePhase::Ended;
     if (g_S.inLevel && !g_S.lastMap.empty()) { // U170_EP4_Deathstar_02: EP4 DEATHSTAR 02
@@ -2162,10 +2299,12 @@ void SetOnlineRoom(const OnlineRoomSettings& room)
         return; // the host's to set
     OnlineRoomSettings r = room;
     r.name[sizeof(r.name) - 1] = 0;
+    if (r.time != 0 && r.time != 30 && r.time != 60 && r.time != 99)
+        r.time = 0;
     if (r.rounds != g_S.room.rounds || r.arena != g_S.room.arena || r.rematch != g_S.room.rematch ||
-        r.open != g_S.room.open || std::strcmp(r.name, g_S.room.name) != 0)
-        LOG_INFO("Online: room settings: '%s', %d rounds, arena %d, rematch %s, %s", r.name, r.rounds, r.arena,
-            r.rematch ? "on" : "off", r.open ? "public" : "private");
+        r.open != g_S.room.open || r.time != g_S.room.time || std::strcmp(r.name, g_S.room.name) != 0)
+        LOG_INFO("Online: room settings: '%s', %d rounds, arena %d, rematch %s, %s, time %s", r.name, r.rounds, r.arena,
+            r.rematch ? "on" : "off", r.open ? "public" : "private", r.time ? (std::to_string(r.time) + " s").c_str() : "none");
     g_S.room = r;
 }
 

@@ -1053,12 +1053,13 @@ void Online(const std::vector<std::string>& words)
         net::OnlineJoin(code);
     } else if (_stricmp(what.c_str(), "leave") == 0) {
         net::OnlineLeave();
-    } else if (_stricmp(what.c_str(), "set") == 0 && words.size() >= 5) { // online set <rounds> <arena 0|1> <rematch 0|1>
+    } else if (_stricmp(what.c_str(), "set") == 0 && words.size() >= 5) { // online set <rounds> <arena 0|1> <rematch 0|1> [public] [time]
         net::OnlineRoomSettings room = net::OnlineStatus().room; // its name kept
         room.rounds = uint8_t(std::clamp(std::atoi(words[2].c_str()), 1, 5));
         room.arena = uint8_t(std::clamp(std::atoi(words[3].c_str()), 0, 3));
         room.rematch = uint8_t(std::atoi(words[4].c_str()) ? 1 : 0);
         room.open = uint8_t(words.size() > 5 && std::atoi(words[5].c_str()) ? 1 : 0); // [public 0|1]
+        room.time = uint8_t(words.size() > 6 ? std::clamp(std::atoi(words[6].c_str()), 0, 99) : 0); // [time 0|30|60|99]
         net::SetOnlineRoom(room);
     } else if (_stricmp(what.c_str(), "boot") == 0) { // online boot: the main menu once, as soon as the shell is up (tests)
         static bool done = false;

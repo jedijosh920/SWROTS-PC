@@ -373,6 +373,17 @@ Settings screen: **Host Game**, **Join Game**, **Room Code**, **Status**, **Leav
 - Over the picture (the overlay, drawn by each PC alone): a small `ONLINE P1 (HOST) 23 MS` corner line in a match, a
   banner while the match starts, a red one on a desync, and why a session ended for 10 s.
 
+The room (2026-11-07): the players' table under the menu shows each player's Ready as the game's own objective box
+(the pause screen's `s_pause_obj_off` / `_on`, copied from a level's PAK and loaded through the game's texture
+interface, drawn with its quad over the row) and the other player's connection as five bars (the menus' row stroke,
+`s_main_bar_off`; those it does not reach greyed) before its time. **X** is Ready / Not Ready, a third prompt in the
+footer (a copy of Back's ButtonIcon with icon X, its text the port's). Room Settings has **Time Limit** (Versus:
+Infinite, 99, 60 or 30 s; protocol 8): the host's duel counts the fighters' game ticks from the fight's start (the
+intros over); at its end the fighter with less health is put down through the game's own health change (the round's
+end then follows on both games); with the same health the round is a draw and is played again (both fighters' gameplay
+fields written back as the fight started, the clock again). The clock goes to the guest with the host's state; each PC
+draws it at the bottom between the health bars in the HUD's font (none without a time limit), and DRAW for a moment.
+
 UPnP (net/upnp.cpp): before STUN, the host asks its router (SSDP, then the WANIPConnection/WANPPPConnection
 service's AddPortMapping) to open its UDP port, the same port outside, leased for 6 hours (permanent only on routers
 that take no other, error 725), taken back when the session ends; `[Online] Upnp=0` or `SWROTS_ONLINE_UPNP=0` turns it

@@ -38,6 +38,9 @@ struct OnlineRoomSettings {
     uint8_t picker = 0;   // who picks on the arena screen now (the host sets it): 0 the host, 1 the guest
     uint8_t open = 0;     // a public room: listed in every player's Public Rooms
     char name[24] = {};   // the room's name (Room Settings; never empty once the room is open)
+    uint8_t time = 0;     // Versus: a round's time limit in seconds (0 none; 30, 60 or 99). At its end the fighter
+                          // with less health loses the round; with the same health it is a draw (the round again)
+    uint8_t reserved[3] = {};
 };
 #pragma pack(pop)
 
@@ -60,6 +63,8 @@ struct OnlineStatusInfo {
     bool leaving = false;   // the match's end until the Online screen shows (the same)
     std::string arenaPlayed; // the host in a duel: its arena (from its map)
     bool localReady = false, remoteReady = false; // in the room: each player's Ready (both: the host starts the match)
+    int clockTenths = -1;   // a Versus duel with a time limit: the round's time left (tenths of a second; -1 none)
+    uint32_t draws = 0;     // the duels' draws so far (the time out with the same health: shown as it moves)
 };
 
 // The protocol's version (two PCs play together only on the same one; Public Rooms lists those).

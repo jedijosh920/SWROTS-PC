@@ -30,9 +30,12 @@
 #include "core/log.h"
 #include "core/patch.h"
 #include "core/window.h"
+#include "game/characters.h"
 #include "game/hvvmenu.h"
 #include "game/menus.h"
 #include "game/resources.h"
+#include "input/controls.h"
+#include "kernel/kernel.h"
 #include "net/lobby.h"
 #include "net/session.h"
 #include "net/transport.h"
@@ -382,8 +385,8 @@ constexpr const char* kRoomSettingsFileName = "interfc\\front_end\\xml\\online_r
 enum Row {
     kHost, kJoin, kSettings, kStatus,
     kName,
-    kMode, kArena, kRoomSettings, kCode, kReady, kLeave, kGap, kPlayer1, kPlayer2,
-    kRoomName, kRounds, kRematch, kPublic,
+    kMode, kArena, kRoomSettings, kCode, kLeave, kGap, kPlayer1, kPlayer2,
+    kRoomName, kRounds, kTime, kRematch, kPublic,
     kPubStatus, kPub0, kPubLast = kPub0 + 7,
     kRowCount
 };
@@ -403,13 +406,13 @@ constexpr RowDef kRowDefs[kRowCount] = {
     { "roomarena", "IDS_PORT_ROOM_ARENA", false, kRoom },
     { "roomsettings", "IDS_PORT_ROOM_SETTINGS", true, kRoom },
     { "roomcode", "IDS_PORT_ROOM_CODE", false, kRoom },
-    { "roomready", "IDS_PORT_ROOM_READY", false, kRoom },
     { "roomleave", "IDS_PORT_ROOM_LEAVE", true, kRoom },
     { "roomgap", "IDS_PORT_ROOM_GAP", false, kRoom },  // a blank row, then the players as a table: name, connection, Ready
     { "roomp1", "IDS_PORT_ROOM_P1", false, kRoom },
     { "roomp2", "IDS_PORT_ROOM_P2", false, kRoom },
     { "roomname", "IDS_PORT_ROOM_NAME", false, kRoomSettingsScreen },
     { "roomrounds", "IDS_PORT_ROOM_ROUNDS", false, kRoomSettingsScreen },
+    { "roomtime", "IDS_PORT_ROOM_TIME", false, kRoomSettingsScreen }, // Versus: a round's time limit
     { "roomrematch", "IDS_PORT_ROOM_REMATCH", false, kRoomSettingsScreen },
     { "roompublic", "IDS_PORT_ROOM_PUBLIC", false, kRoomSettingsScreen },
     { "pubstatus", "IDS_PORT_PUB_STATUS", false, kPublicScreen },
@@ -486,19 +489,30 @@ std::string ValueId(int row)
 }
 
 constexpr uint8_t kRoundChoices[] = { 1, 2, 3, 5 };
+constexpr uint8_t kTimeChoices[] = { 0, 99, 60, 30 }; // seconds (0: none)
 
 bool Idle(const net::OnlineStatusInfo& s)
 {
     return s.phase == net::OnlinePhase::Off || s.phase == net::OnlinePhase::Ended;
 }
 
-// The quality of the connection in words and bars (the room's player rows).
-std::string Quality(int pingMs)
+// The room's players' table (the rows' texts, and what PlayerRowExtras draws over them): whether the player is there,
+// their Ready, and for the other player the connection's time (-1: none).
+struct PlayerRow {
+    bool present = false;
+    bool ready = false;
+    int pingMs = -1;
+};
+PlayerRow g_PlayerRows[2];
+// Room in the texts for the pictures: the box before a name, the bars before the time.
+const std::string kBoxRoom = "   ";
+const std::string kBarsRoom = "     ";
+constexpr int kQualityBars = 5;
+
+// The connection's quality as bars lit (of five).
+int QualityBars(int pingMs)
 {
-    if (pingMs < 0)
-        return "";
-    const int bars = pingMs < 40 ? 4 : pingMs < 80 ? 3 : pingMs < 150 ? 2 : 1;
-    return "  " + std::string(size_t(bars), '|') + std::string(size_t(4 - bars), '.') + " " + std::to_string(pingMs) + " MS";
+    return pingMs < 0 ? 0 : pingMs < 30 ? 5 : pingMs < 60 ? 4 : pingMs < 100 ? 3 : pingMs < 160 ? 2 : 1;
 }
 
 void UpdateTexts()
@@ -529,7 +543,8 @@ void UpdateTexts()
     else
         SetMenuText("IDS_PORT_ROOM_TITLE", L"Room");
     SetMenuText(ValueId(kRoomName).c_str(), Wide(Shorten(s.room.name[0] ? std::string(s.room.name) : DefaultRoomName(), 22)));
-    SetMenuText(ValueId(kReady).c_str(), s.localReady ? L"YES" : L"NO");
+    SetMenuText(ValueId(kTime).c_str(), s.room.time ? Wide(std::to_string(s.room.time) + " SECONDS").c_str() : L"INFINITE");
+    SetMenuText("IDS_PORT_LEGEND_READY", s.localReady ? L"Not Ready" : L"Ready");
     // Public Rooms
     std::string lobbyStatus;
     net::LobbyRooms(g_PubRooms, lobbyStatus);
@@ -551,27 +566,24 @@ void UpdateTexts()
     }
     const std::string me = Shorten(s.localName.empty() ? net::OnlinePlayerName() : s.localName, 15);
     const std::string other = Shorten(s.remoteName, 15);
-    // the players' table under the menu: each name, then the connection (the other player's) and Ready
-    const bool live = s.matchOn && s.phase == net::OnlinePhase::Playing; // the room both play in: Ready counts
-    const auto state = [&](bool ready, bool remote) {
-        std::string q = remote ? Quality(s.pingMs) : std::string();
-        while (!q.empty() && q.front() == ' ')
-            q.erase(q.begin());
-        const std::string r = !live ? "" : ready ? "READY" : "NOT READY";
-        return q.empty() ? r : r.empty() ? q : q + "   " + r;
-    };
-    std::string n1, v1, n2, v2;
+    // the players' table under the menu: each player's Ready (the game's box, left of the name: PlayerRowExtras) and
+    // name, the other player's connection (its bars, then its time)
+    PlayerRow& r1 = g_PlayerRows[0];
+    PlayerRow& r2 = g_PlayerRows[1];
+    r1 = r2 = PlayerRow();
     if (s.host) {
-        n1 = me;
-        v1 = state(s.localReady, false);
-        n2 = s.guestHere ? other : "WAITING...";
-        v2 = s.guestHere ? state(s.remoteReady, true) : "";
+        r1 = { true, s.localReady, -1 };
+        r2 = { s.guestHere, s.remoteReady, s.guestHere ? s.pingMs : -1 };
     } else {
-        n1 = other.empty() ? "..." : other;
-        v1 = other.empty() ? "" : state(s.remoteReady, true);
-        n2 = me;
-        v2 = state(s.localReady, false);
+        r1 = { !other.empty(), s.remoteReady, other.empty() ? -1 : s.pingMs };
+        r2 = { true, s.localReady, -1 };
     }
+    const auto name = [](const PlayerRow& r, const std::string& n) { return r.present ? kBoxRoom + n : n; };
+    const auto value = [](const PlayerRow& r) {
+        return r.pingMs >= 0 ? kBarsRoom + std::to_string(r.pingMs) + " MS" : std::string();
+    };
+    const std::string n1 = name(r1, s.host ? me : other.empty() ? "..." : other), v1 = value(r1);
+    const std::string n2 = name(r2, s.host ? (s.guestHere ? other : "WAITING...") : me), v2 = value(r2);
     SetMenuText(kRowDefs[kPlayer1].text, Wide(n1));
     SetMenuText(ValueId(kPlayer1).c_str(), Wide(v1));
     SetMenuText(kRowDefs[kPlayer2].text, Wide(n2));
@@ -604,11 +616,10 @@ bool RowDisabled(int row)
     case kStatus: return true;
     case kName: return !idle;
     case kMode: return true; // Versus only for now
-    case kRoomName: case kRounds: case kArena: case kRematch: case kPublic: return !s.host || idle;
+    case kRoomName: case kRounds: case kTime: case kArena: case kRematch: case kPublic: return !s.host || idle;
     case kRoomSettings: return idle;
     case kPlayer1: case kPlayer2: case kGap: return true;
     case kCode: return !(s.host && !idle && !s.roomCode.empty());
-    case kReady: return !(s.matchOn && s.phase == net::OnlinePhase::Playing);
     case kLeave: return false;
     case kPubStatus: return true;
     default:
@@ -621,7 +632,7 @@ bool RowDisabled(int row)
 // Rows shown dimmed: the disabled ones, but not the rows that only tell.
 bool RowDimmed(int row)
 {
-    if (row == kRoomName || row == kRounds || row == kArena || row == kRematch || row == kPublic) { // the guest sees the host's settings, not dimmed
+    if (row == kRoomName || row == kRounds || row == kTime || row == kArena || row == kRematch || row == kPublic) { // the guest sees the host's settings, not dimmed
         const net::OnlineStatusInfo s = net::OnlineStatus();
         if (!s.host && !Idle(s))
             return false;
@@ -742,6 +753,115 @@ void TitleAsRoomName(uint8_t* handler)
         if (title && text)
             *reinterpret_cast<const void**>(title + 0x44) = text;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+// --- The room's pictures --------------------------------------------------------------------------------------------
+// The game's own: the pause screen's objective boxes (interfc\front_end\s_pause_obj_off, _on: a hollow box, a filled
+// one; in the levels' PAKs, not the menus') for the players' Ready, and the menus' row stroke (s_main_bar_off, a
+// glowing blue bar) for the connection's bars. Each is copied from the disc's PAKs to cache\online and loaded through
+// the game's texture interface from there (a disc path of the port's own, interfc\port_online\<name>, as the
+// prompts' key caps), then drawn with the interface's quad (slot 5: as a ButtonIcon draws its icon, 0x2C4DB0: the
+// corners in the menus' 640 x 480, the picture, its colour as four floats (alpha first), then 0, 1, 0, 0, 1.0, 1.0, 0).
+enum Picture { kBoxOff, kBoxOn, kBar, kPictureCount };
+constexpr const char* kPictureNames[kPictureCount] = { "s_pause_obj_off", "s_pause_obj_on", "s_main_bar_off" };
+void* g_Pictures[kPictureCount] = {};
+bool g_PicturesTried[kPictureCount] = {};
+constexpr uint32_t kMenuGraphics = 0x0068D9A0; // [+0x4C]: the texture interface the menus draw with (vtable 0x561A30)
+constexpr int kQuadSlot = 5;
+
+void* RoomPicture(Picture which)
+{
+    if (g_PicturesTried[which])
+        return g_Pictures[which];
+    g_PicturesTried[which] = true;
+    const std::string name = kPictureNames[which];
+    std::vector<uint8_t> stx;
+    if (!ReadDiscResource("interfc\\front_end\\" + name + ".stx", stx) || stx.size() < 0x40 ||
+        std::memcmp(stx.data(), "STX", 3) != 0) {
+        LOG_WARN("Online menu: the picture %s is not on the disc", name.c_str());
+        return nullptr;
+    }
+    const std::wstring folder = kernel::CachePath() + L"\\online";
+    CreateDirectoryW(folder.c_str(), nullptr);
+    const std::wstring file = folder + L"\\" + std::wstring(name.begin(), name.end()) + L".stx";
+    HANDLE h = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        LOG_WARN("Online menu: %ls could not be written", file.c_str());
+        return nullptr;
+    }
+    DWORD written = 0;
+    WriteFile(h, stx.data(), DWORD(stx.size()), &written, nullptr);
+    CloseHandle(h);
+    if (written != stx.size())
+        return nullptr;
+    kernel::SetDiscFileOverride("\\interfc\\port_online\\" + name + ".stx", file);
+    g_Pictures[which] = LoadPictureFile(("interfc\\port_online\\" + name).c_str());
+    LOG_INFO("Online menu: the picture %s %s", name.c_str(), g_Pictures[which] ? "loaded" : "did not load");
+    return g_Pictures[which];
+}
+
+// A picture over the corners (x0, y0)-(x1, y1) of the menus' 640 x 480, in white times `light` (1: as it is), `alpha`.
+void DrawPicture(Picture which, float x0, float y0, float x1, float y1, float light, float alpha)
+{
+    void* picture = RoomPicture(which);
+    if (!picture)
+        return;
+    __try {
+        uint8_t* graphics = *reinterpret_cast<uint8_t**>(uintptr_t(kMenuGraphics));
+        void* api = graphics ? *reinterpret_cast<void**>(graphics + 0x4C) : nullptr;
+        if (!api)
+            return;
+        using QuadFn = uint32_t(__fastcall*)(void*, void*, const float*, const float*, void*, float, float, float, float,
+            uint32_t, uint32_t, uint32_t, uint32_t, float, float, uint32_t);
+        const auto quad = reinterpret_cast<QuadFn>((*reinterpret_cast<void* const* const*>(api))[kQuadSlot]);
+        const float topLeft[2] = { x0, y0 }, bottomRight[2] = { x1, y1 };
+        quad(api, nullptr, topLeft, bottomRight, picture, alpha, light, light, light, 0, 1, 0, 0, 1.0f, 1.0f, 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+// An item's place in the menus' 640 x 480 (+0xE4, +0xE6: x and y in 1/32 pixels).
+bool ItemPlace(uint8_t* handler, float& x, float& y)
+{
+    __try {
+        const uint8_t* item = *reinterpret_cast<uint8_t* const*>(handler + 8);
+        if (!item)
+            return false;
+        x = float(*reinterpret_cast<const int16_t*>(item + 0xE4)) / 32.0f;
+        y = float(*reinterpret_cast<const int16_t*>(item + 0xE6)) / 32.0f;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Over a player's row of the room (its text made room for them: kBoxRoom, kBarsRoom): their Ready as the game's box
+// left of the name (filled when ready), and for the other player the connection as five bars before its time, those
+// it does not reach greyed.
+constexpr float kValueColumn = 312.0f; // the rows' values, from the screen's left (the Settings screen's)
+void PlayerRowExtras(uint8_t* handler, int row)
+{
+    const PlayerRow& r = g_PlayerRows[row == kPlayer1 ? 0 : 1];
+    float x, y;
+    if (!r.present || !ItemPlace(handler, x, y))
+        return;
+    static int logged = 0;
+    if (logged < 2) {
+        ++logged;
+        LOG_INFO("Online menu: the players' row %d at %.1f, %.1f", row == kPlayer1 ? 1 : 2, x, y);
+    }
+    const float box = 22.0f, middle = y + 11.0f;
+    DrawPicture(r.ready ? kBoxOn : kBoxOff, x - 3.0f, middle - box / 2, x - 3.0f + box, middle + box / 2, 1.0f, 1.0f);
+    const int lit = QualityBars(r.pingMs);
+    if (r.pingMs < 0)
+        return;
+    // the picture's stroke is its middle sixth across, most of its height: each bar's quad a little wider than its gap
+    const float bottom = y + 19.0f;
+    for (int i = 0; i < kQualityBars; ++i) {
+        const float h = 7.0f + 2.5f * float(i), left = kValueColumn + 5.0f * float(i) - 6.0f;
+        const bool on = i < lit;
+        DrawPicture(kBar, left, bottom - h * 1.25f, left + 16.0f, bottom + h * 0.08f, on ? 1.0f : 0.35f, on ? 1.0f : 0.55f);
     }
 }
 
@@ -896,6 +1016,60 @@ void ShowRoomNotice(uint8_t* handler, const char* popupName = "DefaultPopup")
         g_GuestNoticeShown = false;
 }
 
+// The room's footer: Ready's prompt (X: the room's screen has it after Select, ReadyPrompt) says what X does now
+// (Ready, or Not Ready once ready): its text item pointed at the port's text, as the title. X itself is read from
+// the pad as the room is drawn (a press, not a hold): Ready or not, once both games are in the room.
+constexpr int kReadySound = 0x0B, kRefusedSound = 0x10, kSoundSlotAll = 11; // the shell's sounds (the handlers' slot 11)
+ULONGLONG g_ReadySeenAt = 0;
+bool g_ReadyHeld = true;
+
+// An item of the handler's screen (by name) given the port's text as its label.
+void LabelAsText(uint8_t* handler, const char* itemName, const char* textId)
+{
+    __try {
+        const uint8_t* item = *reinterpret_cast<uint8_t* const*>(handler + 8);
+        uint8_t* items = item ? *reinterpret_cast<uint8_t* const*>(item + 0x24) : nullptr;
+        uint8_t* text = items ? reinterpret_cast<uint8_t*(__fastcall*)(uint8_t*, void*, const char*)>(
+            uintptr_t(kFindItem))(items, nullptr, itemName) : nullptr;
+        const wchar_t* label = MenuTextBuffer(textId);
+        if (text && label)
+            *reinterpret_cast<const void**>(text + 0x44) = label;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+void HandlerSound(uint8_t* handler, int id)
+{
+    __try {
+        reinterpret_cast<void(__fastcall*)(uint8_t*, void*, int)>(
+            (*reinterpret_cast<void* const* const*>(handler))[kSoundSlotAll])(handler, nullptr, id);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+void ReadyLegend(uint8_t* handler)
+{
+    LabelAsText(handler, "readytext", "IDS_PORT_LEGEND_READY");
+    input::GamePad pad = {};
+    input::ReadLivePad(0, pad);
+    const bool down = pad.analog[2] > 0x40; // X
+    const ULONGLONG now = GetTickCount64();
+    if (now - g_ReadySeenAt > 300) // the room just came: a press already held is not one
+        g_ReadyHeld = true;
+    g_ReadySeenAt = now;
+    if (down && !g_ReadyHeld) {
+        const net::OnlineStatusInfo s = net::OnlineStatus();
+        const bool live = s.matchOn && s.phase == net::OnlinePhase::Playing;
+        if (live) {
+            net::SetOnlineReady(!s.localReady);
+            UpdateTexts();
+        }
+        LOG_INFO("Online menu: X: %s", live ? (s.localReady ? "not ready" : "ready") : "not in a match's room yet");
+        HandlerSound(handler, live ? kReadySound : kRefusedSound);
+    }
+    g_ReadyHeld = down;
+}
+
 // A value row shows its text as the control's On text (the control shows On for the profile's subtitles setting,
 // +0x2A, which it is given for the draw).
 char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
@@ -918,6 +1092,7 @@ char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
     if (row == kMode) {
         ShowRoomNotice(handler);
         TitleAsRoomName(handler);
+        ReadyLegend(handler);
     }
     if (row == kStatus && g_LostPopup) {
         g_LostPopup = false;
@@ -941,6 +1116,8 @@ char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
     SetOnOffTexts(nullptr, nullptr);
     if (profile)
         profile[0x2A] = saved;
+    if (row == kPlayer1 || row == kPlayer2)
+        PlayerRowExtras(handler, row);
     return result;
 }
 
@@ -998,12 +1175,6 @@ char __fastcall ValueEvent(uint8_t* handler, void*, int event, int value)
         OpenKeyboard(KeyboardFor::RoomName);
         return 1;
     }
-    if (row == kReady) { // A, left or right: Ready or not
-        net::SetOnlineReady(!s.localReady);
-        UpdateTexts();
-        g_OnOffEvent(handler, nullptr, event, value); // its sound
-        return 1;
-    }
     if (row >= kPub0 && row <= kPubLast) { // a public room: join it (the game's Yes/No first)
         if (event != kChosen || size_t(row - kPub0) >= g_PubRooms.size())
             return 1;
@@ -1028,6 +1199,13 @@ char __fastcall ValueEvent(uint8_t* handler, void*, int event, int value)
                 at = i;
         at = (at + step + int(std::size(kRoundChoices))) % int(std::size(kRoundChoices));
         room.rounds = kRoundChoices[at];
+    } else if (row == kTime) {
+        int at = 0;
+        for (int i = 0; i < int(std::size(kTimeChoices)); ++i)
+            if (kTimeChoices[i] == room.time)
+                at = i;
+        at = (at + step + int(std::size(kTimeChoices))) % int(std::size(kTimeChoices));
+        room.time = kTimeChoices[at];
     } else if (row == kArena) {
         room.arena = uint8_t((room.arena + step + 4) % 4); // the host, random, the loser, the winner
     } else if (row == kRematch) {
@@ -1570,6 +1748,40 @@ bool BuildCodeScreen(std::vector<uint8_t>& data)
     return true;
 }
 
+// The room's footer: a third prompt, X Ready (its text the port's: ReadyLegend), a copy of Back's icon (its icon X, 3)
+// and text after Back's; the prompts spread again as the code screen's: Scroll, Select, Ready, Back.
+void ReadyPrompt(std::vector<uint8_t>& data)
+{
+    size_t iconBegin, iconEnd, textBegin, textEnd;
+    if (!LeafItem(data, "backbutton", iconBegin, iconEnd) || !LeafItem(data, "back", textBegin, textEnd)) {
+        LOG_WARN("Online menu: the room's prompts are not as expected; no Ready prompt");
+        return;
+    }
+    std::vector<uint8_t> icon(data.begin() + iconBegin, data.begin() + iconEnd);
+    std::vector<uint8_t> text(data.begin() + textBegin, data.begin() + textEnd);
+    size_t e = icon.size();
+    if (!MenuReplaceString(icon, 0, e, "backbutton", "readybutton") || icon.size() <= 18 + 11 + 82)
+        return;
+    icon[18 + 11 + 82] = 3; // X
+    e = text.size();
+    if (!MenuReplaceString(text, 0, e, "back", "readytext"))
+        return;
+    e = text.size();
+    if (!MenuReplaceString(text, 0, e, "IDS_BACK", "IDS_PORT_LEGEND_READY"))
+        return;
+    std::vector<uint8_t> both = icon;
+    both.insert(both.end(), text.begin(), text.end());
+    data.insert(data.begin() + textEnd, both.begin(), both.end());
+    const struct { const char* name; float x; } places[] = { { "selectbutton", 262 }, { "select", 295 },
+        { "readybutton", 375 }, { "readytext", 408 }, { "backbutton", 488 }, { "back", 521 } };
+    for (const auto& p : places) {
+        size_t b, en;
+        if (LeafItem(data, p.name, b, en))
+            SetItemX(data, b, p.x);
+    }
+    AddScreenItems(data, 2);
+}
+
 bool GenerateScreens(const std::string& lowerName, std::vector<uint8_t>& data)
 {
     if (lowerName == kSettingsFileName)
@@ -1578,9 +1790,13 @@ bool GenerateScreens(const std::string& lowerName, std::vector<uint8_t>& data)
     if (lowerName == kPublicFileName) // opened on the first room (the status row above it is never the cursor's)
         return BuildSettingsScreen(data, kScreenNames[kPublicScreen], Rows(kPublicScreen), "IDS_PORT_PUBLIC_TITLE",
             "OnlineValue", "OnlineButton", kRowDefs[kPub0].name);
-    if (lowerName == kRoomFileName)
-        return BuildSettingsScreen(data, kScreenNames[kRoom], Rows(kRoom), "IDS_PORT_ROOM_TITLE", "OnlineValue",
-            "OnlineButton", kRowDefs[kReady].name);
+    if (lowerName == kRoomFileName) {
+        if (!BuildSettingsScreen(data, kScreenNames[kRoom], Rows(kRoom), "IDS_PORT_ROOM_TITLE", "OnlineValue",
+                "OnlineButton", kRowDefs[kRoomSettings].name))
+            return false;
+        ReadyPrompt(data);
+        return true;
+    }
     if (lowerName == kRoomSettingsFileName)
         return BuildSettingsScreen(data, kScreenNames[kRoomSettingsScreen], Rows(kRoomSettingsScreen),
             "IDS_PORT_ROOM_SETTINGS", "OnlineValue", "OnlineButton");
@@ -1852,7 +2068,8 @@ void InstallOnlineMenu()
     SetMenuText("IDS_PORT_ROOM_P1", L"Player 1");
     SetMenuText("IDS_PORT_ROOM_P2", L"Player 2");
     SetMenuText("IDS_PORT_ROOM_CODE", L"Room Code");
-    SetMenuText("IDS_PORT_ROOM_READY", L"Ready");
+    SetMenuText("IDS_PORT_ROOM_TIME", L"Time Limit");
+    SetMenuText("IDS_PORT_LEGEND_READY", L"Ready");
     SetMenuText("IDS_PORT_ROOM_SETTINGS", L"Room Settings");
     SetMenuText("IDS_PORT_ROOM_NAME", L"Room Name");
     SetMenuText("IDS_PORT_JOINING_TITLE", L"Joining Room");
@@ -1866,6 +2083,10 @@ void InstallOnlineMenu()
     SetMenuText("IDS_PORT_NOTICE_TEXT", L"");
     SetMenuText("IDS_PORT_ONLINE_ENTER_CODE", L"Enter the Room Code");
     g_PasteDown = false;
+    for (int i = 0; i < kPictureCount; ++i) { // the last start's pictures are gone with it
+        g_Pictures[i] = nullptr;
+        g_PicturesTried[i] = false;
+    }
     UpdateTexts();
     AddShellHandler("OnlineValue", &MakeValue);
     AddShellHandler("OnlineButton", &MakeButton);
