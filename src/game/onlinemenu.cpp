@@ -1768,6 +1768,8 @@ void __fastcall KeyboardDraw(uint8_t* keyboard, void*, uint32_t value)
     }
     DisableRefusedKeys(keyboard);
     KeyboardTitle(keyboard);
+    ShowItem(keyboard, 14, "pastebutton", !g_KeyboardForName); // Paste is a room code's alone (Y does nothing for a name)
+    ShowItem(keyboard, 15, "pastetext", !g_KeyboardForName);
     reinterpret_cast<void(__fastcall*)(uint8_t*, void*, uint32_t)>(uintptr_t(kKeyboardDraw))(keyboard, nullptr, value);
 }
 
