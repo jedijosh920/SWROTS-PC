@@ -1201,10 +1201,62 @@ std::unordered_set<uint32_t> g_GuestKeys; // their keys (the set above made agai
 // change a frame, from its last two states): applied every frame, carried on between two of the host's states (a few
 // frames apart, five characters a frame in turn), so that it does not stand and jump.
 struct CharFollow {
-    FighterState state;
-    uint32_t frame = 0;
-    float pace[3] = {};
+    static constexpr int kKept = 4;
+    FighterState state;             // the host's last state
+    uint32_t frame = 0;             // the frame it came (this game's)
+    float places[kKept][3] = {};    // the last states' places, oldest first
+    uint32_t frames[kKept] = {};    // and the frames they came
+    int kept = 0;
+    void Push(const FighterState& s, uint32_t at)
+    {
+        float p[3];
+        if (!StatePosition(s, p))
+            return;
+        if (kept) { // a jump (a teleport, a respawn): its places start again from there
+            const float* l = places[kept - 1];
+            if ((l[0] - p[0]) * (l[0] - p[0]) + (l[2] - p[2]) * (l[2] - p[2]) > 200.0f * 200.0f || at - frames[kept - 1] > 30)
+                kept = 0;
+        }
+        if (kept == kKept) {
+            std::memmove(places, places + 1, sizeof(places[0]) * (kKept - 1));
+            std::memmove(frames, frames + 1, sizeof(frames[0]) * (kKept - 1));
+            --kept;
+        }
+        std::memcpy(places[kept], p, sizeof(p));
+        frames[kept] = at;
+        ++kept;
+        state = s;
+        frame = at;
+    }
+    // Its last state, its place where it was `behind` frames ago (between the two states around then; never past the
+    // last: nothing foreseen, nothing taken back as the next comes: no shake).
+    FighterState At(uint32_t now, uint32_t behind) const
+    {
+        FighterState s = state;
+        if (kept < 2)
+            return s;
+        const float at = float(now) - float(behind);
+        float place[3];
+        if (at <= float(frames[0])) {
+            std::memcpy(place, places[0], sizeof(place));
+        } else if (at >= float(frames[kept - 1])) {
+            return s;
+        } else {
+            int n = 0;
+            while (n + 2 < kept && at > float(frames[n + 1]))
+                ++n;
+            const float k = (at - float(frames[n])) / float(frames[n + 1] - frames[n]);
+            for (int c = 0; c < 3; ++c)
+                place[c] = places[n][c] + (places[n + 1][c] - places[n][c]) * k;
+        }
+        const float* last = places[kept - 1];
+        const float delta[3] = { place[0] - last[0], place[1] - last[1], place[2] - last[2] };
+        MoveState(s, delta, 0);
+        return s;
+    }
 };
+constexpr uint32_t kCharsBehind = 3;  // the characters shown this many frames behind the host's last (their states
+constexpr uint32_t kPlayerBehind = 2; // come every two or three frames), the other player this many
 std::unordered_map<uint32_t, CharFollow> g_CharFollow;
 
 // The engine's settings ([[[0x645F7C]+0x38]+8], their console variables registered by 0x2409A0): +0xC4 is
@@ -1774,9 +1826,9 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         return;
     const uint32_t lead = pingMs > 0 ? uint32_t(pingMs * 60 / 2000) : 0; // half the round trip, in game ticks
     // The players: each new state of the host's applied. In a Cooperative mission (the host's game a little slower
-    // than this one, a state every frame or two) a frame without one leaves this PC's own fighter to its own play and
-    // carries the other player's on at its pace (its place alone: its animation runs on; writing the last state's
-    // action frame and timers again would set its pose back each frame).
+    // than this one, a state every frame or two) a frame without one leaves this PC's own fighter to its own play, and
+    // the other player's place goes between the host's last two states (its animation runs on; writing the last
+    // state's action frame and timers again would set its pose back each frame).
     static uint32_t lastStateSeq = 0;
     static CharFollow playerFollow[2];
     const bool freshState = state.seq != lastStateSeq;
@@ -1784,24 +1836,11 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     for (int i = 0; i < 2; ++i) {
         CharFollow& f = playerFollow[i];
         if (freshState || !coopMission) {
-            float before[3], now[3];
-            const uint32_t gap = frame - f.frame;
-            const bool paced = f.frame && gap > 0 && gap < 30 && StatePosition(f.state, before) &&
-                StatePosition(state.fighters[i], now);
-            for (int k = 0; k < 3; ++k) {
-                const float pace = paced ? (now[k] - before[k]) / float(gap) : 0.0f;
-                f.pace[k] = std::fabs(pace) < 20.0f ? pace : 0.0f;
-            }
-            f.state = state.fighters[i];
-            f.frame = frame;
+            f.Push(state.fighters[i], frame);
             ApplyFighter(i, fighters[i], state.fighters[i], lead, i == 1);
-        } else if (i == 0 && fighters[i] && f.state.valid) { // the other player's, between two of the host's states
-            FighterState s = f.state;
-            const uint32_t carried = std::min<uint32_t>(frame - f.frame, 12);
-            const float delta[3] = { f.pace[0] * carried, f.pace[1] * carried, f.pace[2] * carried };
-            MoveState(s, delta, frame - f.frame);
-            PlaceCharacter(fighters[i], s);
         }
+        if (coopMission && i == 0 && fighters[i] && f.state.valid) // the other player's place: between its last two
+            PlaceCharacter(fighters[i], f.At(frame, kPlayerBehind));
     }
     // a Cooperative mission's other characters: the host's (the latest of each)
     static uint32_t missing = 0;
@@ -1822,19 +1861,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             }
             g_GuestFollowed.insert(o);
             g_GuestKeys.insert(c.key);
-            CharFollow& f = g_CharFollow[c.key];
-            float before[3], now[3];
-            const uint32_t gap = frame - f.frame;
-            if (f.frame && gap > 0 && gap < 30 && StatePosition(f.state, before) && StatePosition(c.state, now)) {
-                for (int k = 0; k < 3; ++k) {
-                    const float pace = (now[k] - before[k]) / float(gap);
-                    f.pace[k] = std::fabs(pace) < 20.0f ? pace : 0.0f; // (a jump: a teleport, a respawn)
-                }
-            } else {
-                f.pace[0] = f.pace[1] = f.pace[2] = 0.0f;
-            }
-            f.state = c.state;
-            f.frame = frame;
+            g_CharFollow[c.key].Push(c.state, frame);
         }
     for (auto it = g_CharFollow.begin(); it != g_CharFollow.end();) { // every frame: each one's latest, carried on
         uint8_t* o = CharacterByKey(it->first);
@@ -1843,16 +1870,9 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             it = g_CharFollow.erase(it);
             continue;
         }
-        if (since == 0) { // a new state from the host: all of it
+        if (since == 0) // a new state from the host: all of it (its sequence, its health)
             ApplyCharacter(it->first, o, it->second.state, lead);
-        } else { // between two: its place carried on at its pace, its animation running on its own
-            FighterState s = it->second.state;
-            const uint32_t carried = std::min<uint32_t>(since, 12); // (no further: the host's next state is late)
-            const float delta[3] = { it->second.pace[0] * carried, it->second.pace[1] * carried,
-                it->second.pace[2] * carried };
-            MoveState(s, delta, since);
-            PlaceCharacter(o, s);
-        }
+        PlaceCharacter(o, it->second.At(frame, kCharsBehind)); // its place: between its last two, a little behind
         ++it;
     }
     for (uint8_t* o : g_GuestFollowed) // (diagnostics: their steps)
