@@ -773,7 +773,7 @@ struct HiddenItem {
     int16_t y = 0;
     bool hidden = false; // put away by the port (its place and alpha its own again once shown)
 };
-HiddenItem g_HiddenItems[6];
+HiddenItem g_HiddenItems[16]; // 0-5 Room Settings' Versus rows, 6-13 the selects' prompts (SelectPrompts)
 
 void ShowItem(uint8_t* handler, int slot, const char* name, bool shown)
 {
@@ -2055,6 +2055,11 @@ bool GenerateScreens(const std::string& lowerName, std::vector<uint8_t>& data)
 constexpr uint32_t kJediListVtable = 0x005D68B8, kJediListEvent = 0x002D54A0;
 char __fastcall JediListEvent(uint8_t* list, void*, int event, int pad)
 {
+    if (event == kB) { // online, no way back from the fighters' select (the match is on: the room's Back leaves it)
+        const net::OnlineStatusInfo s = net::OnlineStatus();
+        if (s.matchOn && s.phase != net::OnlinePhase::Ended && s.phase != net::OnlinePhase::Off)
+            return 1;
+    }
     static int logged = 0;
     if (net::OnlineActive() && logged < 300) {
         ++logged;
@@ -2435,25 +2440,83 @@ constexpr uint32_t kChallengeVtable = 0x005D6680, kChallengeEvent = 0x002D2FC0;
 
 char __fastcall ChallengeEvent(uint8_t* handler, void*, int event, int pad)
 {
-    // The guest's whole pad on the missions' select is refused (its cursor, its choice, its way back: the host's
-    // select alone, which the guest's game follows); a choice is told with the refusal's sound.
-    // On the host's game the guest's pad (port 1: both pads reach both games) moves nothing there either.
-    if (CoopOnline() && net::OnlineStatus().host && pad != 0) {
-        static int hostLogged = 0;
-        if (hostLogged++ < 8)
-            LOG_INFO("Online menu: the guest's pad on the host's missions' select refused (event 0x%X, pad %d)", event, pad);
-        return 1;
-    }
-    if (CoopOnline() && !net::OnlineStatus().host) {
-        static int logged = 0;
-        if (logged++ < 8)
-            LOG_INFO("Online menu: the guest's press on the missions' select refused (event 0x%X: the host's to make)",
-                event);
-        if (event == kChosen || event == 0x25)
-            HandlerSound(handler, kRefusedSound);
-        return 1;
+    if (CoopOnline()) {
+        const bool host = net::OnlineStatus().host;
+        // Both pads reach both games (the host's port 0, the guest's port 1). The host's select takes the host's pad
+        // alone, without its way back (B: the match is on); the guest's follows the host's cursor (the host's pad's
+        // left and right) and takes nothing else (its choice, its way back, the briefing: the host's to make).
+        const bool scroll = event >= 0x1D && event <= 0x20;
+        const bool refused = host ? (pad != 0 || event == kB) : !(pad == 0 && scroll);
+        if (refused) {
+            static int logged = 0;
+            if (logged++ < 8)
+                LOG_INFO("Online menu: a press on the %s's missions' select refused (event 0x%X, pad %d)",
+                    host ? "host" : "guest", event, pad);
+            if (pad == (host ? 0 : 1) && (event == kChosen || event == 0x25))
+                HandlerSound(handler, kRefusedSound);
+            return 1;
+        }
     }
     return reinterpret_cast<ItemEventFn>(uintptr_t(kChallengeEvent))(handler, nullptr, event, pad);
+}
+
+// Online, the selects have no way back (the match is on: the room's Back alone leaves it) and the arena's no Rounds
+// (Room Settings' Rounds to Win): Versus's fighters' select (JediList, vtable 0x5D68B8) and arena select (ArenaList,
+// 0x5D63D8: its B 0x26 and its Rounds popup 0x2B) refuse them, and the three selects' prompts for them are out of
+// sight (each list's slot 3, thiscall (value), every frame while its screen is up; given back offline).
+constexpr uint32_t kArenaListVtable = 0x005D63D8, kArenaListEvent = 0x002D1EC0;
+constexpr uint32_t kListFrameChallenge = 0x002C68F0, kListFrameArena = 0x002D26C0, kListFrameJedi = 0x002D56F0;
+constexpr int kRoundsPopup = 0x2B;
+
+bool OnlineMatchScreens()
+{
+    const net::OnlineStatusInfo s = net::OnlineStatus();
+    return s.matchOn && s.phase != net::OnlinePhase::Ended && s.phase != net::OnlinePhase::Off;
+}
+
+char __fastcall ArenaListEvent(uint8_t* list, void*, int event, int pad)
+{
+    if (OnlineMatchScreens() && (event == kB || event == kRoundsPopup)) {
+        static int logged = 0;
+        if (logged++ < 8)
+            LOG_INFO("Online menu: the arena select's %s refused (online)", event == kB ? "Back" : "Rounds");
+        return 1;
+    }
+    return reinterpret_cast<ItemEventFn>(uintptr_t(kArenaListEvent))(list, nullptr, event, pad);
+}
+
+void SelectPrompts(uint8_t* handler, int firstSlot, const char* const* names, int count)
+{
+    const bool shown = !OnlineMatchScreens();
+    for (int i = 0; i < count; ++i)
+        ShowItem(handler, firstSlot + i, names[i], shown);
+}
+
+uint32_t __fastcall ChallengeListFrame(uint8_t* list, void*, uint32_t value)
+{
+    const uint32_t r = reinterpret_cast<uint32_t(__fastcall*)(uint8_t*, void*, uint32_t)>(uintptr_t(kListFrameChallenge))(
+        list, nullptr, value);
+    static const char* const kNames[] = { "backbutton", "back" };
+    SelectPrompts(list, 6, kNames, 2);
+    return r;
+}
+
+uint32_t __fastcall JediListFrame(uint8_t* list, void*, uint32_t value)
+{
+    const uint32_t r = reinterpret_cast<uint32_t(__fastcall*)(uint8_t*, void*, uint32_t)>(uintptr_t(kListFrameJedi))(
+        list, nullptr, value);
+    static const char* const kNames[] = { "backbutton", "back" };
+    SelectPrompts(list, 8, kNames, 2);
+    return r;
+}
+
+uint32_t __fastcall ArenaListFrame(uint8_t* list, void*, uint32_t value)
+{
+    const uint32_t r = reinterpret_cast<uint32_t(__fastcall*)(uint8_t*, void*, uint32_t)>(uintptr_t(kListFrameArena))(
+        list, nullptr, value);
+    static const char* const kNames[] = { "backbutton", "back", "roundsbutton", "rounds" };
+    SelectPrompts(list, 10, kNames, 4);
+    return r;
 }
 
 void InstallVoteRows()
@@ -2463,6 +2526,20 @@ void InstallVoteRows()
         PatchBytes(kChallengeVtable + 4 * 4, &hook, 4);
     } else {
         LOG_WARN("Online menu: the missions' select is not as expected; the guest's choice not refused");
+    }
+    const struct { uint32_t vtable; int slot; uint32_t original; void* hook; } selects[] = {
+        { kChallengeVtable, 3, kListFrameChallenge, reinterpret_cast<void*>(&ChallengeListFrame) },
+        { kJediListVtable, 3, kListFrameJedi, reinterpret_cast<void*>(&JediListFrame) },
+        { kArenaListVtable, 3, kListFrameArena, reinterpret_cast<void*>(&ArenaListFrame) },
+        { kArenaListVtable, 4, kArenaListEvent, reinterpret_cast<void*>(&ArenaListEvent) },
+    };
+    for (const auto& h : selects) {
+        if (!SlotIs(h.vtable, h.slot, h.original)) {
+            LOG_WARN("Online menu: a select's slot %d (vtable 0x%08X) is not as expected; left as it is", h.slot, h.vtable);
+            continue;
+        }
+        const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(h.hook));
+        PatchBytes(h.vtable + 4 * h.slot, &hook, 4);
     }
     if (!SlotIs(kRestartVtable, 4, kRestartEvent) || !SlotIs(kQuitVtable, 4, kQuitEvent) ||
         !SlotIs(kRestartVtable, 3, kRowDraw) || !SlotIs(kQuitVtable, 3, kRowDraw) || !SlotIs(kRestartVtable, 8, kRestartGo) ||

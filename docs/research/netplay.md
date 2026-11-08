@@ -647,6 +647,15 @@ second is made there by the port (its class and costume from the host: `Born`, p
 appears), at the host's place, and is that one from then on; taken away once dead fifteen seconds or no longer the
 host's.
 
+The selects online: both pads reach both games (the host's port 0, the guest's port 1). The missions' select
+(ChallengeList, vtable 0x5D6680, slot 4 0x2D2FC0: events 0x1D-0x20 the cursor, 0x23 A, 0x25 Start, 0x26 B) takes on
+the host's game the host's pad alone and no B; on the guest's game the host's pad's cursor alone (it follows the
+host's), its own pad nothing. The Versus fighters' select (JediList, 0x5D68B8, slot 4 0x2D54A0) and arena select
+(ArenaList, 0x5D63D8, slot 4 0x2D1EC0: B, and 0x2B its Rounds popup) refuse B and Rounds online (the room's Back and
+Room Settings' Rounds to Win instead), and their prompts are out of sight: each list's slot 3 (thiscall (value),
+every frame: 0x2C68F0, 0x2D56F0, 0x2D26C0) puts the screen's `backbutton`/`back` (and `roundsbutton`/`rounds`) below
+the screen, see-through, and gives them back offline.
+
 The guest logs every ten seconds how alike it is to the host (`identity`): of the host's living characters' states,
 the share there on the guest, alive alike, playing the same sequence, how far each is from the host's latest place (the
 guest shows them a few frames behind it, as the transport and its interpolation need: a few units for one walking,
