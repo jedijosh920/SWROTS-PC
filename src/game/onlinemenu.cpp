@@ -34,6 +34,7 @@
 #include "game/hvvmenu.h"
 #include "game/menus.h"
 #include "game/resources.h"
+#include "game/prompts.h"
 #include "input/controls.h"
 #include "kernel/kernel.h"
 #include "net/lobby.h"
@@ -860,9 +861,8 @@ void* RoomPicture(Picture which)
 }
 
 // A picture over the corners (x0, y0)-(x1, y1) of the menus' 640 x 480, in white times `light` (1: as it is), `alpha`.
-void DrawPicture(Picture which, float x0, float y0, float x1, float y1, float light, float alpha)
+void DrawHandle(void* picture, float x0, float y0, float x1, float y1, float light, float alpha)
 {
-    void* picture = RoomPicture(which);
     if (!picture)
         return;
     __try {
@@ -877,6 +877,11 @@ void DrawPicture(Picture which, float x0, float y0, float x1, float y1, float li
         quad(api, nullptr, topLeft, bottomRight, picture, alpha, light, light, light, 0, 1, 0, 0, 1.0f, 1.0f, 0);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
+}
+
+void DrawPicture(Picture which, float x0, float y0, float x1, float y1, float light, float alpha)
+{
+    DrawHandle(RoomPicture(which), x0, y0, x1, y1, light, alpha);
 }
 
 // An item's place in the menus' 640 x 480 (+0xE4, +0xE6: x and y in 1/32 pixels).
@@ -1754,35 +1759,37 @@ void DisableRefusedKeys(uint8_t* keyboard)
     }
 }
 
-// A name's keyboard: Paste's place in the footer says Done's other keys instead (Start with a controller, Enter with the
-// PC's keyboard: DoneByStartOrEnter), its text alone (no icon of the menus' is Start's), Select moved left for its
-// length (as the room's footer: Select 230/263, the text from 335, Back 488); a room code's: Paste again, all as they
-// were.
+// A name's keyboard: Paste's place in the footer is Done's other key's (DoneByStartOrEnter): its icon the port's
+// (a controller's Start, or the PC's Enter key, as the keyboard's prompts draw keys: the player's last input), drawn
+// where Paste's was (a wider one growing from its right side, as the footers' caps do), its text Done; a room code's:
+// Paste again.
 void PasteOrDone(uint8_t* keyboard)
 {
-    static const char* const kNames[3] = { "selectbutton", "select", "pastetext" };
-    static const int16_t kNameX[3] = { 230 * 32, 263 * 32, 335 * 32 };
-    static uint8_t* items[3] = {};
-    static int16_t ownX[3] = {};
+    uint8_t* text = KeyboardKeyRaw(keyboard, "pastetext");
+    uint8_t* icon = KeyboardKeyRaw(keyboard, "pastebutton");
+    if (!text || !icon)
+        return;
+    const wchar_t* words = MenuTextBuffer(g_KeyboardForName ? "IDS_PORT_KEYBOARD_DONE" : "IDS_PORT_ONLINE_PASTE");
+    float iconX = 0, iconY = 0, alpha = 1.0f;
     __try {
-        for (int i = 0; i < 3; ++i) {
-            uint8_t* item = KeyboardKeyRaw(keyboard, kNames[i]);
-            if (!item)
-                continue;
-            if (items[i] != item) { // this screen's (made again): its own place
-                items[i] = item;
-                ownX[i] = *reinterpret_cast<int16_t*>(item + 0xE4);
-            }
-            *reinterpret_cast<int16_t*>(item + 0xE4) = g_KeyboardForName ? kNameX[i] : ownX[i];
-        }
-        if (items[2]) {
-            const wchar_t* words = MenuTextBuffer(g_KeyboardForName ? (input::KeyboardPrompts() ? "IDS_PORT_ENTER_DONE" :
-                "IDS_PORT_START_DONE") : "IDS_PORT_ONLINE_PASTE");
-            if (words)
-                *reinterpret_cast<const void**>(items[2] + 0x44) = words;
-        }
+        if (words)
+            *reinterpret_cast<const void**>(text + 0x44) = words;
+        iconX = float(*reinterpret_cast<const int16_t*>(icon + 0xE4)) / 32.0f;
+        alpha = float(text[0x97]) / 255.0f; // (the footer's fade)
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return;
     }
+    const HiddenItem& h = g_HiddenItems[14]; // (Paste's icon, out of sight: its own place kept)
+    if (!g_KeyboardForName || h.item != icon || !h.hidden)
+        return;
+    iconY = float(h.y) / 32.0f;
+    const bool keyboardKeys = input::KeyboardPrompts();
+    void* picture = nullptr;
+    int width = 32, left = 0, right = 32;
+    if (!ButtonPicture(keyboardKeys, keyboardKeys ? "ENTER" : "START", picture, width, left, right))
+        return;
+    const float x0 = iconX + 32.0f - float(right); // its drawn part's right side where the icon's is
+    DrawHandle(picture, x0, iconY, x0 + float(width), iconY + 32.0f, 1.0f, alpha);
 }
 
 // Ctrl+V: the clipboard's code (its letters and digits) as the text.
@@ -2767,8 +2774,7 @@ void InstallOnlineMenu()
     SetMenuText("IDS_PORT_LOST_TITLE", L"Connection Lost");
     SetMenuText("IDS_PORT_LOST_TEXT", L"The connection to the other player was lost.");
     SetMenuText("IDS_PORT_ONLINE_PASTE", L"Paste");
-    SetMenuText("IDS_PORT_START_DONE", L"Start: Done");
-    SetMenuText("IDS_PORT_ENTER_DONE", L"Enter: Done");
+    SetMenuText("IDS_PORT_KEYBOARD_DONE", L"Done");
     SetMenuText("IDS_PORT_ONLINE_PUBLIC", L"Public Rooms");
     SetMenuText("IDS_PORT_NOTICE_TITLE", L"Online");
     SetMenuText("IDS_PORT_NOTICE_TEXT", L"");
