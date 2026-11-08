@@ -1702,6 +1702,22 @@ int FindRefusedKeysRaw(uint8_t* keyboard, uint8_t* (&found)[4])
     return count;
 }
 
+// The keyboard's title (its screen's "title" item) pointed at the port's text each frame: the screen is made once and
+// its title kept its first text (Enter the Room Code for a name too).
+void KeyboardTitle(uint8_t* keyboard)
+{
+    __try {
+        const uint8_t* item = *reinterpret_cast<uint8_t* const*>(keyboard + 8);
+        uint8_t* items = item ? *reinterpret_cast<uint8_t* const*>(item + 0x24) : nullptr;
+        uint8_t* title = items ? reinterpret_cast<uint8_t*(__fastcall*)(uint8_t*, void*, const char*)>(
+            uintptr_t(kFindItem))(items, nullptr, "title") : nullptr;
+        const wchar_t* text = MenuTextBuffer("IDS_PORT_ONLINE_ENTER_CODE");
+        if (title && text)
+            *reinterpret_cast<const void**>(title + 0x44) = text;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
 void DisableRefusedKeys(uint8_t* keyboard)
 {
     uint8_t* keys[4] = {};
@@ -1723,6 +1739,7 @@ void __fastcall KeyboardDraw(uint8_t* keyboard, void*, uint32_t value)
         ShowRoomNotice(keyboard, "popup"); // a join asked here: its popup (the code screen's own)
     }
     DisableRefusedKeys(keyboard);
+    KeyboardTitle(keyboard);
     reinterpret_cast<void(__fastcall*)(uint8_t*, void*, uint32_t)>(uintptr_t(kKeyboardDraw))(keyboard, nullptr, value);
 }
 
@@ -1754,9 +1771,34 @@ bool IsCodeLetterRefused(wchar_t c)
     return c == L'S' || c == L'D' || c == L'O' || c == L'B';
 }
 
+void __fastcall KeyboardDone(uint8_t* keyboard, void*);
+
+// Start (a controller's) or Enter (the PC's keyboard, otherwise A on the key under the cursor) on any key: Done, as
+// its key does (nothing on an empty text, as the game's Done is disabled then).
+bool DoneByStartOrEnter(uint8_t* key, int event)
+{
+    const bool enter = event == kChosen && GameWindowActive() && (GetAsyncKeyState(VK_RETURN) & 0x8000);
+    const bool start = event == 0x25 && !(GameWindowActive() && (GetAsyncKeyState(VK_ESCAPE) & 0x8000));
+    if (!enter && !start)
+        return false;
+    const uint8_t* item = *reinterpret_cast<uint8_t**>(key + 8);
+    const uint8_t* parent = item ? *reinterpret_cast<uint8_t* const*>(item + 0x28) : nullptr;
+    uint8_t* keyboard = parent ? *reinterpret_cast<uint8_t* const*>(parent + 0x80) : nullptr;
+    if (!keyboard || *reinterpret_cast<uint32_t**>(keyboard) != g_KeyboardVtable)
+        return false;
+    if (KeyboardText(keyboard).empty()) {
+        Sound(keyboard, kErrorSound);
+        return true;
+    }
+    KeyboardDone(keyboard, nullptr);
+    return true;
+}
+
 template <int I>
 char __fastcall KeyEvent(uint8_t* key, void*, int event, int value)
 {
+    if (DoneByStartOrEnter(key, event))
+        return 1;
     if (event == kB) { // back: to the main menu (a code) or Online Settings (a name), not to the Codes screen's own
         const uint8_t* item = *reinterpret_cast<uint8_t**>(key + 8);
         const uint8_t* parent = item ? *reinterpret_cast<uint8_t* const*>(item + 0x28) : nullptr;
