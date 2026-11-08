@@ -89,6 +89,10 @@ std::string DescribeCharacter(uint32_t id, const uint8_t* character);
 bool CharacterActive(const uint8_t* character);
 // Whether a character lives (not dead, its health above 0).
 bool CharacterAlive(const uint8_t* character);
+// A state's character living (not dead, some health).
+bool StateLiving(const FighterState& s);
+// A character's current sequence (-1: none).
+int16_t CharacterSequence(const uint8_t* character);
 // Whether either fighter of the duel plays its intro or outro now, and a line about both and the camera (diagnostics).
 bool DuelStaged();
 std::string DescribeDuel();

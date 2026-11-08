@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -47,9 +48,10 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr uint32_t kMagic = 0x4E525753; // 'SWRN'
-constexpr uint16_t kProtocol = 11; // 2: the players' names; 3: client/server matches; 4: the arena's picker; 5: props; 6: a public room;
+constexpr uint16_t kProtocol = 12; // 2: the players' names; 3: client/server matches; 4: the arena's picker; 5: props; 6: a public room;
                                   // 7: the room's name, the players' Ready; 8: Versus's time limit (the room, the duel's clock); 9: Cooperative's characters;
-                                  // 10: Cooperative's Restart/Quit vote; 11: the guest's vote its own
+                                  // 10: Cooperative's Restart/Quit vote; 11: the guest's vote its own;
+                                  // 12: the host's spawned characters' classes (the guest makes those it lacks)
 constexpr uint16_t kDefaultPort = 27960;
 constexpr uint32_t kHistory = 512;      // frames of inputs kept (a power of two)
 constexpr uint32_t kMaxSend = 48;       // inputs in one packet at most
@@ -93,6 +95,7 @@ enum class Msg : uint8_t {
     Seat, // the guest's Ready in the room
     Chars, // a Cooperative mission's other characters (client/server)
     Vote,  // the guest's Restart/Quit vote (its own cursor, its own choice)
+    Born,  // the host's spawned characters' classes and costumes (the guest makes those its game has not spawned)
 };
 
 constexpr uint32_t kPage = 1024;      // a desync's report: the data checked, hashed by 1 KiB pages
@@ -223,6 +226,20 @@ struct CharsMsg {
     uint8_t count;
     uint8_t reserved[3];
     CharState chars[kCharsPerMsg];
+};
+// The host's spawned characters' classes and costumes, each sent a few times as it appears.
+constexpr int kBornPerMsg = 4;
+struct Born {
+    uint32_t key;
+    char cls[40];
+    char costume[24];
+};
+struct BornMsg {
+    Header h;
+    uint32_t seq;
+    uint8_t count;
+    uint8_t reserved[3];
+    Born born[kBornPerMsg];
 };
 // The guest's Restart/Quit vote (CoopVote), sent a few times (the host keeps the latest).
 struct VoteMsg {
@@ -555,6 +572,8 @@ struct Session {
     std::vector<PropsMsg> propsIn;      // the guest: the host's props messages, for the game thread
     std::vector<CharsMsg> charsIn;      // the guest: the host's characters, for the game thread
     uint32_t charsSeqOut = 0, charsSeqIn = 0;
+    std::vector<BornMsg> bornIn;        // the guest: the host's spawned characters' classes, for the game thread
+    uint32_t bornSeqOut = 0, bornSeqIn = 0;
     uint32_t propsSeqOut = 0, propsSeqIn = 0;
     int roundWinner = -1;               // the host: the last round's winner (0 player 1, 1 player 2), -1 none yet
     int matchWinner = -1;               // the host: the last match's (its last round's), for the arena's picker
@@ -1268,11 +1287,213 @@ std::unordered_map<uint32_t, uint32_t> g_BoundKey;  // the host's key: this game
 std::unordered_map<uint32_t, uint32_t> g_BoundBy;   // this game's key: the host's key
 std::unordered_map<uint32_t, uint32_t> g_Unbound;   // this game's spawned characters none takes: since (frame)
 uint32_t g_Rebound = 0, g_Parked = 0;
+// This game's spawned characters none takes yet: where they were when first seen (they are out of sight meanwhile: one
+// of the host's may still take it, by that place).
+std::unordered_map<uint32_t, std::array<float, 3>> g_UnboundPlace;
+
+// The host's spawned characters' classes and costumes (BornMsg). The host: those sent (each a few times as it
+// appears). The guest: those known, to make one the host has and this game has not spawned.
+std::unordered_set<uint32_t> g_BornNoted;
+struct BornOut {
+    Born born;
+    int sent = 0;
+};
+std::vector<BornOut> g_BornQueue;
+struct BornIn {
+    std::string cls, costume;
+};
+std::unordered_map<uint32_t, BornIn> g_Births;
+
+void NoteBorn(uint32_t key, uint8_t* character)
+{
+    if (!(key & 0x80000000u) || !g_BornNoted.insert(key).second)
+        return;
+    char cls[48];
+    if (!CharacterClassName(character, cls))
+        return;
+    BornOut b = {};
+    b.born.key = key;
+    strncpy_s(b.born.cls, cls, _TRUNCATE);
+    game::CostumeNameRaw(character, b.born.costume, sizeof(b.born.costume));
+    g_BornQueue.push_back(b);
+}
+
+bool TakeBorn(Born (&out)[kBornPerMsg], uint8_t& count)
+{
+    count = 0;
+    for (auto it = g_BornQueue.begin(); it != g_BornQueue.end() && count < kBornPerMsg;) {
+        out[count++] = it->born;
+        if (++it->sent >= 3) // (three times, a few frames apart: a lost message is not all)
+            it = g_BornQueue.erase(it);
+        else
+            ++it;
+    }
+    return count > 0;
+}
+
+// The guest: the host's characters this game has not spawned (its waves a little later, or not alike), made here by the
+// port (the class and costume the host's has, at its place) once one has been missing a third of a second; they
+// are the host's from then on (bound), and taken away once dead a while or no longer the host's.
+struct Made {
+    uint8_t* object = nullptr;
+    uint32_t id = 0;
+    uint32_t deadSince = 0;
+};
+std::unordered_map<uint32_t, Made> g_Made;           // the host's key: made here
+std::unordered_set<const uint8_t*> g_MadeObjects;
+std::unordered_map<uint32_t, uint32_t> g_MissingSince; // the host's key: missing here since (frame)
+std::unordered_set<uint32_t> g_MakeRefused;
+uint32_t g_MadeCount = 0, g_MadeRemoved = 0, g_NoBirth = 0;
+constexpr uint32_t kMakeAfter = 20;       // frames missing before one is made
+constexpr uint32_t kMadeDeadFor = 900;    // a made one dead this long is taken away (its corpse, as the game's go)
+
+uint8_t* MadeOf(uint32_t hostKey)
+{
+    const auto m = g_Made.find(hostKey);
+    if (m == g_Made.end())
+        return nullptr;
+    if (ObjectStill(m->second.id, m->second.object))
+        return m->second.object;
+    g_MadeObjects.erase(m->second.object);
+    g_Made.erase(m);
+    return nullptr;
+}
+
+uint8_t* MakeCharacter(uint32_t hostKey, const FighterState& s, uint32_t frame)
+{
+    const auto b = g_Births.find(hostKey);
+    if (b == g_Births.end()) {
+        if (g_NoBirth++ < 20)
+            LOG_INFO("Online: the host's character %08X: its class is not known here yet", hostKey);
+        return nullptr;
+    }
+    float m[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+    if (!StatePosition(s, m + 12))
+        return nullptr;
+    std::string error;
+    uint8_t* o = game::SpawnCharacterAt(b->second.cls.c_str(), b->second.costume, "", "", game::SpawnSide::Default, m,
+        error);
+    if (!o) {
+        g_MakeRefused.insert(hostKey);
+        LOG_WARN("Online: the host's character %08X (%s) could not be made here: %s", hostKey, b->second.cls.c_str(),
+            error.c_str());
+        return nullptr;
+    }
+    PlaceCharacter(o, s); // (its whole place: its facing too)
+    Made made;
+    made.object = o;
+    made.id = *reinterpret_cast<const uint32_t*>(o + 4);
+    g_Made[hostKey] = made;
+    g_MadeObjects.insert(o);
+    if (g_MadeCount++ < 60)
+        LOG_INFO("Online: the host's character %08X (%s, %s) made here, missing for %u frame(s)", hostKey,
+            b->second.cls.c_str(), b->second.costume.empty() ? "its usual costume" : b->second.costume.c_str(),
+            frame - g_MissingSince[hostKey]);
+    return o;
+}
+
+// The made ones dead a while (or the host's no longer: gone there) taken away.
+void TidyMade(uint32_t frame, const std::unordered_map<uint32_t, uint32_t>& lastFromHost)
+{
+    for (auto it = g_Made.begin(); it != g_Made.end();) {
+        Made& m = it->second;
+        if (!ObjectStill(m.id, m.object)) {
+            g_MadeObjects.erase(m.object);
+            it = g_Made.erase(it);
+            continue;
+        }
+        if (CharacterAlive(m.object))
+            m.deadSince = 0;
+        else if (!m.deadSince)
+            m.deadSince = frame;
+        const auto last = lastFromHost.find(it->first);
+        const bool hostGone = last == lastFromHost.end() || frame - last->second > 300;
+        if ((m.deadSince && frame - m.deadSince > kMadeDeadFor) || hostGone) {
+            game::RemoveSpawnedCharacter(m.object);
+            ++g_MadeRemoved;
+            g_MadeObjects.erase(m.object);
+            it = g_Made.erase(it);
+            continue;
+        }
+        ++it;
+    }
+}
+
+// The guest: how alike its game is to the host's, from each of the host's characters' states as it comes (logged every
+// ten seconds): the host's characters there here, alive alike, playing the same sequence, and how far this game's is
+// from the host's latest place (a few frames of display behind it: some units for one running); and this game's
+// characters shown that are none of the host's.
+struct Identity {
+    uint32_t seen = 0, present = 0, compared = 0, livingAlike = 0, sequenceAlike = 0, placed = 0, off50 = 0, off150 = 0;
+    double distanceSum = 0;
+    float distanceMax = 0;
+    uint32_t playerSeen = 0;
+    double playerSum[2] = {};
+    float playerMax[2] = {};
+    void Note(uint8_t* o, const FighterState& s)
+    {
+        const bool hostLiving = StateLiving(s);
+        seen += hostLiving; // (the living: a corpse of the host's need not be here)
+        if (!o)
+            return;
+        present += hostLiving;
+        ++compared;
+        if (CharacterAlive(o) == hostLiving)
+            ++livingAlike;
+        if (!hostLiving)
+            return; // (a corpse: where it lies, its sequence, are the game's)
+        if (CharacterSequence(o) == s.seq)
+            ++sequenceAlike;
+        FighterState here;
+        float a[3], b[3];
+        if (!CaptureFighter(o, here) || !StatePosition(here, a) || !StatePosition(s, b))
+            return;
+        const float d = std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+        ++placed;
+        distanceSum += d;
+        distanceMax = std::max(distanceMax, d);
+        off50 += d > 50.0f;
+        off150 += d > 150.0f;
+    }
+    void NotePlayers(uint8_t* const fighters[2], const StateMsg& st)
+    {
+        ++playerSeen;
+        for (int i = 0; i < 2; ++i) {
+            FighterState here;
+            float a[3], b[3];
+            if (!fighters[i] || !CaptureFighter(fighters[i], here) || !StatePosition(here, a) ||
+                !StatePosition(st.fighters[i], b))
+                continue;
+            const float d = std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[2] - b[2]) * (a[2] - b[2]));
+            playerSum[i] += d;
+            playerMax[i] = std::max(playerMax[i], d);
+        }
+    }
+    std::string Take(size_t shownNotTheHosts)
+    {
+        auto pct = [](uint32_t a, uint32_t b) { return b ? 100.0 * a / b : 100.0; };
+        char line[480];
+        std::snprintf(line, sizeof(line),
+            "identity: %u of the host's living character state(s): %.1f%% there here, %.1f%% alive alike, %.1f%% the same "
+            "sequence; places %.1f units from the host's latest on average (%.0f at most, %.1f%% over 50, %.1f%% over "
+            "150); %zu of this game's shown that are none of the host's; player 1 %.1f units from the host's (%.0f at "
+            "most), player 2 %.1f (%.0f at most); %u made here so far, %u taken away",
+            seen, pct(present, seen), pct(livingAlike, compared), pct(sequenceAlike, placed),
+            placed ? distanceSum / placed : 0.0, distanceMax, pct(off50, placed) * (placed ? 1 : 0),
+            pct(off150, placed) * (placed ? 1 : 0), shownNotTheHosts, playerSeen ? playerSum[0] / playerSeen : 0.0,
+            playerMax[0], playerSeen ? playerSum[1] / playerSeen : 0.0, playerMax[1], g_MadeCount, g_MadeRemoved);
+        *this = Identity();
+        return line;
+    }
+};
+Identity g_Identity;
 
 uint8_t* BoundCharacter(uint32_t hostKey, const FighterState& s, uint32_t frame)
 {
     if (!(hostKey & 0x80000000u))
         return CharacterByKey(hostKey); // a level's own: its id
+    if (uint8_t* made = MadeOf(hostKey))
+        return made;
     const auto b = g_BoundKey.find(hostKey);
     if (b != g_BoundKey.end()) {
         if (uint8_t* o = CharacterByKey(b->second))
@@ -1288,11 +1509,14 @@ uint8_t* BoundCharacter(uint32_t hostKey, const FighterState& s, uint32_t frame)
     uint8_t* bestObject = nullptr;
     float bestDistance = 400.0f * 400.0f;
     for (const auto& [key, o] : CharactersOfClass(hostKey & 0xFFFF0000u)) {
-        if (g_BoundBy.count(key) || !CharacterAlive(o))
-            continue; // (taken, or a corpse here)
+        if (g_BoundBy.count(key) || g_MadeObjects.count(o) || !CharacterAlive(o))
+            continue; // (taken, made here for another, or a corpse here)
         float p[3] = {};
+        const auto place = g_UnboundPlace.find(key); // (one out of sight meanwhile: where it was)
         FighterState here;
-        if (!CaptureFighter(o, here) || !StatePosition(here, p))
+        if (place != g_UnboundPlace.end())
+            std::memcpy(p, place->second.data(), sizeof(p));
+        else if (!CaptureFighter(o, here) || !StatePosition(here, p))
             continue;
         const float d = (p[0] - host[0]) * (p[0] - host[0]) + (p[2] - host[2]) * (p[2] - host[2]) -
             (key == hostKey ? 1.0f : 0.0f);
@@ -1307,6 +1531,7 @@ uint8_t* BoundCharacter(uint32_t hostKey, const FighterState& s, uint32_t frame)
     g_BoundKey[hostKey] = best;
     g_BoundBy[best] = hostKey;
     g_Unbound.erase(best);
+    g_UnboundPlace.erase(best);
     if (best != hostKey && g_Rebound++ < 40)
         LOG_INFO("Online: the host's character %08X is this game's %08X (the nearest of its class, %.0f away)", hostKey,
             best, std::sqrt(std::max(bestDistance, 0.0f)));
@@ -1319,31 +1544,43 @@ uint8_t* BoundOf(uint32_t hostKey)
 {
     if (!(hostKey & 0x80000000u))
         return CharacterByKey(hostKey);
+    if (uint8_t* made = MadeOf(hostKey))
+        return made;
     const auto b = g_BoundKey.find(hostKey);
     return b == g_BoundKey.end() ? nullptr : CharacterByKey(b->second);
 }
 
-// This game's spawned characters none of the host's has taken for three seconds: out of sight (each frame: its AI is
-// off, nothing else moves it).
-void ParkUnbound(uint32_t frame)
+// This game's spawned characters none of the host's has taken: out of sight at once (each frame: its AI is off, nothing
+// else moves it; where it was kept, for one of the host's to take it by), and dead after three seconds (the level's
+// waves count the living: a spawner waiting for fewer would wait here for ever). The ones made here are the host's.
+// The number shown that are none of the host's (none, but for those this frame's state has not reached).
+size_t ParkUnbound(uint32_t frame)
 {
+    size_t shown = 0;
     for (const auto& [key, o] : SpawnedCharacters()) {
-        if (g_BoundBy.count(key)) {
+        if (g_BoundBy.count(key) || g_MadeObjects.count(o)) {
             g_Unbound.erase(key);
+            g_UnboundPlace.erase(key);
             continue;
         }
         const auto u = g_Unbound.emplace(key, frame).first;
-        if (frame - u->second < 180)
-            continue;
+        if (!g_UnboundPlace.count(key)) {
+            FighterState here;
+            float p[3];
+            if (CaptureFighter(o, here) && StatePosition(here, p) && p[1] > -10000.0f)
+                g_UnboundPlace[key] = { p[0], p[1], p[2] };
+            else
+                ++shown;
+        }
         if (frame - u->second == 180) {
             if (g_Parked++ < 40)
                 LOG_INFO("Online: this game's character %08X is none of the host's: out of sight, and dead", key);
-            // dead too: the level's waves count the living (a spawner waiting for fewer would wait here for ever)
             if (CharacterAlive(o))
                 game::ChangeHealthDirect(o, -1.0e6f);
         }
         ParkCharacter(o);
     }
+    return shown;
 }
 
 // The engine's settings ([[[0x645F7C]+0x38]+8], their console variables registered by 0x2409A0): +0xC4 is
@@ -1564,6 +1801,16 @@ void OnServerMsgLocked(Msg type, const uint8_t* data, size_t size)
             g_S.charsIn.push_back(m);
         }
         break;
+    case Msg::Born:
+        if (!g_S.host && size >= sizeof(BornMsg) && g_S.bornIn.size() < 64) {
+            BornMsg m;
+            std::memcpy(&m, data, sizeof(m));
+            if (m.seq <= g_S.bornSeqIn)
+                return;
+            g_S.bornSeqIn = m.seq;
+            g_S.bornIn.push_back(m);
+        }
+        break;
     case Msg::Vote:
         if (g_S.host && size >= sizeof(VoteMsg) && !g_S.decided) {
             VoteMsg m;
@@ -1725,6 +1972,8 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     propsIn.swap(g_S.propsIn);
     std::vector<CharsMsg> charsIn;
     charsIn.swap(g_S.charsIn);
+    std::vector<BornMsg> bornIn;
+    bornIn.swap(g_S.bornIn);
     const bool coopMission = g_S.room.mode == 1;
     lock.unlock();
 
@@ -1742,6 +1991,15 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             g_BoundKey.clear();
             g_BoundBy.clear();
             g_Unbound.clear();
+            g_UnboundPlace.clear();
+            g_BornNoted.clear();
+            g_BornQueue.clear();
+            g_Births.clear();
+            g_Made.clear();
+            g_MadeObjects.clear();
+            g_MissingSince.clear();
+            g_MakeRefused.clear();
+            g_Identity = Identity();
             std::lock_guard<std::mutex> relock(g_S.lock);
             g_S.matchDraws = 0;
             g_S.drawEndAt = {};
@@ -1866,8 +2124,10 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             int count = 0;
             for (int i = 0; i < n; ++i) {
                 cm.chars[count].key = keys[i];
-                if (CaptureFighter(objects[i], cm.chars[count].state))
+                if (CaptureFighter(objects[i], cm.chars[count].state)) {
+                    NoteBorn(keys[i], objects[i]); // a spawned one's class and costume, the first time it is sent
                     ++count;
+                }
             }
             if (count) {
                 cm.h = MakeHeader(Msg::Chars, g_S.token);
@@ -1875,6 +2135,12 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
                 cm.hostFrame = frame;
                 cm.count = uint8_t(count);
                 SendLocked(cm);
+            }
+            BornMsg bm = {};
+            if (frame % 3 == 0 && TakeBorn(bm.born, bm.count)) {
+                bm.h = MakeHeader(Msg::Born, g_S.token);
+                bm.seq = ++g_S.bornSeqOut;
+                SendLocked(bm);
             }
             if (m.seq % 600 == 1)
                 LOG_INFO("Online: %zu character(s) followed, %u message(s) sent", CharactersKnown(), g_S.charsSeqOut);
@@ -1941,15 +2207,31 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             if (uint8_t* o = BoundOf(key))
                 g_GuestFollowed.insert(o);
     }
+    for (const BornMsg& bm : bornIn)
+        for (int i = 0; i < std::min<int>(bm.count, kBornPerMsg); ++i) {
+            const Born& b = bm.born[i];
+            BornIn& in = g_Births[b.key];
+            in.cls.assign(b.cls, strnlen(b.cls, sizeof(b.cls)));
+            in.costume.assign(b.costume, strnlen(b.costume, sizeof(b.costume)));
+        }
+    if (coopMission && !charsIn.empty())
+        g_Identity.NotePlayers(fighters, state);
     for (const CharsMsg& cm : charsIn)
         for (int i = 0; i < std::min<int>(cm.count, kCharsPerMsg); ++i) {
             const CharState& c = cm.chars[i];
             uint8_t* o = BoundCharacter(c.key, c.state, frame);
+            if (!o && (c.key & 0x80000000u) && StateLiving(c.state) && !g_MakeRefused.count(c.key)) {
+                const uint32_t since = g_MissingSince.emplace(c.key, frame).first->second;
+                if (frame - since >= kMakeAfter)
+                    o = MakeCharacter(c.key, c.state, frame);
+            }
+            g_Identity.Note(o, c.state);
             if (!o) {
                 if (missing++ < 40 || missing % 500 == 0)
                     LOG_INFO("Online: the host's character %08X is not in this game yet (%u so far)", c.key, missing);
                 continue;
             }
+            g_MissingSince.erase(c.key);
             g_GuestFollowed.insert(o);
             g_GuestKeys.insert(c.key);
             g_CharFollow[c.key].Push(c.state, frame);
@@ -1966,16 +2248,27 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         PlaceCharacter(o, it->second.At(frame, kCharsBehind)); // its place: between its last two, a little behind
         ++it;
     }
-    if (coopMission)
-        ParkUnbound(frame);
+    static size_t shownNotTheHosts = 0;
+    if (coopMission) {
+        shownNotTheHosts = std::max(shownNotTheHosts, ParkUnbound(frame));
+        if (frame % 60 == 0) {
+            std::unordered_map<uint32_t, uint32_t> lastFromHost;
+            for (const auto& [key, f] : g_CharFollow)
+                lastFromHost[key] = f.frame;
+            TidyMade(frame, lastFromHost);
+        }
+    }
     for (uint8_t* o : g_GuestFollowed) // (diagnostics: their steps)
         NoteMotion(o);
     if (fighters[0])
         NoteMotion(fighters[0]);
     if (fighters[1])
         NoteMotion(fighters[1]);
-    if (frame % 600 == 300 && coopMission)
+    if (frame % 600 == 300 && coopMission) {
         LOG_INFO("Online: motion here: %s", MotionStats().c_str());
+        LOG_INFO("Online: %s", g_Identity.Take(shownNotTheHosts).c_str());
+        shownNotTheHosts = 0;
+    }
     if (frame % 600 == 0 && coopMission)
         LOG_INFO("Online: %u character state(s) applied, %zu character(s) followed, %u missing here, %u of this game's "
                  "sequence starts held", CharactersApplied(), g_GuestFollowed.size(), missing, HeldStartsRefused());
@@ -2311,7 +2604,7 @@ void HandleLocked(const uint8_t* data, size_t size, const Endpoint& from)
     // Both ways.
     if (type == Msg::Pad || type == Msg::Launch || type == Msg::State || type == Msg::Room || type == Msg::Props ||
         type == Msg::Seat || type == Msg::Chars ||
-        type == Msg::Vote) {
+        type == Msg::Vote || type == Msg::Born) {
         if (g_S.server && (g_S.armed || g_S.bootPending || type == Msg::Room || type == Msg::Seat))
             OnServerMsgLocked(type, data, size);
         return;
@@ -2553,6 +2846,8 @@ void ResetSessionLocked(bool host)
     g_S.stateSeqOut = g_S.stateSeqIn = g_S.statesIn = 0;
     g_S.propsSeqOut = g_S.propsSeqIn = 0;
     g_S.charsSeqOut = g_S.charsSeqIn = 0;
+    g_S.bornSeqOut = g_S.bornSeqIn = 0;
+    g_S.bornIn.clear();
     g_S.clockTenths = -1;
     g_S.draws = 0;
     g_S.drawsKnown = false;

@@ -469,6 +469,24 @@ std::vector<uint8_t*> CharacterObjects()
     return out;
 }
 
+bool ObjectStill(uint32_t id, const uint8_t* object)
+{
+    return id && object && ObjectById(id) == object;
+}
+
+bool CharacterClassName(uint8_t* character, char (&out)[48])
+{
+    return ClassNameRaw(character, out);
+}
+
+uint32_t CharacterKeyOf(const uint8_t* character)
+{
+    for (const auto& [id, c] : g_CharById)
+        if (c.object == character && ObjectById(id) == c.object)
+            return c.key;
+    return 0;
+}
+
 uint8_t* CharacterByKey(uint32_t key)
 {
     const auto k = g_CharIdByKey.find(key);

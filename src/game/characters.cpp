@@ -2553,4 +2553,24 @@ void SettleActivated(uint8_t* character)
     SettleGrievous(character);
 }
 
+// A character's costume's name (its variant list's, at its chosen costume), copied out; false when it has none.
+bool CostumeNameRaw(const uint8_t* character, char* out, size_t size)
+{
+    out[0] = 0;
+    __try {
+        const uint8_t* list = *reinterpret_cast<const uint8_t* const*>(character + kCharacterVariants);
+        const int chosen = *reinterpret_cast<const int*>(character + kCharacterCostume);
+        if (!list || chosen < 0 || chosen >= VariantCount(list))
+            return false;
+        const char* name = VariantName(list, chosen);
+        size_t i = 0;
+        for (; name && i + 1 < size && name[i]; ++i)
+            out[i] = name[i];
+        out[i] = 0;
+        return i > 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 } // namespace swrots::game

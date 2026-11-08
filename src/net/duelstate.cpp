@@ -1104,6 +1104,18 @@ bool DuelStaged()
     return false;
 }
 
+bool StateLiving(const FighterState& s)
+{
+    return s.valid && !Packed<uint8_t>(s, 0x12C) && Packed<float>(s, 0x130) > 0.0f;
+}
+
+int16_t CharacterSequence(const uint8_t* character)
+{
+    SeqInfo seq;
+    ReadSeq(character, seq);
+    return int16_t(seq.index);
+}
+
 bool CharacterAlive(const uint8_t* character)
 {
     bool living = false;

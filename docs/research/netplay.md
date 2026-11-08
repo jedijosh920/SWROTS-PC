@@ -637,6 +637,21 @@ Each game's own player works the rows with their own cursor: the pause screen's 
 own pad alone online (the host's port 0, the guest's port 1), and the guest's choice goes to the host as a message
 (`Vote`, protocol 11).
 
+A mission's waves are not always spawned alike on both games: a spawner waits for its last wave's dead, and the guest's
+die a little later (the host's states come a few frames behind, a death through the game's own change). The guest's
+waves fell behind the host's (some six seconds after two minutes), and some of the host's characters were not on the
+guest's at all. A host's spawned character therefore takes the guest's nearest of its class not taken (its own key
+first: its spawn point is the same place); the guest's spawned characters none takes are out of sight at once and
+dead after three seconds (the guest's spawners count them). One of the host's missing on the guest for a third of a
+second is made there by the port (its class and costume from the host: `Born`, protocol 12, each sent three times as it
+appears), at the host's place, and is that one from then on; taken away once dead fifteen seconds or no longer the
+host's.
+
+The guest logs every ten seconds how alike it is to the host (`identity`): of the host's living characters' states,
+the share there on the guest, alive alike, playing the same sequence, how far each is from the host's latest place (the
+guest shows them a few frames behind it, as the transport and its interpolation need: a few units for one walking,
+some twenty for one running) and the players' distances from the host's. The tests read it.
+
 ### Phases
 
 1. **Duel state capture/apply** on one PC: the state's size (a few KiB expected), and whether writing it into a

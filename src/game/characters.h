@@ -156,6 +156,8 @@ int SpawnedCount();
 int RemoveSpawned();
 // Removes one spawned character (still there), as RemoveSpawned does. False when it is not one.
 bool RemoveSpawnedCharacter(uint8_t* character);
+// A character's costume's name (as SpawnCharacterAt takes it), copied into `out`; false when it has none.
+bool CostumeNameRaw(const uint8_t* character, char* out, size_t size);
 
 // A character fighting for another (a fighter's reinforcement, e.g. Commander Cody's clones): created and placed at
 // `place` (a transform) in any running level, Versus too, on its master's side (its teams; `againstPlayer` when the

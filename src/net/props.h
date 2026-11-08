@@ -39,6 +39,12 @@ void CharactersReset();
 void CharactersUpdate(const uint8_t* player1, const uint8_t* player2);
 int CharactersCapture(uint32_t* keys, uint8_t** objects, int max);
 uint8_t* CharacterByKey(uint32_t key);
+// The game's object of that instance id is still that one (not gone, its memory not another's).
+bool ObjectStill(uint32_t id, const uint8_t* object);
+// A character's class name (the game's own); false when it cannot be read.
+bool CharacterClassName(uint8_t* character, char (&out)[48]);
+// A known character's key (0: not one known).
+uint32_t CharacterKeyOf(const uint8_t* character);
 // The spawned characters of a key's class (its upper half: 0x80000000 | the class's hash), with their keys.
 std::vector<std::pair<uint32_t, uint8_t*>> CharactersOfClass(uint32_t keyClass);
 // This game's active spawned characters, with their keys.
