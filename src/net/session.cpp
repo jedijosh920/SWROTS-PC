@@ -561,6 +561,8 @@ struct Session {
     uint32_t launchIdOut = 0, launchIdIn = 0;
     std::string pendingLaunch;         // the guest: the host's launch to follow
     bool pendingLaunchSet = false, followingLaunch = false, followStarted = false;
+    LaunchMsg lastLaunch = {};       // the host: its last launch, sent again a while (a lost one: the guest left behind)
+    uint32_t lastLaunchFrame = 0, lastLaunchResends = 0;
     uint32_t stateSeqOut = 0, stateSeqIn = 0, statesIn = 0;
     StateMsg latestState = {};
     bool haveState = false;
@@ -1703,6 +1705,9 @@ void LaunchObserved(std::string& arguments)
         std::snprintf(m.args, sizeof(m.args), "%s", arguments.c_str());
         for (int i = 0; i < 5; ++i)
             SendLocked(m);
+        g_S.lastLaunch = m;
+        g_S.lastLaunchFrame = g_S.frame;
+        g_S.lastLaunchResends = 0;
         g_S.haveState = false;
         g_S.duelStartWaited = false; // the next duel starts when the guest's game is in it too
         g_S.remoteInDuel = false;
@@ -1762,6 +1767,7 @@ void OnServerMsgLocked(Msg type, const uint8_t* data, size_t size)
             if (m.id <= g_S.launchIdIn)
                 return;
             g_S.launchIdIn = m.id;
+            LOG_INFO("Online: the host's launch %u received", m.id);
             g_S.pendingLaunch = m.args;
             g_S.pendingLaunchSet = true;
             g_S.haveState = false;
@@ -1866,6 +1872,12 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     pm.inDuel = g_S.guestInDuel ? 1 : 0;
     pm.screen = g_S.screen;
     SendLocked(pm);
+    // The host's last launch again every half second for twenty seconds (the guest takes each launch once: by its id)
+    if (g_S.host && g_S.lastLaunch.id && g_S.lastLaunchResends < 40 && g_S.frame - g_S.lastLaunchFrame >= 30) {
+        g_S.lastLaunchFrame = g_S.frame;
+        ++g_S.lastLaunchResends;
+        SendLocked(g_S.lastLaunch);
+    }
 
     // The front-end screen (none in a level), the port's presses, the room, the guest following the host's screens.
     {
@@ -2890,6 +2902,8 @@ void ResetSessionLocked(bool host)
     g_S.launchIdOut = g_S.launchIdIn = 0;
     g_S.pendingLaunch.clear();
     g_S.pendingLaunchSet = g_S.followingLaunch = g_S.followStarted = false;
+    g_S.lastLaunch = {};
+    g_S.lastLaunchFrame = g_S.lastLaunchResends = 0;
     g_S.stateSeqOut = g_S.stateSeqIn = g_S.statesIn = 0;
     g_S.propsSeqOut = g_S.propsSeqIn = 0;
     g_S.charsSeqOut = g_S.charsSeqIn = 0;

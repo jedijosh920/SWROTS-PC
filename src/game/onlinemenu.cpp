@@ -2435,11 +2435,15 @@ constexpr uint32_t kChallengeVtable = 0x005D6680, kChallengeEvent = 0x002D2FC0;
 
 char __fastcall ChallengeEvent(uint8_t* handler, void*, int event, int pad)
 {
-    if ((event == kChosen || event == 0x25) && CoopOnline() && !net::OnlineStatus().host) {
+    // The guest's whole pad on the missions' select is refused (its cursor, its choice, its way back: the host's
+    // select alone, which the guest's game follows); a choice is told with the refusal's sound.
+    if (CoopOnline() && !net::OnlineStatus().host) {
         static int logged = 0;
-        if (logged++ < 5)
-            LOG_INFO("Online menu: the guest's mission choice refused (the host's to make)");
-        HandlerSound(handler, kRefusedSound);
+        if (logged++ < 8)
+            LOG_INFO("Online menu: the guest's press on the missions' select refused (event 0x%X: the host's to make)",
+                event);
+        if (event == kChosen || event == 0x25)
+            HandlerSound(handler, kRefusedSound);
         return 1;
     }
     return reinterpret_cast<ItemEventFn>(uintptr_t(kChallengeEvent))(handler, nullptr, event, pad);
