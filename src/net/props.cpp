@@ -442,6 +442,15 @@ int CharactersCapture(uint32_t* keys, uint8_t** objects, int max)
     return count;
 }
 
+std::vector<uint8_t*> CharacterObjects()
+{
+    std::vector<uint8_t*> out;
+    for (const auto& [id, c] : g_CharById)
+        if (ObjectById(id) == c.object && CharacterActive(c.object))
+            out.push_back(c.object);
+    return out;
+}
+
 uint8_t* CharacterByKey(uint32_t key)
 {
     const auto k = g_CharIdByKey.find(key);

@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace swrots::net {
 
@@ -37,6 +38,8 @@ void CharactersReset();
 void CharactersUpdate(const uint8_t* player1, const uint8_t* player2);
 int CharactersCapture(uint32_t* keys, uint8_t** objects, int max);
 uint8_t* CharacterByKey(uint32_t key);
+// The active characters known (diagnostics).
+std::vector<uint8_t*> CharacterObjects();
 size_t CharactersKnown();
 // The characters (diagnostics: the lowest `max` keys of the active ones).
 std::string DescribeCharacters(size_t max);

@@ -1735,6 +1735,12 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             }
             if (m.seq % 600 == 1)
                 LOG_INFO("Online: %zu character(s) followed, %u message(s) sent", CharactersKnown(), g_S.charsSeqOut);
+            for (uint8_t* o : CharacterObjects()) // (diagnostics: their steps, to compare with the guest's)
+                NoteMotion(o);
+            NoteMotion(fighters[0]);
+            NoteMotion(fighters[1]);
+            if (frame % 600 == 300)
+                LOG_INFO("Online: motion here: %s", MotionStats().c_str());
         }
         return;
     }
@@ -1821,6 +1827,14 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         }
         ++it;
     }
+    for (uint8_t* o : g_GuestFollowed) // (diagnostics: their steps)
+        NoteMotion(o);
+    if (fighters[0])
+        NoteMotion(fighters[0]);
+    if (fighters[1])
+        NoteMotion(fighters[1]);
+    if (frame % 600 == 300 && coopMission)
+        LOG_INFO("Online: motion here: %s", MotionStats().c_str());
     if (frame % 600 == 0 && coopMission)
         LOG_INFO("Online: %u character state(s) applied, %zu character(s) followed, %u missing here, %u of this game's "
                  "sequence starts held", CharactersApplied(), g_GuestFollowed.size(), missing, HeldStartsRefused());

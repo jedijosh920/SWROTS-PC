@@ -674,6 +674,7 @@ struct Applied {
 Applied g_Applied[2];
 uint32_t g_ApplyFrame = 0;
 uint32_t g_ApplyStarts = 0, g_ApplyRefused = 0, g_ApplyPlaced = 0, g_ApplyStaged = 0, g_ApplyHeld = 0;
+uint32_t g_OwnFollowed = 0, g_OwnStarts = 0, g_CharStarts = 0; // (diagnostics: the own fighter's host frames)
 uint32_t g_NamesLogged = 0, g_LivingLogged = 0;
 // This PC's own fighter is put at the host's place when it stays more than kOwnPlaceError off it for kOwnPlaceFrames
 // (its own moves run a little ahead of the host's: a glide, a lunge, a combo's turn taken a frame apart), or at once
@@ -816,6 +817,8 @@ void ApplyInto(const char* who, Applied& a, const Applied& other, uint8_t* fight
     const bool follow = hostGrab || reacting || (hostDown && !liveHere);
     if (hostGrab)
         ++g_ApplyHeld;
+    if (own && follow)
+        ++g_OwnFollowed;
     Into into = own && !follow ? Into::Own : Into::Remote;
     if (own && !follow) {
         float x = 0, y = 0, z = 0;
@@ -850,6 +853,10 @@ void ApplyInto(const char* who, Applied& a, const Applied& other, uint8_t* fight
     const float at = float(s.ticks + leadTicks) / 60.0f; // the game's 60 ticks a second ([0x645EA0])
     if (StartSeqRaw(fighter, s.seq, at)) {
         ++g_ApplyStarts;
+        if (own)
+            ++g_OwnStarts;
+        else if (who[0] == 'c')
+            ++g_CharStarts;
         a.parted = 0;
     } else {
         ++g_ApplyRefused;
@@ -984,6 +991,56 @@ uint32_t HeldStartsRefused()
     return g_HeldRefused;
 }
 
+namespace {
+struct Motion {
+    float last[3] = {}, step[3] = {};
+    bool known = false;
+};
+std::unordered_map<const uint8_t*, Motion> g_Motion;
+uint32_t g_MotionFrames = 0, g_MotionReversals = 0, g_MotionJumps = 0;
+float g_MotionMax = 0;
+} // namespace
+
+void NoteMotion(const uint8_t* character)
+{
+    float p[3];
+    if (!ReadFloat(character, 0x180, p[0]) || !ReadFloat(character, 0x184, p[1]) || !ReadFloat(character, 0x188, p[2]))
+        return;
+    Motion& m = g_Motion[character];
+    if (m.known) {
+        float d[3], len = 0, prev = 0, dot = 0;
+        for (int k = 0; k < 3; ++k) {
+            d[k] = p[k] - m.last[k];
+            len += d[k] * d[k];
+            prev += m.step[k] * m.step[k];
+            dot += d[k] * m.step[k];
+        }
+        len = std::sqrt(len);
+        prev = std::sqrt(prev);
+        ++g_MotionFrames;
+        if (len > 0.3f && prev > 0.3f && dot < -0.25f * len * prev)
+            ++g_MotionReversals; // went back on its last step: a shake
+        if (len > 12.0f)
+            ++g_MotionJumps;
+        g_MotionMax = std::max(g_MotionMax, len);
+        std::memcpy(m.step, d, sizeof(d));
+    }
+    std::memcpy(m.last, p, sizeof(p));
+    m.known = true;
+}
+
+std::string MotionStats()
+{
+    char line[160];
+    std::snprintf(line, sizeof(line), "%u character frame(s): %u step(s) back (shakes), %u jump(s), the largest step %.1f",
+        g_MotionFrames, g_MotionReversals, g_MotionJumps, g_MotionMax);
+    g_MotionFrames = g_MotionReversals = g_MotionJumps = 0;
+    g_MotionMax = 0;
+    if (g_Motion.size() > 256)
+        g_Motion.clear();
+    return line;
+}
+
 void ApplyCharactersReset()
 {
     g_CharApplied.clear();
@@ -1067,10 +1124,11 @@ std::string DescribeDuel()
 
 std::string ApplyStats()
 {
-    char line[192];
-    std::snprintf(line, sizeof(line), "%u sequence(s) started again, %u refused, own fighter placed %u time(s), "
-        "%u frame(s) of staging left to this game, %u of grabs following the host's", g_ApplyStarts, g_ApplyRefused, g_ApplyPlaced,
-        g_ApplyStaged, g_ApplyHeld);
+    char line[320];
+    std::snprintf(line, sizeof(line), "%u sequence(s) started again (%u the own fighter's, %u characters'), %u refused, "
+        "own fighter placed %u time(s), %u frame(s) the host's whole (its reactions), %u frame(s) of staging left to "
+        "this game, %u of grabs following the host's", g_ApplyStarts, g_OwnStarts, g_CharStarts, g_ApplyRefused,
+        g_ApplyPlaced, g_OwnFollowed, g_ApplyStaged, g_ApplyHeld);
     return line;
 }
 

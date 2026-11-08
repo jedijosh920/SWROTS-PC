@@ -60,6 +60,9 @@ std::string ApplyStats();
 // the game's own change: its death the game's). A new level forgets them.
 void ApplyCharacter(uint32_t id, uint8_t* character, const FighterState& s, uint32_t leadTicks);
 void ApplyCharactersReset();
+// Diagnostics: a character's place this frame (its steps back and jumps counted), and the counts since the last call.
+void NoteMotion(const uint8_t* character);
+std::string MotionStats();
 // The guest's followed characters: this game's own starts of their sequences refused (their locomotion's, their
 // reactions'), the host's alone started (ApplyCharacter). Installed at each start (the behaviour's vtable slot); the
 // set given again as it changes (empty: none held).
