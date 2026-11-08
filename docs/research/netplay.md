@@ -619,6 +619,10 @@ it): the guest's game has the engine's `aiDisabled` set during the mission (the 
 Each character's state comes every few frames (five a frame in turn): the guest applies each one's latest every
 frame, carried on at its pace (its position's change a frame, from its last two states; twelve frames at most) and its
 sequence's time, so that it does not stand and jump between two.
+With its AI off the guest's locomotion still chose their sequences (RunF where the host's strafe: StrafeL/R/F/B/I
+need the AI's aim), started again against it every few frames: a character's behaviour (CharState, vtable 0x58EFB8)
+starts a sequence through its slot 7 (0x16C940, thiscall, 7 arguments, true when started); the guest holds it for
+its followed characters' behaviours, the port's own starts (the host's sequences) alone going through.
 
 A mission's Restart and Quit online (the pause screen's rows, its `game_over` child's RESTART MISSION and QUIT
 MISSION: items of the classes Restart, vtable 0x5CFE38, and Quit, 0x5CFC78; slot 4 takes A to a confirmation or at a

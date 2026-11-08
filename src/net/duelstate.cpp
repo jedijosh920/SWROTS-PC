@@ -6,6 +6,8 @@
 
 #include "net/duelstate.h"
 
+#include "core/patch.h"
+
 #include <windows.h>
 
 #include <cmath>
@@ -15,6 +17,7 @@
 #include <cstring>
 #include <iterator>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "core/log.h"
@@ -170,6 +173,29 @@ bool SeqNameAtRaw(const uint8_t* character, int32_t index, char (&out)[kSeqNameB
     }
 }
 
+// The characters whose sequences this game no longer chooses (the guest's in a Cooperative mission: the host's
+// choose them, ApplyCharacter starts them): a character's behaviour (CharState, vtable 0x58EFB8) starts a sequence
+// through its slot 7 (0x16C940, thiscall, 7 arguments, true when started), which the port holds for their behaviours
+// unless the start is the port's own (StartSeqRaw). Their locomotion would otherwise run them (RunF) where the host's
+// strafe, a sequence started again against it every few frames.
+constexpr uint32_t kStateStart = 0x0016C940;
+std::unordered_set<const uint8_t*> g_HeldStates;
+bool g_OwnStart = false;
+uint32_t g_HeldRefused = 0;
+
+using StateStartFn = bool(__fastcall*)(uint8_t*, void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
+    uint32_t);
+
+bool __fastcall HeldStateStart(uint8_t* state, void*, uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e,
+    uint32_t f, uint32_t g)
+{
+    if (!g_OwnStart && g_HeldStates.count(state)) {
+        ++g_HeldRefused;
+        return false;
+    }
+    return reinterpret_cast<StateStartFn>(uintptr_t(kStateStart))(state, nullptr, a, b, c, d, e, f, g);
+}
+
 // Starts the sequence of this index of the character's class (as the duel's intro starts one: 0x150E30, thiscall
 // (record, start time, 0, 0, speed)); false when it refuses.
 bool StartSeqRaw(uint8_t* character, int32_t index, float atSeconds = 0.0f)
@@ -180,8 +206,11 @@ bool StartSeqRaw(uint8_t* character, int32_t index, float atSeconds = 0.0f)
         if (index < 0 || index >= *reinterpret_cast<const int*>(info + 8))
             return false;
         uint8_t* record = (*reinterpret_cast<uint8_t* const* const*>(info + 0xC))[index];
-        return reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint8_t*, float, int, int, float)>(0x00150E30)(
-            character, nullptr, record, atSeconds, 0, 0, 1.0f);
+        g_OwnStart = true; // (its behaviour held or not: the port's own start goes through)
+        const bool ok = reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint8_t*, float, int, int, float)>(
+            0x00150E30)(character, nullptr, record, atSeconds, 0, 0, 1.0f);
+        g_OwnStart = false;
+        return ok;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
@@ -904,6 +933,32 @@ void MoveState(FighterState& s, const float delta[3], uint32_t ticks)
         std::memcpy(s.fields + at, v, 12);
     }
     s.ticks += ticks;
+}
+
+void InstallSequenceHold()
+{
+    g_HeldStates.clear();
+    g_OwnStart = false;
+    const uint32_t slot = kCharStateVtable + 7 * 4;
+    if (*reinterpret_cast<const uint32_t*>(uintptr_t(slot)) != kStateStart) {
+        LOG_WARN("Online: the character behaviour's sequence start is not as expected; the guest's not held");
+        return;
+    }
+    const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(&HeldStateStart));
+    PatchBytes(slot, &hook, 4);
+}
+
+void HoldSequences(const std::unordered_set<uint8_t*>& characters)
+{
+    g_HeldStates.clear();
+    for (uint8_t* c : characters)
+        if (IsCharacter(c))
+            g_HeldStates.insert(*reinterpret_cast<uint8_t* const*>(c + kCharState));
+}
+
+uint32_t HeldStartsRefused()
+{
+    return g_HeldRefused;
 }
 
 void ApplyCharactersReset()

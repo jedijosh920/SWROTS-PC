@@ -318,7 +318,7 @@ bool Inside(const uint8_t* object, size_t bytes)
 {
     const uintptr_t a = uintptr_t(object);
     for (const auto& [base, size] : g_Regions)
-        if (a >= base && a + bytes <= base + size)
+        if (a >= base && a - base <= size && bytes <= size - (a - base)) // (no wrap: 0xFFFFFFFF is no pointer)
             return true;
     return false;
 }

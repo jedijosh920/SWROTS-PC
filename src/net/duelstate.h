@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_set>
 
 namespace swrots::net {
 
@@ -59,6 +60,12 @@ std::string ApplyStats();
 // the game's own change: its death the game's). A new level forgets them.
 void ApplyCharacter(uint32_t id, uint8_t* character, const FighterState& s, uint32_t leadTicks);
 void ApplyCharactersReset();
+// The guest's followed characters: this game's own starts of their sequences refused (their locomotion's, their
+// reactions'), the host's alone started (ApplyCharacter). Installed at each start (the behaviour's vtable slot); the
+// set given again as it changes (empty: none held).
+void InstallSequenceHold();
+void HoldSequences(const std::unordered_set<uint8_t*>& characters);
+uint32_t HeldStartsRefused();
 // A state's position (+0x180), and a state moved on (its position and copies by `delta`, its sequence's time by
 // `ticks`): the guest's characters between two of the host's states, carried on as they were going.
 bool StatePosition(const FighterState& s, float out[3]);

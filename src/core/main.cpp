@@ -51,6 +51,7 @@
 #include "kernel/mm.h"
 #include "kernel/reboot.h"
 #include "kernel/sched.h"
+#include "net/duelstate.h"
 #include "net/rollback.h"
 #include "net/session.h"
 #include "xapi/xapi.h"
@@ -211,6 +212,7 @@ static void StartGame(const void* launchData)
     game::InstallMissions(g_Boot.paths.mods);
     game::InstallMissionsMenu();
     game::InstallOnlineMenu();
+    net::InstallSequenceHold();
     game::InstallResourceHooks(g_Boot.paths.gameData, mods, cache, g_Boot.dumpDir,
         g_Boot.logResources);
     game::InstallFreeCamera();

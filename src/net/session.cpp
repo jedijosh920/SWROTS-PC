@@ -1583,6 +1583,16 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         wasDuel = duel;
     }
     GuestAiOff(duel && coopMission && !host); // (the guest's: the host's characters alone decide)
+    {
+        static bool holding = false; // the guest's followed characters' sequences: the host's alone
+        if (duel && coopMission && !host && frame % 10 == 0) {
+            HoldSequences(g_GuestFollowed);
+            holding = true;
+        } else if (holding && !(duel && coopMission && !host)) {
+            HoldSequences({});
+            holding = false;
+        }
+    }
     if (duel && coopMission) { // a Cooperative mission's other characters: known on both games (props.h)
         CharactersUpdate(fighters[0], fighters[1]);
         if (frame % 120 == 0)
@@ -1785,8 +1795,8 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         ++it;
     }
     if (frame % 600 == 0 && coopMission)
-        LOG_INFO("Online: %u character state(s) applied, %zu character(s) followed, %u missing here", CharactersApplied(),
-            g_GuestFollowed.size(), missing);
+        LOG_INFO("Online: %u character state(s) applied, %zu character(s) followed, %u missing here, %u of this game's "
+                 "sequence starts held", CharactersApplied(), g_GuestFollowed.size(), missing, HeldStartsRefused());
     if (frame % 600 == 0)
         LOG_INFO("Online: guest frame %u, host state %u applied (%s), ping %d ms", frame, state.seq,
             ApplyStats().c_str(), pingMs);
