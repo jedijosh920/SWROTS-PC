@@ -2437,6 +2437,13 @@ char __fastcall ChallengeEvent(uint8_t* handler, void*, int event, int pad)
 {
     // The guest's whole pad on the missions' select is refused (its cursor, its choice, its way back: the host's
     // select alone, which the guest's game follows); a choice is told with the refusal's sound.
+    // On the host's game the guest's pad (port 1: both pads reach both games) moves nothing there either.
+    if (CoopOnline() && net::OnlineStatus().host && pad != 0) {
+        static int hostLogged = 0;
+        if (hostLogged++ < 8)
+            LOG_INFO("Online menu: the guest's pad on the host's missions' select refused (event 0x%X, pad %d)", event, pad);
+        return 1;
+    }
     if (CoopOnline() && !net::OnlineStatus().host) {
         static int logged = 0;
         if (logged++ < 8)

@@ -1551,6 +1551,31 @@ uint8_t* BoundCharacter(uint32_t hostKey, const FighterState& s, uint32_t frame)
     return bestObject;
 }
 
+// A host's character whose states no longer come (its corpse taken away there, or the character itself): this game's
+// is not left standing. A spawned one is let go (out of sight, then dead: ParkUnbound; one made here is taken away:
+// TidyMade); a level's own dies here (as it is gone there: its waves count the living).
+constexpr uint32_t kGoneOnHost = 180;
+uint32_t g_GoneLogged = 0;
+
+void GoneOnHost(uint32_t hostKey, uint8_t* o)
+{
+    const bool alive = CharacterAlive(o);
+    if (g_GoneLogged++ < 40)
+        LOG_INFO("Online: the host's character %08X is gone there (this game's %s): %s", hostKey,
+            alive ? "living" : "dead", hostKey & 0x80000000u ? "let go" : alive ? "dead here too" : "left");
+    g_GuestKeys.erase(hostKey);
+    if (hostKey & 0x80000000u) {
+        const auto b = g_BoundKey.find(hostKey);
+        if (b != g_BoundKey.end()) {
+            g_BoundBy.erase(b->second);
+            g_BoundKey.erase(b);
+        }
+        return;
+    }
+    if (alive)
+        game::ChangeHealthDirect(o, -1.0e6f);
+}
+
 // This game's character that is the host's of this key, or null.
 uint8_t* BoundOf(uint32_t hostKey)
 {
@@ -2299,7 +2324,11 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     for (auto it = g_CharFollow.begin(); it != g_CharFollow.end();) { // every frame: each one's latest, carried on
         uint8_t* o = BoundOf(it->first);
         const uint32_t since = frame - it->second.frame;
-        if (!o || since > 300) {
+        if (o && since > kGoneOnHost) { // none of its states for three seconds: gone on the host's game
+            GoneOnHost(it->first, o);
+            o = nullptr;
+        }
+        if (!o) {
             it = g_CharFollow.erase(it);
             continue;
         }
