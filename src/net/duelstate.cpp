@@ -973,6 +973,18 @@ void ParkCharacter(uint8_t* character)
     }
 }
 
+void NudgeCharacter(uint8_t* character, const float delta[3])
+{
+    __try {
+        for (uint16_t off : { 0x180, 0x630, 0x750 }) {
+            float* p = reinterpret_cast<float*>(character + off);
+            p[0] += delta[0];
+            p[2] += delta[2];
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
 void PlaceCharacter(uint8_t* character, const FighterState& s)
 {
     if (character && s.valid)

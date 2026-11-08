@@ -1344,7 +1344,9 @@ std::unordered_set<const uint8_t*> g_MadeObjects;
 std::unordered_map<uint32_t, uint32_t> g_MissingSince; // the host's key: missing here since (frame)
 std::unordered_set<uint32_t> g_MakeRefused;
 uint32_t g_MadeCount = 0, g_MadeRemoved = 0, g_NoBirth = 0;
-constexpr uint32_t kMakeAfter = 20;       // frames missing before one is made
+constexpr uint32_t kMakeAfter = 20;
+// This PC's own fighter brought nearer the host's: a fifth of a difference between these (units) at each of its states.
+constexpr float kOwnNudgeFrom = 3.0f, kOwnNudgeTo = 180.0f, kOwnNudge = 0.2f;       // frames missing before one is made
 constexpr uint32_t kMadeDeadFor = 900;    // a made one dead this long is taken away (its corpse, as the game's go)
 
 uint8_t* MadeOf(uint32_t hostKey)
@@ -1427,7 +1429,7 @@ struct Identity {
     uint32_t seen = 0, present = 0, compared = 0, livingAlike = 0, sequenceAlike = 0, placed = 0, off50 = 0, off150 = 0;
     double distanceSum = 0;
     float distanceMax = 0;
-    uint32_t playerSeen = 0;
+    uint32_t playerSeen = 0, ownSeen = 0, ownNudged = 0;
     double playerSum[2] = {};
     float playerMax[2] = {};
     void Note(uint8_t* o, const FighterState& s, bool followed)
@@ -1446,8 +1448,8 @@ struct Identity {
             ++sequenceAlike;
         FighterState here;
         float a[3], b[3];
-        if (!CaptureFighter(o, here) || !StatePosition(here, a) || !StatePosition(s, b))
-            return;
+        if (!CaptureFighter(o, here) || !StatePosition(here, a) || !StatePosition(s, b) || a[1] < -10000.0f)
+            return; // (one out of sight until now: taken by the host's this frame, placed as it is applied)
         const float d = std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
         ++placed;
         distanceSum += d;
@@ -1458,7 +1460,7 @@ struct Identity {
     void NotePlayers(uint8_t* const fighters[2], const StateMsg& st)
     {
         ++playerSeen;
-        for (int i = 0; i < 2; ++i) {
+        for (int i = 0; i < 1; ++i) { // (player 2, this PC's own: NoteOwn)
             FighterState here;
             float a[3], b[3];
             if (!fighters[i] || !CaptureFighter(fighters[i], here) || !StatePosition(here, a) ||
@@ -1469,6 +1471,14 @@ struct Identity {
             playerMax[i] = std::max(playerMax[i], d);
         }
     }
+    // This PC's own fighter's distance from the host's (its place here a round trip ago, as the host's state has it).
+    void NoteOwn(float d, bool nudged)
+    {
+        ++ownSeen;
+        ownNudged += nudged;
+        playerSum[1] += d;
+        playerMax[1] = std::max(playerMax[1], d);
+    }
     std::string Take(size_t shownNotTheHosts)
     {
         auto pct = [](uint32_t a, uint32_t b) { return b ? 100.0 * a / b : 100.0; };
@@ -1477,11 +1487,11 @@ struct Identity {
             "identity: %u of the host's living character state(s): %.1f%% there here, %.1f%% alive alike, %.1f%% the same "
             "sequence; places %.1f units from the host's latest on average (%.0f at most, %.1f%% over 50, %.1f%% over "
             "150); %zu of this game's shown that are none of the host's; player 1 %.1f units from the host's (%.0f at "
-            "most), player 2 %.1f (%.0f at most); %u made here so far, %u taken away",
+            "most), player 2 %.1f (%.0f at most, brought nearer %u time(s)); %u made here so far, %u taken away",
             seen, pct(present, seen), pct(livingAlike, compared), pct(sequenceAlike, placed),
             placed ? distanceSum / placed : 0.0, distanceMax, pct(off50, placed) * (placed ? 1 : 0),
             pct(off150, placed) * (placed ? 1 : 0), shownNotTheHosts, playerSeen ? playerSum[0] / playerSeen : 0.0,
-            playerMax[0], playerSeen ? playerSum[1] / playerSeen : 0.0, playerMax[1], g_MadeCount, g_MadeRemoved);
+            playerMax[0], ownSeen ? playerSum[1] / ownSeen : 0.0, playerMax[1], ownNudged, g_MadeCount, g_MadeRemoved);
         *this = Identity();
         return line;
     }
@@ -2198,6 +2208,40 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         }
         if (coopMission && i == 0 && fighters[i] && f.state.valid) // the other player's place: between its last two
             PlaceCharacter(fighters[i], f.At(frame, kPlayerBehind));
+    }
+    // This PC's own fighter in a Cooperative mission plays at once from this PC's pad; the host's game plays it from the
+    // same pad a little later and may take it elsewhere (an enemy in its way there, a step's rounding). Its place here
+    // a round trip ago (kept a frame at a time) against the host's for it: the difference, when small, is closed a
+    // little at each of the host's states (its past places moved too, so that it is not counted twice); a large one is
+    // the host's whole (ApplyFighter).
+    if (coopMission && fighters[1]) {
+        static std::array<float, 3> ownPast[64] = {};
+        static uint32_t ownPastFrame[64] = {};
+        FighterState here;
+        float p[3];
+        if (CaptureFighter(fighters[1], here) && StatePosition(here, p)) {
+            ownPast[frame % 64] = { p[0], p[1], p[2] };
+            ownPastFrame[frame % 64] = frame;
+        }
+        float host[3];
+        const uint32_t back = std::min<uint32_t>(pingMs > 0 ? uint32_t(pingMs * 60 / 1000) + 1 : 1, 60);
+        const uint32_t then = frame - back;
+        if (freshState && state.fighters[1].valid && ownPastFrame[then % 64] == then &&
+            StatePosition(state.fighters[1], host)) {
+            const std::array<float, 3>& was = ownPast[then % 64];
+            const float dx = host[0] - was[0], dz = host[2] - was[2];
+            const float d = std::sqrt(dx * dx + dz * dz);
+            const bool nudge = d > kOwnNudgeFrom && d < kOwnNudgeTo && CharacterAlive(fighters[1]) && StateLiving(state.fighters[1]);
+            if (nudge) {
+                const float delta[3] = { dx * kOwnNudge, 0, dz * kOwnNudge };
+                NudgeCharacter(fighters[1], delta);
+                for (auto& q : ownPast) {
+                    q[0] += delta[0];
+                    q[2] += delta[2];
+                }
+            }
+            g_Identity.NoteOwn(d, nudge);
+        }
     }
     // a Cooperative mission's other characters: the host's (the latest of each)
     static uint32_t missing = 0;

@@ -80,6 +80,8 @@ void MoveState(FighterState& s, const float delta[3], uint32_t ticks);
 void PlaceCharacter(uint8_t* character, const FighterState& s);
 // A character this game spawned alone (none of the host's is it): out of sight, far below the level.
 void ParkCharacter(uint8_t* character);
+// Moves a character on the ground by `delta` (its x and z), its pose and sequence its own.
+void NudgeCharacter(uint8_t* character, const float delta[3]);
 uint32_t CharactersApplied();
 // An object of a character's class (its behaviour at +0x434).
 bool IsCharacter(const uint8_t* object);
