@@ -60,6 +60,8 @@ std::string ApplyStats();
 // the game's own change: its death the game's). A new level forgets them.
 void ApplyCharacter(uint32_t id, uint8_t* character, const FighterState& s, uint32_t leadTicks);
 void ApplyCharactersReset();
+// A Cooperative mission (the own fighter's reactions: the host's sequence, its own place) or a duel (taken whole).
+void SetCoopApply(bool coop);
 // Diagnostics: a character's place this frame (its steps back and jumps counted), and the counts since the last call.
 void NoteMotion(const uint8_t* character);
 std::string MotionStats();
@@ -76,6 +78,8 @@ void MoveState(FighterState& s, const float delta[3], uint32_t ticks);
 // Between two of the host's states: the character's place alone (its transform, its position and copies), its
 // animation left to run on (writing a state's action frame and timers again would set its pose back each frame).
 void PlaceCharacter(uint8_t* character, const FighterState& s);
+// A character this game spawned alone (none of the host's is it): out of sight, far below the level.
+void ParkCharacter(uint8_t* character);
 uint32_t CharactersApplied();
 // An object of a character's class (its behaviour at +0x434).
 bool IsCharacter(const uint8_t* object);
@@ -83,6 +87,8 @@ bool IsCharacter(const uint8_t* object);
 std::string DescribeCharacter(uint32_t id, const uint8_t* character);
 // Whether a character plays a sequence (a level's templates, waiting to be spawned from, do not).
 bool CharacterActive(const uint8_t* character);
+// Whether a character lives (not dead, its health above 0).
+bool CharacterAlive(const uint8_t* character);
 // Whether either fighter of the duel plays its intro or outro now, and a line about both and the camera (diagnostics).
 bool DuelStaged();
 std::string DescribeDuel();

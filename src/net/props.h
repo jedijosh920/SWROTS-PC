@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace swrots::net {
@@ -38,6 +39,10 @@ void CharactersReset();
 void CharactersUpdate(const uint8_t* player1, const uint8_t* player2);
 int CharactersCapture(uint32_t* keys, uint8_t** objects, int max);
 uint8_t* CharacterByKey(uint32_t key);
+// The spawned characters of a key's class (its upper half: 0x80000000 | the class's hash), with their keys.
+std::vector<std::pair<uint32_t, uint8_t*>> CharactersOfClass(uint32_t keyClass);
+// This game's active spawned characters, with their keys.
+std::vector<std::pair<uint32_t, uint8_t*>> SpawnedCharacters();
 // The active characters known (diagnostics).
 std::vector<uint8_t*> CharacterObjects();
 size_t CharactersKnown();

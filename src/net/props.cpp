@@ -442,6 +442,24 @@ int CharactersCapture(uint32_t* keys, uint8_t** objects, int max)
     return count;
 }
 
+std::vector<std::pair<uint32_t, uint8_t*>> CharactersOfClass(uint32_t keyClass)
+{
+    std::vector<std::pair<uint32_t, uint8_t*>> out;
+    for (const auto& [id, c] : g_CharById)
+        if ((c.key & 0xFFFF0000u) == keyClass && (c.key & 0x80000000u) && ObjectById(id) == c.object)
+            out.push_back({ c.key, c.object });
+    return out;
+}
+
+std::vector<std::pair<uint32_t, uint8_t*>> SpawnedCharacters()
+{
+    std::vector<std::pair<uint32_t, uint8_t*>> out;
+    for (const auto& [id, c] : g_CharById)
+        if ((c.key & 0x80000000u) && ObjectById(id) == c.object && CharacterActive(c.object))
+            out.push_back({ c.key, c.object });
+    return out;
+}
+
 std::vector<uint8_t*> CharacterObjects()
 {
     std::vector<uint8_t*> out;

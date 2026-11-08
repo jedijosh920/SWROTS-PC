@@ -674,6 +674,7 @@ struct Applied {
 Applied g_Applied[2];
 uint32_t g_ApplyFrame = 0;
 uint32_t g_ApplyStarts = 0, g_ApplyRefused = 0, g_ApplyPlaced = 0, g_ApplyStaged = 0, g_ApplyHeld = 0;
+bool g_CoopApply = false; // a Cooperative mission (SetCoopApply)
 uint32_t g_OwnFollowed = 0, g_OwnStarts = 0, g_CharStarts = 0; // (diagnostics: the own fighter's host frames)
 uint32_t g_NamesLogged = 0, g_LivingLogged = 0;
 // This PC's own fighter is put at the host's place when it stays more than kOwnPlaceError off it for kOwnPlaceFrames
@@ -813,11 +814,14 @@ void ApplyInto(const char* who, Applied& a, const Applied& other, uint8_t* fight
     const bool hostDown = Packed<uint8_t>(s, 0x12C) != 0 || Packed<float>(s, 0x130) <= 0.0f;
     // This PC's own fighter taken by a hit, a knock-down, a fall: the host's reaction, whole (this game's own reactions
     // to its own copy of the other's attacks put it elsewhere: behind its opponent when the host had it aside).
+    // (Its reactions: the host's sequence, its place its own unless far off: taking the host's place whole, a round
+    // trip late, at each hit of a busy fight shook it.)
+    // In a duel the host's reaction is taken whole (its place too: a fighter knocked aside lies where the host's does).
     const bool reacting = own && (Reaction(hostName) || Reaction(live.name));
-    const bool follow = hostGrab || reacting || (hostDown && !liveHere);
+    const bool follow = hostGrab || (reacting && !g_CoopApply) || (hostDown && !liveHere);
     if (hostGrab)
         ++g_ApplyHeld;
-    if (own && follow)
+    if (own && (follow || reacting))
         ++g_OwnFollowed;
     Into into = own && !follow ? Into::Own : Into::Remote;
     if (own && !follow) {
@@ -845,7 +849,7 @@ void ApplyInto(const char* who, Applied& a, const Applied& other, uint8_t* fight
     a.parted = live.index != s.seq ? a.parted + 1 : 0;
     // The other player's fighter plays here from the host's pad too: started again only where it went its own way.
     // This PC's own fighter plays at once from this PC's pad: only when it stays parted from the host's.
-    const bool start = follow   ? ((started && a.parted) || a.parted > 2)
+    const bool start = follow || reacting ? ((started && a.parted) || a.parted > 2)
                        : own    ? a.parted > 20
                                 : ((started && a.parted) || a.parted > 6);
     if (!start || g_ApplyFrame < a.refusedUntil)
@@ -870,6 +874,11 @@ std::unordered_map<uint32_t, Applied> g_CharApplied; // the other characters fol
 uint32_t g_CharsApplied = 0;
 
 } // namespace
+
+void SetCoopApply(bool coop)
+{
+    g_CoopApply = coop;
+}
 
 void ApplyFighter(int slot, uint8_t* fighter, const FighterState& s, uint32_t leadTicks, bool own)
 {
@@ -943,6 +952,17 @@ bool PlaceRaw(uint8_t* character, const FighterState& s)
     }
 }
 } // namespace
+
+void ParkCharacter(uint8_t* character)
+{
+    __try {
+        for (uint16_t off : { 0x180, 0x630, 0x750 }) {
+            float* y = reinterpret_cast<float*>(character + off + 4);
+            *y = -20000.0f; // (far below the level: out of sight)
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
 
 void PlaceCharacter(uint8_t* character, const FighterState& s)
 {
@@ -1073,6 +1093,14 @@ bool DuelStaged()
             return true;
     }
     return false;
+}
+
+bool CharacterAlive(const uint8_t* character)
+{
+    bool living = false;
+    float health = 0;
+    LivingRaw(const_cast<uint8_t*>(character), living, health);
+    return living && health > 0.0f;
 }
 
 bool CharacterActive(const uint8_t* character)

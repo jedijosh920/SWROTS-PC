@@ -2428,8 +2428,31 @@ bool CoopVoteRows(float& restartY, float& quitY, float& column, float& step, flo
 
 namespace {
 
+// Cooperative online: the missions' select (ChallengeList, vtable 0x5D6680, its slot 4 0x2D2FC0 takes A 0x23 and
+// Start 0x25 to start the mission) is the host's: the guest's game follows the host's choice (its launch), its own A
+// and Start refused (its own start would wait for the host's launch that is not coming: an endless loading).
+constexpr uint32_t kChallengeVtable = 0x005D6680, kChallengeEvent = 0x002D2FC0;
+
+char __fastcall ChallengeEvent(uint8_t* handler, void*, int event, int pad)
+{
+    if ((event == kChosen || event == 0x25) && CoopOnline() && !net::OnlineStatus().host) {
+        static int logged = 0;
+        if (logged++ < 5)
+            LOG_INFO("Online menu: the guest's mission choice refused (the host's to make)");
+        HandlerSound(handler, kRefusedSound);
+        return 1;
+    }
+    return reinterpret_cast<ItemEventFn>(uintptr_t(kChallengeEvent))(handler, nullptr, event, pad);
+}
+
 void InstallVoteRows()
 {
+    if (SlotIs(kChallengeVtable, 4, kChallengeEvent)) {
+        const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(&ChallengeEvent));
+        PatchBytes(kChallengeVtable + 4 * 4, &hook, 4);
+    } else {
+        LOG_WARN("Online menu: the missions' select is not as expected; the guest's choice not refused");
+    }
     if (!SlotIs(kRestartVtable, 4, kRestartEvent) || !SlotIs(kQuitVtable, 4, kQuitEvent) ||
         !SlotIs(kRestartVtable, 3, kRowDraw) || !SlotIs(kQuitVtable, 3, kRowDraw) || !SlotIs(kRestartVtable, 8, kRestartGo) ||
         !SlotIs(kQuitVtable, 8, kQuitGo)) {

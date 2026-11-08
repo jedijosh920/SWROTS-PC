@@ -1259,6 +1259,88 @@ constexpr uint32_t kCharsBehind = 3;  // the characters shown this many frames b
 constexpr uint32_t kPlayerBehind = 2; // come every two or three frames), the other player this many
 std::unordered_map<uint32_t, CharFollow> g_CharFollow;
 
+// The guest: which of its characters each of the host's is. A level's own by its id; a spawned one by its class and
+// rank at first (the same spawns, in the same order), but a mission's waves are not always spawned alike on both games
+// (a death or a corpse gone a little later here): one of the host's whose rank here is another's, or missing, takes
+// this game's nearest of its class not taken (its spawn point: the same place). This game's spawned characters
+// that none of the host's takes for three seconds are put out of sight (spawned here alone).
+std::unordered_map<uint32_t, uint32_t> g_BoundKey;  // the host's key: this game's key
+std::unordered_map<uint32_t, uint32_t> g_BoundBy;   // this game's key: the host's key
+std::unordered_map<uint32_t, uint32_t> g_Unbound;   // this game's spawned characters none takes: since (frame)
+uint32_t g_Rebound = 0, g_Parked = 0;
+
+uint8_t* BoundCharacter(uint32_t hostKey, const FighterState& s, uint32_t frame)
+{
+    if (!(hostKey & 0x80000000u))
+        return CharacterByKey(hostKey); // a level's own: its id
+    const auto b = g_BoundKey.find(hostKey);
+    if (b != g_BoundKey.end()) {
+        if (uint8_t* o = CharacterByKey(b->second))
+            return o;
+        g_BoundBy.erase(b->second); // gone here
+        g_BoundKey.erase(b);
+    }
+    float host[3];
+    if (!StatePosition(s, host))
+        return nullptr;
+    // the nearest of its class not taken (its own key first when it is not taken and near)
+    uint32_t best = 0;
+    uint8_t* bestObject = nullptr;
+    float bestDistance = 400.0f * 400.0f;
+    for (const auto& [key, o] : CharactersOfClass(hostKey & 0xFFFF0000u)) {
+        if (g_BoundBy.count(key) || !CharacterAlive(o))
+            continue; // (taken, or a corpse here)
+        float p[3] = {};
+        FighterState here;
+        if (!CaptureFighter(o, here) || !StatePosition(here, p))
+            continue;
+        const float d = (p[0] - host[0]) * (p[0] - host[0]) + (p[2] - host[2]) * (p[2] - host[2]) -
+            (key == hostKey ? 1.0f : 0.0f);
+        if (d < bestDistance) {
+            bestDistance = d;
+            best = key;
+            bestObject = o;
+        }
+    }
+    if (!bestObject)
+        return nullptr;
+    g_BoundKey[hostKey] = best;
+    g_BoundBy[best] = hostKey;
+    g_Unbound.erase(best);
+    if (best != hostKey && g_Rebound++ < 40)
+        LOG_INFO("Online: the host's character %08X is this game's %08X (the nearest of its class, %.0f away)", hostKey,
+            best, std::sqrt(std::max(bestDistance, 0.0f)));
+    (void)frame;
+    return bestObject;
+}
+
+// This game's character that is the host's of this key, or null.
+uint8_t* BoundOf(uint32_t hostKey)
+{
+    if (!(hostKey & 0x80000000u))
+        return CharacterByKey(hostKey);
+    const auto b = g_BoundKey.find(hostKey);
+    return b == g_BoundKey.end() ? nullptr : CharacterByKey(b->second);
+}
+
+// This game's spawned characters none of the host's has taken for three seconds: out of sight (each frame: its AI is
+// off, nothing else moves it).
+void ParkUnbound(uint32_t frame)
+{
+    for (const auto& [key, o] : SpawnedCharacters()) {
+        if (g_BoundBy.count(key)) {
+            g_Unbound.erase(key);
+            continue;
+        }
+        const auto u = g_Unbound.emplace(key, frame).first;
+        if (frame - u->second < 180)
+            continue;
+        if (frame - u->second == 180 && g_Parked++ < 40)
+            LOG_INFO("Online: this game's character %08X is none of the host's: out of sight", key);
+        ParkCharacter(o);
+    }
+}
+
 // The engine's settings ([[[0x645F7C]+0x38]+8], their console variables registered by 0x2409A0): +0xC4 is
 // `aiDisabled` ("Disables AI"). The guest's game in a Cooperative mission has it set: its characters do what the host's
 // do (ApplyCharacter), its own AI no longer choosing their sequences against them; given back after the mission.
@@ -1652,6 +1734,9 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             g_GuestFollowed.clear();
             g_GuestKeys.clear();
             g_CharFollow.clear();
+            g_BoundKey.clear();
+            g_BoundBy.clear();
+            g_Unbound.clear();
             std::lock_guard<std::mutex> relock(g_S.lock);
             g_S.matchDraws = 0;
             g_S.drawEndAt = {};
@@ -1659,6 +1744,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         wasDuel = duel;
     }
     GuestAiOff(duel && coopMission && !host); // (the guest's: the host's characters alone decide)
+    SetCoopApply(coopMission);
     {
         static bool holding = false; // the guest's followed characters' sequences: the host's alone
         if (duel && coopMission && !host && frame % 10 == 0) {
@@ -1847,13 +1933,13 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     if (frame % 30 == 0) { // the followed ones still there (gone ones' memory is not theirs any more)
         g_GuestFollowed.clear();
         for (uint32_t key : g_GuestKeys)
-            if (uint8_t* o = CharacterByKey(key))
+            if (uint8_t* o = BoundOf(key))
                 g_GuestFollowed.insert(o);
     }
     for (const CharsMsg& cm : charsIn)
         for (int i = 0; i < std::min<int>(cm.count, kCharsPerMsg); ++i) {
             const CharState& c = cm.chars[i];
-            uint8_t* o = CharacterByKey(c.key);
+            uint8_t* o = BoundCharacter(c.key, c.state, frame);
             if (!o) {
                 if (missing++ < 40 || missing % 500 == 0)
                     LOG_INFO("Online: the host's character %08X is not in this game yet (%u so far)", c.key, missing);
@@ -1864,7 +1950,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             g_CharFollow[c.key].Push(c.state, frame);
         }
     for (auto it = g_CharFollow.begin(); it != g_CharFollow.end();) { // every frame: each one's latest, carried on
-        uint8_t* o = CharacterByKey(it->first);
+        uint8_t* o = BoundOf(it->first);
         const uint32_t since = frame - it->second.frame;
         if (!o || since > 300) {
             it = g_CharFollow.erase(it);
@@ -1875,6 +1961,8 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         PlaceCharacter(o, it->second.At(frame, kCharsBehind)); // its place: between its last two, a little behind
         ++it;
     }
+    if (coopMission)
+        ParkUnbound(frame);
     for (uint8_t* o : g_GuestFollowed) // (diagnostics: their steps)
         NoteMotion(o);
     if (fighters[0])
