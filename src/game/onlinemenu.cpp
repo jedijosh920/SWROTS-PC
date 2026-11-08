@@ -1718,12 +1718,40 @@ void KeyboardTitle(uint8_t* keyboard)
     }
 }
 
+// A key of the keyboard's screen by its name (null when none).
+uint8_t* KeyboardKeyRaw(uint8_t* keyboard, const char* name)
+{
+    __try {
+        const uint8_t* item = *reinterpret_cast<uint8_t* const*>(keyboard + 8);
+        uint8_t* items = item ? *reinterpret_cast<uint8_t* const*>(item + 0x24) : nullptr;
+        return items ? reinterpret_cast<uint8_t*(__fastcall*)(uint8_t*, void*, const char*)>(uintptr_t(kFindItem))(
+            items, nullptr, name) : nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
 void DisableRefusedKeys(uint8_t* keyboard)
 {
     uint8_t* keys[4] = {};
     const int n = FindRefusedKeysRaw(keyboard, keys);
-    for (int i = 0; i < n; ++i)
-        DimKey(keys[i], !g_KeyboardForName);
+    if (!g_KeyboardForName) {
+        for (int i = 0; i < n; ++i)
+            DimKey(keys[i], true);
+        return;
+    }
+    // A name takes every key: each in an open key's colour (A's), whatever was kept of them (a code's keyboard drawn
+    // earlier on another screen of the same keys, or none).
+    uint32_t open = 0;
+    uint8_t* a = KeyboardKeyRaw(keyboard, "A");
+    if (!a || !KeyColourRaw(a, open, false))
+        return;
+    for (int i = 0; i < n; ++i) {
+        KeyColourRaw(keys[i], open, true);
+        g_KeyColours.erase(std::remove_if(g_KeyColours.begin(), g_KeyColours.end(),
+                               [&](const auto& e) { return e.first == keys[i]; }),
+            g_KeyColours.end());
+    }
 }
 
 // Ctrl+V: the clipboard's code (its letters and digits) as the text.
