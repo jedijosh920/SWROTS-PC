@@ -2463,6 +2463,7 @@ OnlineStatusInfo OnlineStatus()
     i.coopVotes[0] = g_S.votes[0];
     i.coopVotes[1] = g_S.votes[1];
     i.coopVoteSeconds = g_S.voteSeconds;
+    i.coopVoteDecided = g_S.decided;
     i.entering = g_S.entering && (g_S.phase == OnlinePhase::Starting || g_S.phase == OnlinePhase::Playing);
     i.leaving = g_S.leaving && g_S.phase == OnlinePhase::Ended;
     if (g_S.inLevel && !g_S.lastMap.empty()) { // U170_EP4_Deathstar_02: EP4 DEATHSTAR 02

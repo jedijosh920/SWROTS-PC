@@ -220,8 +220,8 @@ void MenuSpace(const ImGuiViewport* vp, float& left, float& top, float& sx, floa
 void CoopVote(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u)
 {
     float restartY = 0, quitY = 0, column = 0, step = 0, alpha = 1;
-    if (!game::CoopVoteRows(restartY, quitY, column, step, alpha) || alpha <= 0.01f)
-        return;
+    if (!game::CoopVoteRows(restartY, quitY, column, step, alpha) || alpha <= 0.01f || s.coopVoteDecided)
+        return; // (decided: the game's screen fades out, under this overlay)
     float left, top, sx, sy;
     MenuSpace(vp, left, top, sx, sy);
     const std::string names[2] = { Upper(s.host ? s.localName : s.remoteName), Upper(s.host ? s.remoteName : s.localName) };

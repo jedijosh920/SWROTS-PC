@@ -67,6 +67,7 @@ struct OnlineStatusInfo {
     uint32_t draws = 0;     // the duels' draws so far (the time out with the same health: shown as it moves)
     uint8_t coopVotes[2] = {}; // Cooperative's Restart/Quit vote: player 1's (the host's) and player 2's (CoopVote)
     int coopVoteSeconds = -1;  // the game over's time left to vote (-1: none)
+    uint8_t coopVoteDecided = 0; // the vote's outcome once made (CoopVote): the screen fades out
 };
 
 // Cooperative online: the mission's Restart and Quit (the game over's, the pause's) are the two players' vote. The
