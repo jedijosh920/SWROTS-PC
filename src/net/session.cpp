@@ -1773,8 +1773,36 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     if (!duel || !haveState)
         return;
     const uint32_t lead = pingMs > 0 ? uint32_t(pingMs * 60 / 2000) : 0; // half the round trip, in game ticks
-    for (int i = 0; i < 2; ++i)
-        ApplyFighter(i, fighters[i], state.fighters[i], lead, i == 1);
+    // The players: each new state of the host's applied. In a Cooperative mission (the host's game a little slower
+    // than this one, a state every frame or two) a frame without one leaves this PC's own fighter to its own play and
+    // carries the other player's on at its pace (its place alone: its animation runs on; writing the last state's
+    // action frame and timers again would set its pose back each frame).
+    static uint32_t lastStateSeq = 0;
+    static CharFollow playerFollow[2];
+    const bool freshState = state.seq != lastStateSeq;
+    lastStateSeq = state.seq;
+    for (int i = 0; i < 2; ++i) {
+        CharFollow& f = playerFollow[i];
+        if (freshState || !coopMission) {
+            float before[3], now[3];
+            const uint32_t gap = frame - f.frame;
+            const bool paced = f.frame && gap > 0 && gap < 30 && StatePosition(f.state, before) &&
+                StatePosition(state.fighters[i], now);
+            for (int k = 0; k < 3; ++k) {
+                const float pace = paced ? (now[k] - before[k]) / float(gap) : 0.0f;
+                f.pace[k] = std::fabs(pace) < 20.0f ? pace : 0.0f;
+            }
+            f.state = state.fighters[i];
+            f.frame = frame;
+            ApplyFighter(i, fighters[i], state.fighters[i], lead, i == 1);
+        } else if (i == 0 && fighters[i] && f.state.valid) { // the other player's, between two of the host's states
+            FighterState s = f.state;
+            const uint32_t carried = std::min<uint32_t>(frame - f.frame, 12);
+            const float delta[3] = { f.pace[0] * carried, f.pace[1] * carried, f.pace[2] * carried };
+            MoveState(s, delta, frame - f.frame);
+            PlaceCharacter(fighters[i], s);
+        }
+    }
     // a Cooperative mission's other characters: the host's (the latest of each)
     static uint32_t missing = 0;
     if (frame % 30 == 0) { // the followed ones still there (gone ones' memory is not theirs any more)
