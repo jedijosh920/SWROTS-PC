@@ -1172,6 +1172,47 @@ std::atomic<uint8_t*> g_GuestFighters[2] = {};
 std::unordered_set<uint8_t*> g_GuestFollowed;
 std::unordered_set<uint32_t> g_GuestKeys; // their keys (the set above made again from them: gone ones out)
 
+// The engine's settings ([[[0x645F7C]+0x38]+8], their console variables registered by 0x2409A0): +0xC4 is
+// `aiDisabled` ("Disables AI"). The guest's game in a Cooperative mission has it set: its characters do what the host's
+// do (ApplyCharacter), its own AI no longer choosing their sequences against them; given back after the mission.
+uint8_t* EngineAiDisabled()
+{
+    __try {
+        const uint8_t* root = *reinterpret_cast<uint8_t* const*>(uintptr_t(0x00645F7C));
+        const uint8_t* a = root ? *reinterpret_cast<uint8_t* const*>(root + 0x38) : nullptr;
+        uint8_t* settings = a ? *reinterpret_cast<uint8_t* const*>(a + 8) : nullptr;
+        return settings ? settings + 0xC4 : nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
+void GuestAiOff(bool off)
+{
+    static bool isOff = false;
+    static uint8_t before = 0;
+    static uint8_t* last = nullptr;
+    uint8_t* flag = EngineAiDisabled();
+    if (!flag)
+        return;
+    if (flag != last) { // a new start: the engine's settings made again (the game's own value)
+        last = flag;
+        isOff = false;
+    }
+    if (off) {
+        if (!isOff) {
+            before = *flag;
+            isOff = true;
+            LOG_INFO("Online: this game's AI off (the host's characters followed alone)");
+        }
+        *flag = 1; // (each frame: whatever set it back)
+    } else if (isOff) {
+        *flag = before;
+        isOff = false;
+        LOG_INFO("Online: this game's AI back");
+    }
+}
+
 float GuestDamage(uint8_t* character, float change)
 {
     // its damage only: the game's own heals (a new round's full health) go through
@@ -1511,6 +1552,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         }
         wasDuel = duel;
     }
+    GuestAiOff(duel && coopMission && !host); // (the guest's: the host's characters alone decide)
     if (duel && coopMission) { // a Cooperative mission's other characters: known on both games (props.h)
         CharactersUpdate(fighters[0], fighters[1]);
         if (frame % 120 == 0)

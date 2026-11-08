@@ -613,6 +613,9 @@ lookups). The host sends five a frame in turn (`Chars`, protocol 9: each a fight
 writes each into its own of that key as it does the other player's fighter (its place, its sequence where it went its
 own way, its health through the game's own change: its death the game's), and keeps its own damage to them out (the
 host's hits decide). Every two seconds both games log the four lowest keys' place and health (`characters, frame`).
+The guest's own AI would still choose their sequences between two states (some twenty restarts a second against
+it): the guest's game has the engine's `aiDisabled` set during the mission (the engine's settings, [[[0x645F7C]+0x38]+8],
++0xC4: its console variable "Disables AI", registered by 0x2409A0), given back after it.
 
 A mission's Restart and Quit online (the pause screen's rows, its `game_over` child's RESTART MISSION and QUIT
 MISSION: items of the classes Restart, vtable 0x5CFE38, and Quit, 0x5CFC78; slot 4 takes A to a confirmation or at a
