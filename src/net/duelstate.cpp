@@ -759,6 +759,15 @@ void ApplyHealth(const char* who, Applied& a, uint8_t* fighter, const FighterSta
     const float change = hostHealth - health;
     if (change > 0.5f || change < -0.5f)
         game::ChangeHealthDirect(fighter, change);
+    // A character dead on the host's game: dead here by the game's own death (its change, scaled by this game's
+    // defence, may leave it a little health: a corpse standing as a living one, which a wave waiting for the living to
+    // fall would wait on for ever). (The players' deaths are the rounds' and missions': left as they are.)
+    if (!hostLiving && who[0] == 'c') {
+        bool stillLiving = false;
+        float left = 0;
+        if (LivingRaw(fighter, stillLiving, left) && stillLiving && !fighter[0x12C])
+            game::ChangeHealthDirect(fighter, -1.0e6f);
+    }
     WriteLivingRaw(fighter, hostHealth, hostLiving && !living);
     LivingRaw(fighter, a.leftLiving, health);
 }

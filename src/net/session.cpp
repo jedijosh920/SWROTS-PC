@@ -1263,7 +1263,7 @@ std::unordered_map<uint32_t, CharFollow> g_CharFollow;
 // rank at first (the same spawns, in the same order), but a mission's waves are not always spawned alike on both games
 // (a death or a corpse gone a little later here): one of the host's whose rank here is another's, or missing, takes
 // this game's nearest of its class not taken (its spawn point: the same place). This game's spawned characters
-// that none of the host's takes for three seconds are put out of sight (spawned here alone).
+// that none of the host's takes for three seconds are put out of sight and dead (spawned here alone).
 std::unordered_map<uint32_t, uint32_t> g_BoundKey;  // the host's key: this game's key
 std::unordered_map<uint32_t, uint32_t> g_BoundBy;   // this game's key: the host's key
 std::unordered_map<uint32_t, uint32_t> g_Unbound;   // this game's spawned characters none takes: since (frame)
@@ -1335,8 +1335,13 @@ void ParkUnbound(uint32_t frame)
         const auto u = g_Unbound.emplace(key, frame).first;
         if (frame - u->second < 180)
             continue;
-        if (frame - u->second == 180 && g_Parked++ < 40)
-            LOG_INFO("Online: this game's character %08X is none of the host's: out of sight", key);
+        if (frame - u->second == 180) {
+            if (g_Parked++ < 40)
+                LOG_INFO("Online: this game's character %08X is none of the host's: out of sight, and dead", key);
+            // dead too: the level's waves count the living (a spawner waiting for fewer would wait here for ever)
+            if (CharacterAlive(o))
+                game::ChangeHealthDirect(o, -1.0e6f);
+        }
         ParkCharacter(o);
     }
 }
