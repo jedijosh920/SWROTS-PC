@@ -613,14 +613,28 @@ bool Staged(const char* name)
     return HasWord(name, "Intro") || HasWord(name, "Outro");
 }
 
-// A sequence of a pair: its name says a grab, a choke, a saber lock, a finishing move, or ends with the pair's side
-// (_GB, _GR, HumanGB, GrvGR, ..., before an _NoKill or a _Part2).
+// A word in a name, whatever its case (the enemies' own sequences are in lower case: gpdroid_gr_grabbreakout).
+bool HasWordAnyCase(const char* name, const char* word)
+{
+    if (!name || !word || !*word)
+        return false;
+    const size_t w = std::strlen(word);
+    for (const char* p = name; *p; ++p)
+        if (_strnicmp(p, word, w) == 0)
+            return true;
+    return false;
+}
+
+// A sequence of a pair: its name says a grab, a choke, a saber lock, a finishing move, has the pair's side as a word
+// (_GR_, _gb_: a MagnaGuard's gpdroid_gr_grabbreakout, R_Anakin_SE5_GR_SBDroid), or ends with it (_GB, _GR, HumanGB,
+// GrvGR, ..., before an _NoKill or a _Part2).
 bool Paired(const char* name)
 {
     if (!name || !*name)
         return false;
-    if (HasWord(name, "Grab") || HasWord(name, "Grapple") || HasWord(name, "Choke") || HasWord(name, "SaberLock") ||
-        HasWord(name, "Saberlock") || HasWord(name, "_Kill_") || HasWord(name, "Riding"))
+    if (HasWordAnyCase(name, "Grab") || HasWordAnyCase(name, "Grapple") || HasWordAnyCase(name, "Choke") ||
+        HasWordAnyCase(name, "SaberLock") || HasWord(name, "_Kill_") || HasWord(name, "Riding") ||
+        HasWordAnyCase(name, "_GR_") || HasWordAnyCase(name, "_GB_"))
         return true;
     size_t n = std::strlen(name);
     for (const char* tail : { "_NoKill_Part2", "_NoKill", "_Part2" }) {
@@ -650,10 +664,12 @@ bool Reaction(const char* name)
     return false;
 }
 
-// A grab that caught: a pair's sequence other than an attempt (its lunge) or one that was turned away.
+// A grab that caught: a pair's sequence other than an attempt (its lunge alone: Anakin_Kill_Lunge_Run, ..._Attempt; a
+// lunge that caught has its pair's side, Anakin_Kill_Lunge_Human_GB) or one that was turned away.
 bool Caught(const char* name)
 {
-    return Paired(name) && !HasWord(name, "Attempt") && !HasWord(name, "Negated");
+    const bool lungeAlone = HasWord(name, "Lunge") && !HasWord(name, "_GB") && !HasWord(name, "_GR");
+    return Paired(name) && !HasWord(name, "Attempt") && !HasWord(name, "Negated") && !lungeAlone;
 }
 
 struct Applied {
@@ -675,6 +691,7 @@ Applied g_Applied[2];
 uint32_t g_ApplyFrame = 0;
 uint32_t g_ApplyStarts = 0, g_ApplyRefused = 0, g_ApplyPlaced = 0, g_ApplyStaged = 0, g_ApplyHeld = 0;
 bool g_CoopApply = false; // a Cooperative mission (SetCoopApply)
+bool g_OwnHostWhole = false; // this PC's own fighter in a grab, or taking the host's whole (OwnTakesHostWhole)
 uint32_t g_OwnFollowed = 0, g_OwnStarts = 0, g_CharStarts = 0; // (diagnostics: the own fighter's host frames)
 uint32_t g_NamesLogged = 0, g_LivingLogged = 0;
 // This PC's own fighter is put at the host's place when it stays more than kOwnPlaceError off it for kOwnPlaceFrames
@@ -832,6 +849,8 @@ void ApplyInto(const char* who, Applied& a, const Applied& other, uint8_t* fight
         ++g_ApplyHeld;
     if (own && (follow || reacting))
         ++g_OwnFollowed;
+    if (own)
+        g_OwnHostWhole = follow || a.hostPaired || a.livePaired;
     Into into = own && !follow ? Into::Own : Into::Remote;
     if (own && !follow) {
         float x = 0, y = 0, z = 0;
@@ -883,6 +902,11 @@ std::unordered_map<uint32_t, Applied> g_CharApplied; // the other characters fol
 uint32_t g_CharsApplied = 0;
 
 } // namespace
+
+bool OwnTakesHostWhole()
+{
+    return g_OwnHostWhole;
+}
 
 void SetCoopApply(bool coop)
 {
@@ -1039,6 +1063,8 @@ struct Motion {
 };
 std::unordered_map<const uint8_t*, Motion> g_Motion;
 uint32_t g_MotionFrames = 0, g_MotionReversals = 0, g_MotionJumps = 0;
+const uint8_t* g_MotionOwn = nullptr; // this PC's own fighter, counted apart too
+uint32_t g_OwnMotionFrames = 0, g_OwnMotionReversals = 0, g_OwnMotionJumps = 0;
 float g_MotionMax = 0;
 } // namespace
 
@@ -1059,10 +1085,14 @@ void NoteMotion(const uint8_t* character)
         len = std::sqrt(len);
         prev = std::sqrt(prev);
         ++g_MotionFrames;
-        if (len > 0.3f && prev > 0.3f && dot < -0.25f * len * prev)
-            ++g_MotionReversals; // went back on its last step: a shake
-        if (len > 12.0f)
-            ++g_MotionJumps;
+        const bool back = len > 0.3f && prev > 0.3f && dot < -0.25f * len * prev; // went back on its last step: a shake
+        g_MotionReversals += back;
+        g_MotionJumps += len > 12.0f;
+        if (character == g_MotionOwn) {
+            ++g_OwnMotionFrames;
+            g_OwnMotionReversals += back;
+            g_OwnMotionJumps += len > 12.0f;
+        }
         g_MotionMax = std::max(g_MotionMax, len);
         std::memcpy(m.step, d, sizeof(d));
     }
@@ -1070,12 +1100,20 @@ void NoteMotion(const uint8_t* character)
     m.known = true;
 }
 
+void SetOwnMotion(const uint8_t* character)
+{
+    g_MotionOwn = character;
+}
+
 std::string MotionStats()
 {
-    char line[160];
-    std::snprintf(line, sizeof(line), "%u character frame(s): %u step(s) back (shakes), %u jump(s), the largest step %.1f",
-        g_MotionFrames, g_MotionReversals, g_MotionJumps, g_MotionMax);
+    char line[240];
+    std::snprintf(line, sizeof(line), "%u character frame(s): %u step(s) back (shakes), %u jump(s), the largest step %.1f; "
+        "this PC's own player: %u frame(s), %u step(s) back, %u jump(s)",
+        g_MotionFrames, g_MotionReversals, g_MotionJumps, g_MotionMax, g_OwnMotionFrames, g_OwnMotionReversals,
+        g_OwnMotionJumps);
     g_MotionFrames = g_MotionReversals = g_MotionJumps = 0;
+    g_OwnMotionFrames = g_OwnMotionReversals = g_OwnMotionJumps = 0;
     g_MotionMax = 0;
     if (g_Motion.size() > 256)
         g_Motion.clear();

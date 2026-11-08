@@ -62,9 +62,13 @@ void ApplyCharacter(uint32_t id, uint8_t* character, const FighterState& s, uint
 void ApplyCharactersReset();
 // A Cooperative mission (the own fighter's reactions: the host's sequence, its own place) or a duel (taken whole).
 void SetCoopApply(bool coop);
+// This PC's own fighter, at its last state: in a grab (either game's), or taking the host's whole (its place too).
+bool OwnTakesHostWhole();
 // Diagnostics: a character's place this frame (its steps back and jumps counted), and the counts since the last call.
 void NoteMotion(const uint8_t* character);
 std::string MotionStats();
+// This PC's own player, whose steps MotionStats counts apart too.
+void SetOwnMotion(const uint8_t* character);
 // The guest's followed characters: this game's own starts of their sequences refused (their locomotion's, their
 // reactions'), the host's alone started (ApplyCharacter). Installed at each start (the behaviour's vtable slot); the
 // set given again as it changes (empty: none held).

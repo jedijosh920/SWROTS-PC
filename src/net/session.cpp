@@ -2154,6 +2154,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             }
             if (m.seq % 600 == 1)
                 LOG_INFO("Online: %zu character(s) followed, %u message(s) sent", CharactersKnown(), g_S.charsSeqOut);
+            SetOwnMotion(fighters[0]);
             for (uint8_t* o : CharacterObjects()) // (diagnostics: their steps, to compare with the guest's)
                 NoteMotion(o);
             NoteMotion(fighters[0]);
@@ -2231,7 +2232,8 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             const std::array<float, 3>& was = ownPast[then % 64];
             const float dx = host[0] - was[0], dz = host[2] - was[2];
             const float d = std::sqrt(dx * dx + dz * dz);
-            const bool nudge = d > kOwnNudgeFrom && d < kOwnNudgeTo && CharacterAlive(fighters[1]) && StateLiving(state.fighters[1]);
+            const bool nudge = d > kOwnNudgeFrom && d < kOwnNudgeTo && CharacterAlive(fighters[1]) &&
+                StateLiving(state.fighters[1]) && !OwnTakesHostWhole(); // (in a grab: the pair's places are the game's)
             if (nudge) {
                 const float delta[3] = { dx * kOwnNudge, 0, dz * kOwnNudge };
                 NudgeCharacter(fighters[1], delta);
@@ -2302,6 +2304,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             TidyMade(frame, lastFromHost);
         }
     }
+    SetOwnMotion(fighters[1]);
     for (uint8_t* o : g_GuestFollowed) // (diagnostics: their steps)
         NoteMotion(o);
     if (fighters[0])
