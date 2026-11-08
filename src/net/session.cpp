@@ -1760,6 +1760,8 @@ void OnServerMsgLocked(Msg type, const uint8_t* data, size_t size)
         }
         break;
     case Msg::Launch:
+        if (!g_S.host && size < sizeof(LaunchMsg))
+            LOG_WARN("Online: a launch of %zu bytes (%zu expected)", size, sizeof(LaunchMsg));
         if (!g_S.host && size >= sizeof(LaunchMsg)) {
             LaunchMsg m;
             std::memcpy(&m, data, sizeof(m));
@@ -2666,6 +2668,9 @@ void HandleLocked(const uint8_t* data, size_t size, const Endpoint& from)
         type == Msg::Vote || type == Msg::Born) {
         if (g_S.server && (g_S.armed || g_S.bootPending || type == Msg::Room || type == Msg::Seat))
             OnServerMsgLocked(type, data, size);
+        else if (type == Msg::Launch) // (diagnostics: a launch this game does not take now)
+            LOG_WARN("Online: the host's launch came before this game takes it (server %d, armed %d, boot %d)",
+                int(g_S.server), int(g_S.armed), int(g_S.bootPending));
         return;
     }
     switch (type) {
