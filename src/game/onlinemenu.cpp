@@ -2273,23 +2273,28 @@ float g_VoteRowY[2] = { -1, -1 }, g_VoteRowX = 0;
 ULONGLONG g_VoteRowsAt = 0;           // when they were last drawn
 bool g_VoteCarried = false;           // the outcome carried out (once, until the rows go)
 
-// The pause screen takes its pad's events (0x2A7720) from the shell's player 1 pad ([shell+0x414]) or, when one of the
-// two-player flags ([0x68F720]+0xCC, +0xCE) is set, from its player 2 pad ([shell+0x418]): in an online Cooperative
-// mission neither is, and the other player's A never reached the rows. Online, the flags' test is skipped (its jump
-// at 0x2A774E made two NOPs) and player 2's pad is port 1 (both games' player 2); given back once the rows are gone.
-constexpr uint32_t kPausePadTest = 0x002A774E;
+// The pause screen asks whether a pad may work it (0x2A7720, thiscall (pad)): the shell's player 1 pad
+// ([shell+0x414]) or, when one of the two-player flags ([0x68F720]+0xCC, +0xCE) is set, its player 2 pad
+// ([shell+0x418]); and at the game over (its child game_over) player 1's alone (0x2A7790: sete al on the pad being
+// [shell+0x414]). In an online Cooperative mission the other player's A never reached the rows. Online, the flags'
+// test is skipped (its jump at 0x2A774E made two NOPs), the game over takes the pad that passed (0x2A7790: mov al, 1)
+// and player 2's pad is port 1 (both games' player 2); given back out of the mission.
+constexpr uint32_t kPausePadTest = 0x002A774E, kPauseGameOverTest = 0x002A7790;
 constexpr uint8_t kPausePadGame[2] = { 0x75, 0x08 }, kPausePadBoth[2] = { 0x90, 0x90 };
+constexpr uint8_t kGameOverGame[3] = { 0x0F, 0x94, 0xC0 }, kGameOverBoth[3] = { 0xB0, 0x01, 0x90 };
 bool g_PausePadBoth = false;
 
 void PausePadBoth(bool both)
 {
     if (both == g_PausePadBoth)
         return;
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kPausePadTest)), both ? kPausePadGame : kPausePadBoth, 2) != 0) {
+    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kPausePadTest)), both ? kPausePadGame : kPausePadBoth, 2) != 0 ||
+        std::memcmp(reinterpret_cast<const void*>(uintptr_t(kPauseGameOverTest)), both ? kGameOverGame : kGameOverBoth, 3) != 0) {
         LOG_WARN("Online menu: the pause screen's pad test is not as expected; left as it is");
         return;
     }
     PatchBytes(kPausePadTest, both ? kPausePadBoth : kPausePadGame, 2);
+    PatchBytes(kPauseGameOverTest, both ? kGameOverBoth : kGameOverGame, 3);
     g_PausePadBoth = both;
     if (both)
         if (uint8_t* shell = *reinterpret_cast<uint8_t**>(uintptr_t(0x007F33F0))) {
