@@ -45,7 +45,6 @@ namespace swrots::game {
 namespace {
 
 void CoopAllUnlocked(bool all); // (the online Cooperative select's missions, all unlocked or the game's own lock)
-void PausePadBoth(bool both);   // (the pause screen's rows: both players' pads online)
 
 constexpr const char* kRowName = "online";
 constexpr const char* kRowText = "IDS_PORT_ONLINE";
@@ -1255,8 +1254,6 @@ char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
         ShowRoomNotice(handler);
     if (row == kMode && LastShellScreen() == MenuKey(kScreenNames[kRoom]))
         CoopAllUnlocked(false); // (back in the room: the game's own lock again; not while it fades to the select)
-    if (row == kMode)
-        PausePadBoth(false); // (out of the mission: the pause screen's own pad test)
     if (row == kMode && net::OnlineTakeDrawEnd())
         ShowNotice(handler, "Three draws: the match is over.");
     if (row == kMode) {
@@ -2236,7 +2233,6 @@ char __fastcall MainButtonDraw(uint8_t* handler, void*, uint32_t value)
     }
     if (LastShellScreen() != MenuKey("select_challenge"))
         CoopAllUnlocked(false);
-    PausePadBoth(false);
     return reinterpret_cast<DrawFn>(uintptr_t(g_PrevMainButtonDraw))(handler, nullptr, value);
 }
 
@@ -2273,41 +2269,34 @@ float g_VoteRowY[2] = { -1, -1 }, g_VoteRowX = 0, g_VoteRowAlpha = 1.0f; // (the
 ULONGLONG g_VoteRowsAt = 0;           // when they were last drawn
 bool g_VoteCarried = false;           // the outcome carried out (once, until the rows go)
 
-// The pause screen asks whether a pad may work it (0x2A7720, thiscall (pad)): the shell's player 1 pad
-// ([shell+0x414]) or, when one of the two-player flags ([0x68F720]+0xCC, +0xCE) is set, its player 2 pad
-// ([shell+0x418]); and at the game over (its child game_over) player 1's alone (0x2A7790: sete al on the pad being
-// [shell+0x414]). In an online Cooperative mission the other player's A never reached the rows. Online, the flags'
-// test is skipped (its jump at 0x2A774E made two NOPs), the game over takes the pad that passed (0x2A7790: mov al, 1)
-// and player 2's pad is port 1 (both games' player 2); given back out of the mission.
-constexpr uint32_t kPausePadTest = 0x002A774E, kPauseGameOverTest = 0x002A7790;
-constexpr uint8_t kPausePadGame[2] = { 0x75, 0x08 }, kPausePadBoth[2] = { 0x90, 0x90 };
-constexpr uint8_t kGameOverGame[3] = { 0x0F, 0x94, 0xC0 }, kGameOverBoth[3] = { 0xB0, 0x01, 0x90 };
-bool g_PausePadBoth = false;
-
-void PausePadBoth(bool both)
-{
-    if (both == g_PausePadBoth)
-        return;
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kPausePadTest)), both ? kPausePadGame : kPausePadBoth, 2) != 0 ||
-        std::memcmp(reinterpret_cast<const void*>(uintptr_t(kPauseGameOverTest)), both ? kGameOverGame : kGameOverBoth, 3) != 0) {
-        LOG_WARN("Online menu: the pause screen's pad test is not as expected; left as it is");
-        return;
-    }
-    PatchBytes(kPausePadTest, both ? kPausePadBoth : kPausePadGame, 2);
-    PatchBytes(kPauseGameOverTest, both ? kGameOverBoth : kGameOverGame, 3);
-    g_PausePadBoth = both;
-    if (both)
-        if (uint8_t* shell = *reinterpret_cast<uint8_t**>(uintptr_t(0x007F33F0))) {
-            int& pad2 = *reinterpret_cast<int*>(shell + 0x418);
-            LOG_INFO("Online menu: the pause screen takes both players' pads (player 2's pad was %d)", pad2);
-            pad2 = 1;
-        }
-}
+// The pause screen asks whether a pad may work it (its vtable 0x5CAA40's slot 11, 0x2A7720, thiscall (event, pad)):
+// the shell's player 1 pad ([shell+0x414]), player 2's ([shell+0x418]) when a two-player flag is set, and at the game
+// over player 1's alone. Online in a Cooperative mission each game's own player works it alone, with their own cursor
+// (the host's port 0, the guest's port 1: both pads reach both games); each vote goes to the host (net::OnlineCoopVote).
+constexpr uint32_t kPauseVtable = 0x005CAA40, kPauseTakes = 0x002A7720;
+uint32_t g_PrevPauseTakes = 0;
+bool g_LocalPortKnown = false;
+int g_LocalPort = 0;
 
 bool CoopOnline()
 {
     const net::OnlineStatusInfo s = net::OnlineStatus();
     return s.matchOn && s.room.mode == 1 && s.phase != net::OnlinePhase::Ended && s.phase != net::OnlinePhase::Off;
+}
+
+char __fastcall PauseTakes(uint8_t* self, void*, int event, int pad)
+{
+    if (CoopOnline()) {
+        const int local = net::OnlineStatus().host ? 0 : 1;
+        if (!g_LocalPortKnown || g_LocalPort != local) {
+            g_LocalPortKnown = true;
+            g_LocalPort = local;
+            LOG_INFO("Online menu: the pause screen works from this game's own pad (port %d)", local);
+        }
+        return pad == local ? 1 : 0;
+    }
+    return reinterpret_cast<char(__fastcall*)(uint8_t*, void*, int, int)>(uintptr_t(g_PrevPauseTakes))(self, nullptr,
+        event, pad);
 }
 
 // A vote's row: the pause screen's "restart" or "quit" (its "continue" is a Restart item too: left to the game).
@@ -2323,10 +2312,9 @@ char __fastcall VoteRowEvent(uint8_t* handler, void*, int event, int pad)
     const uint32_t original = restart ? kRestartEvent : kQuitEvent;
     if (event != kChosen || VoteRowOf(handler) < 0 || !CoopOnline())
         return reinterpret_cast<ItemEventFn>(uintptr_t(original))(handler, nullptr, event, pad);
-    int player = 0;
-    if (uint8_t* shell = *reinterpret_cast<uint8_t**>(uintptr_t(0x007F33F0)))
-        player = pad == *reinterpret_cast<int*>(shell + 0x418) ? 1 : 0;
-    net::OnlineCoopVote(player, restart ? net::CoopVote::Retry : net::CoopVote::Quit); // (the guest's game: its host's)
+    (void)pad; // (the pause screen takes this game's own pad alone: PauseTakes)
+    const int player = net::OnlineStatus().host ? 0 : 1;
+    net::OnlineCoopVote(player, restart ? net::CoopVote::Retry : net::CoopVote::Quit);
     HandlerSound(handler, kReadySound);
     return 1;
 }
@@ -2351,11 +2339,8 @@ char __fastcall VoteRowDraw(uint8_t* handler, void*, uint32_t value)
     const char result = reinterpret_cast<DrawFn>(uintptr_t(kRowDraw))(handler, nullptr, value);
     if (VoteRowOf(handler) < 0)
         return result;
-    if (!CoopOnline()) {
-        PausePadBoth(false);
+    if (!CoopOnline())
         return result;
-    }
-    PausePadBoth(true);
     const int which = VoteRowOf(handler);
     const bool restart = which == 0;
     const ULONGLONG now = GetTickCount64();
@@ -2426,7 +2411,14 @@ void InstallVoteRows()
     g_VoteRows[0] = g_VoteRows[1] = nullptr;
     g_VoteRowsAt = 0;
     g_VoteCarried = false;
-    g_PausePadBoth = false; // (a new start: the game's own code)
+    g_LocalPortKnown = false;
+    if (SlotIs(kPauseVtable, 11, kPauseTakes)) {
+        g_PrevPauseTakes = kPauseTakes;
+        const uint32_t takes = uint32_t(reinterpret_cast<uintptr_t>(&PauseTakes));
+        PatchBytes(kPauseVtable + 4 * 11, &takes, 4);
+    } else {
+        LOG_WARN("Online menu: the pause screen's pad test is not as expected; each game's own pad not kept");
+    }
 }
 
 } // namespace

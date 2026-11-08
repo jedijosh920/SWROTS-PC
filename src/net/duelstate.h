@@ -59,6 +59,10 @@ std::string ApplyStats();
 // the game's own change: its death the game's). A new level forgets them.
 void ApplyCharacter(uint32_t id, uint8_t* character, const FighterState& s, uint32_t leadTicks);
 void ApplyCharactersReset();
+// A state's position (+0x180), and a state moved on (its position and copies by `delta`, its sequence's time by
+// `ticks`): the guest's characters between two of the host's states, carried on as they were going.
+bool StatePosition(const FighterState& s, float out[3]);
+void MoveState(FighterState& s, const float delta[3], uint32_t ticks);
 uint32_t CharactersApplied();
 // An object of a character's class (its behaviour at +0x434).
 bool IsCharacter(const uint8_t* object);

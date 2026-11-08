@@ -616,6 +616,9 @@ host's hits decide). Every two seconds both games log the four lowest keys' plac
 The guest's own AI would still choose their sequences between two states (some twenty restarts a second against
 it): the guest's game has the engine's `aiDisabled` set during the mission (the engine's settings, [[[0x645F7C]+0x38]+8],
 +0xC4: its console variable "Disables AI", registered by 0x2409A0), given back after it.
+Each character's state comes every few frames (five a frame in turn): the guest applies each one's latest every
+frame, carried on at its pace (its position's change a frame, from its last two states; twelve frames at most) and its
+sequence's time, so that it does not stand and jump between two.
 
 A mission's Restart and Quit online (the pause screen's rows, its `game_over` child's RESTART MISSION and QUIT
 MISSION: items of the classes Restart, vtable 0x5CFE38, and Quit, 0x5CFC78; slot 4 takes A to a confirmation or at a
@@ -625,6 +628,10 @@ the room as soon as either chose Quit, and at a game over a missing vote counts 
 the votes, the time left and the outcome in the host's state). The outcome is carried out on both games through those
 slots 8 (the host's as it decides, the guest's as the host's comes). Each row shows its voters (the game's lit box,
 their name), the game over the rule and the time left.
+Each game's own player works the rows with their own cursor: the pause screen's pad test (its vtable 0x5CAA40's slot
+11, 0x2A7720: player 1's pad, player 2's with a two-player flag, at the game over player 1's alone) takes this game's
+own pad alone online (the host's port 0, the guest's port 1), and the guest's choice goes to the host as a message
+(`Vote`, protocol 11).
 
 ### Phases
 

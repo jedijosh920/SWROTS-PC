@@ -72,9 +72,10 @@ struct OnlineStatusInfo {
 
 // Cooperative online: the mission's Restart and Quit (the game over's, the pause's) are the two players' vote. The
 // mission again once both chose Restart; back to the room as soon as either chose Quit; at a game over, after 30
-// seconds a missing vote counts as Quit. The host decides (the guest's choice comes as its pad on the host's game).
+// seconds a missing vote counts as Quit. Each player works the rows from its own pad on its own game; the host decides
+// (the guest's choice comes as a message).
 enum class CoopVote : uint8_t { None = 0, Retry = 1, Quit = 2 };
-// The host's game: a player's choice (0 player 1, 1 player 2).
+// A player's choice (0 player 1, 1 player 2): the host's counted, the guest's sent to the host.
 void OnlineCoopVote(int player, CoopVote choice);
 // Each frame the vote's menu is up (`gameOver`: the game over's, with its time limit): the outcome to carry out now on
 // this game (the host's once, as it decides; the guest's as the host's came), else None.

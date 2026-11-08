@@ -15,6 +15,7 @@
 #include <map>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -46,9 +47,9 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr uint32_t kMagic = 0x4E525753; // 'SWRN'
-constexpr uint16_t kProtocol = 10; // 2: the players' names; 3: client/server matches; 4: the arena's picker; 5: props; 6: a public room;
+constexpr uint16_t kProtocol = 11; // 2: the players' names; 3: client/server matches; 4: the arena's picker; 5: props; 6: a public room;
                                   // 7: the room's name, the players' Ready; 8: Versus's time limit (the room, the duel's clock); 9: Cooperative's characters;
-                                  // 10: Cooperative's Restart/Quit vote
+                                  // 10: Cooperative's Restart/Quit vote; 11: the guest's vote its own
 constexpr uint16_t kDefaultPort = 27960;
 constexpr uint32_t kHistory = 512;      // frames of inputs kept (a power of two)
 constexpr uint32_t kMaxSend = 48;       // inputs in one packet at most
@@ -91,6 +92,7 @@ enum class Msg : uint8_t {
     Pad, Launch, State, Room, Props, // client/server
     Seat, // the guest's Ready in the room
     Chars, // a Cooperative mission's other characters (client/server)
+    Vote,  // the guest's Restart/Quit vote (its own cursor, its own choice)
 };
 
 constexpr uint32_t kPage = 1024;      // a desync's report: the data checked, hashed by 1 KiB pages
@@ -221,6 +223,13 @@ struct CharsMsg {
     uint8_t count;
     uint8_t reserved[3];
     CharState chars[kCharsPerMsg];
+};
+// The guest's Restart/Quit vote (CoopVote), sent a few times (the host keeps the latest).
+struct VoteMsg {
+    Header h;
+    uint32_t seq;
+    uint8_t choice;
+    uint8_t reserved[3];
 };
 // The host's gameplay settings, which the guest plays with for the match.
 struct GameplaySettings {
@@ -1171,6 +1180,15 @@ std::atomic<uint8_t*> g_GuestFighters[2] = {};
 // The guest's Cooperative characters following the host's (their damage the host's too).
 std::unordered_set<uint8_t*> g_GuestFollowed;
 std::unordered_set<uint32_t> g_GuestKeys; // their keys (the set above made again from them: gone ones out)
+// The guest: each character's last state from the host, when it came (this game's frame) and its pace (its position's
+// change a frame, from its last two states): applied every frame, carried on between two of the host's states (a few
+// frames apart, five characters a frame in turn), so that it does not stand and jump.
+struct CharFollow {
+    FighterState state;
+    uint32_t frame = 0;
+    float pace[3] = {};
+};
+std::unordered_map<uint32_t, CharFollow> g_CharFollow;
 
 // The engine's settings ([[[0x645F7C]+0x38]+8], their console variables registered by 0x2409A0): +0xC4 is
 // `aiDisabled` ("Disables AI"). The guest's game in a Cooperative mission has it set: its characters do what the host's
@@ -1388,6 +1406,17 @@ void OnServerMsgLocked(Msg type, const uint8_t* data, size_t size)
             g_S.charsIn.push_back(m);
         }
         break;
+    case Msg::Vote:
+        if (g_S.host && size >= sizeof(VoteMsg) && !g_S.decided) {
+            VoteMsg m;
+            std::memcpy(&m, data, sizeof(m));
+            if (m.choice == uint8_t(CoopVote::Retry) || m.choice == uint8_t(CoopVote::Quit)) {
+                if (g_S.votes[1] != m.choice)
+                    LOG_INFO("Online: player 2 votes %s", m.choice == uint8_t(CoopVote::Retry) ? "Retry" : "Quit");
+                g_S.votes[1] = m.choice;
+            }
+        }
+        break;
     case Msg::State:
         if (!g_S.host && size >= sizeof(StateMsg)) {
             StateMsg m;
@@ -1546,6 +1575,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             ApplyCharactersReset();
             g_GuestFollowed.clear();
             g_GuestKeys.clear();
+            g_CharFollow.clear();
             std::lock_guard<std::mutex> relock(g_S.lock);
             g_S.matchDraws = 0;
             g_S.drawEndAt = {};
@@ -1723,8 +1753,37 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             }
             g_GuestFollowed.insert(o);
             g_GuestKeys.insert(c.key);
-            ApplyCharacter(c.key, o, c.state, lead);
+            CharFollow& f = g_CharFollow[c.key];
+            float before[3], now[3];
+            const uint32_t gap = frame - f.frame;
+            if (f.frame && gap > 0 && gap < 30 && StatePosition(f.state, before) && StatePosition(c.state, now)) {
+                for (int k = 0; k < 3; ++k) {
+                    const float pace = (now[k] - before[k]) / float(gap);
+                    f.pace[k] = std::fabs(pace) < 20.0f ? pace : 0.0f; // (a jump: a teleport, a respawn)
+                }
+            } else {
+                f.pace[0] = f.pace[1] = f.pace[2] = 0.0f;
+            }
+            f.state = c.state;
+            f.frame = frame;
         }
+    for (auto it = g_CharFollow.begin(); it != g_CharFollow.end();) { // every frame: each one's latest, carried on
+        uint8_t* o = CharacterByKey(it->first);
+        const uint32_t since = frame - it->second.frame;
+        if (!o || since > 300) {
+            it = g_CharFollow.erase(it);
+            continue;
+        }
+        FighterState s = it->second.state;
+        if (since > 0) {
+            const uint32_t carried = std::min<uint32_t>(since, 12); // (no further: the host's next state is late)
+            const float delta[3] = { it->second.pace[0] * carried, it->second.pace[1] * carried,
+                it->second.pace[2] * carried };
+            MoveState(s, delta, since);
+        }
+        ApplyCharacter(it->first, o, s, lead);
+        ++it;
+    }
     if (frame % 600 == 0 && coopMission)
         LOG_INFO("Online: %u character state(s) applied, %zu character(s) followed, %u missing here", CharactersApplied(),
             g_GuestFollowed.size(), missing);
@@ -2059,7 +2118,8 @@ void HandleLocked(const uint8_t* data, size_t size, const Endpoint& from)
     }
     // Both ways.
     if (type == Msg::Pad || type == Msg::Launch || type == Msg::State || type == Msg::Room || type == Msg::Props ||
-        type == Msg::Seat || type == Msg::Chars) {
+        type == Msg::Seat || type == Msg::Chars ||
+        type == Msg::Vote) {
         if (g_S.server && (g_S.armed || g_S.bootPending || type == Msg::Room || type == Msg::Seat))
             OnServerMsgLocked(type, data, size);
         return;
@@ -2437,8 +2497,20 @@ void OnlineLeave()
 void OnlineCoopVote(int player, CoopVote choice)
 {
     std::lock_guard<std::mutex> lock(g_S.lock);
-    if (!g_S.host || !g_S.server || player < 0 || player > 1 || g_S.decided)
+    if (!g_S.server || player < 0 || player > 1 || g_S.decided)
         return;
+    if (!g_S.host) { // the guest: its choice to the host (a few times: the host keeps the latest)
+        static uint32_t seq = 0;
+        VoteMsg m = {};
+        m.h = MakeHeader(Msg::Vote, g_S.token);
+        m.choice = uint8_t(choice);
+        for (int i = 0; i < 3; ++i) {
+            m.seq = ++seq;
+            SendLocked(m);
+        }
+        LOG_INFO("Online: this player votes %s (to the host)", choice == CoopVote::Retry ? "Retry" : "Quit");
+        return;
+    }
     if (g_S.votes[player] != uint8_t(choice))
         LOG_INFO("Online: player %d votes %s", player + 1, choice == CoopVote::Retry ? "Retry" : "Quit");
     g_S.votes[player] = uint8_t(choice);

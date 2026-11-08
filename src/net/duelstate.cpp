@@ -867,6 +867,45 @@ void ApplyCharacter(uint32_t id, uint8_t* character, const FighterState& s, uint
     ++g_CharsApplied;
 }
 
+namespace {
+// Where a game offset's bytes lie in a state's fields (kFields in order), or -1.
+int FieldAt(uint16_t offset)
+{
+    int at = 0;
+    for (const Range& r : kFields) {
+        if (offset >= r.offset && offset + 4 <= r.offset + r.bytes)
+            return at + (offset - r.offset);
+        at += r.bytes;
+    }
+    return -1;
+}
+constexpr uint16_t kPlaces[] = { 0x180, 0x630, 0x750 }; // the position and its copies
+} // namespace
+
+bool StatePosition(const FighterState& s, float out[3])
+{
+    const int at = FieldAt(0x180);
+    if (at < 0)
+        return false;
+    std::memcpy(out, s.fields + at, 12);
+    return true;
+}
+
+void MoveState(FighterState& s, const float delta[3], uint32_t ticks)
+{
+    for (uint16_t place : kPlaces) {
+        const int at = FieldAt(place);
+        if (at < 0)
+            continue;
+        float v[3];
+        std::memcpy(v, s.fields + at, 12);
+        for (int k = 0; k < 3; ++k)
+            v[k] += delta[k];
+        std::memcpy(s.fields + at, v, 12);
+    }
+    s.ticks += ticks;
+}
+
 void ApplyCharactersReset()
 {
     g_CharApplied.clear();
