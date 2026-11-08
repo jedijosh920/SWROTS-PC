@@ -1754,6 +1754,37 @@ void DisableRefusedKeys(uint8_t* keyboard)
     }
 }
 
+// A name's keyboard: Paste's place in the footer says Done's other keys instead (Start with a controller, Enter with the
+// PC's keyboard: DoneByStartOrEnter), its text alone (no icon of the menus' is Start's), Select moved left for its
+// length (as the room's footer: Select 230/263, the text from 335, Back 488); a room code's: Paste again, all as they
+// were.
+void PasteOrDone(uint8_t* keyboard)
+{
+    static const char* const kNames[3] = { "selectbutton", "select", "pastetext" };
+    static const int16_t kNameX[3] = { 230 * 32, 263 * 32, 335 * 32 };
+    static uint8_t* items[3] = {};
+    static int16_t ownX[3] = {};
+    __try {
+        for (int i = 0; i < 3; ++i) {
+            uint8_t* item = KeyboardKeyRaw(keyboard, kNames[i]);
+            if (!item)
+                continue;
+            if (items[i] != item) { // this screen's (made again): its own place
+                items[i] = item;
+                ownX[i] = *reinterpret_cast<int16_t*>(item + 0xE4);
+            }
+            *reinterpret_cast<int16_t*>(item + 0xE4) = g_KeyboardForName ? kNameX[i] : ownX[i];
+        }
+        if (items[2]) {
+            const wchar_t* words = MenuTextBuffer(g_KeyboardForName ? (input::KeyboardPrompts() ? "IDS_PORT_ENTER_DONE" :
+                "IDS_PORT_START_DONE") : "IDS_PORT_ONLINE_PASTE");
+            if (words)
+                *reinterpret_cast<const void**>(items[2] + 0x44) = words;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
 // Ctrl+V: the clipboard's code (its letters and digits) as the text.
 void __fastcall KeyboardDraw(uint8_t* keyboard, void*, uint32_t value)
 {
@@ -1769,7 +1800,7 @@ void __fastcall KeyboardDraw(uint8_t* keyboard, void*, uint32_t value)
     DisableRefusedKeys(keyboard);
     KeyboardTitle(keyboard);
     ShowItem(keyboard, 14, "pastebutton", !g_KeyboardForName); // Paste is a room code's alone (Y does nothing for a name)
-    ShowItem(keyboard, 15, "pastetext", !g_KeyboardForName);
+    PasteOrDone(keyboard);
     reinterpret_cast<void(__fastcall*)(uint8_t*, void*, uint32_t)>(uintptr_t(kKeyboardDraw))(keyboard, nullptr, value);
 }
 
@@ -2736,6 +2767,8 @@ void InstallOnlineMenu()
     SetMenuText("IDS_PORT_LOST_TITLE", L"Connection Lost");
     SetMenuText("IDS_PORT_LOST_TEXT", L"The connection to the other player was lost.");
     SetMenuText("IDS_PORT_ONLINE_PASTE", L"Paste");
+    SetMenuText("IDS_PORT_START_DONE", L"Start: Done");
+    SetMenuText("IDS_PORT_ENTER_DONE", L"Enter: Done");
     SetMenuText("IDS_PORT_ONLINE_PUBLIC", L"Public Rooms");
     SetMenuText("IDS_PORT_NOTICE_TITLE", L"Online");
     SetMenuText("IDS_PORT_NOTICE_TEXT", L"");
