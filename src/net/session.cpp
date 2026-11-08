@@ -1563,8 +1563,8 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         g_S.guestInDuel = false;
         g_S.followingLaunch = true;
         g_S.followStarted = true;
-        if (g_S.inLevel && LaunchMap(args).empty())
-            CoverToRoomLocked(); // (the menus after a level: the room, or the mission again)
+        if (g_S.inLevel && LaunchMap(args).empty() && g_S.decided != uint8_t(CoopVote::Retry))
+            CoverToRoomLocked(); // (the menus after a level: the room; not the mission again the players voted for)
         lock.unlock();
         LOG_INFO("Online: following the host's launch '%s'", args.c_str());
         if (args.empty())
