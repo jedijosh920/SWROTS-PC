@@ -1430,7 +1430,7 @@ struct Identity {
     uint32_t playerSeen = 0;
     double playerSum[2] = {};
     float playerMax[2] = {};
-    void Note(uint8_t* o, const FighterState& s)
+    void Note(uint8_t* o, const FighterState& s, bool followed)
     {
         const bool hostLiving = StateLiving(s);
         seen += hostLiving; // (the living: a corpse of the host's need not be here)
@@ -1440,8 +1440,8 @@ struct Identity {
         ++compared;
         if (CharacterAlive(o) == hostLiving)
             ++livingAlike;
-        if (!hostLiving)
-            return; // (a corpse: where it lies, its sequence, are the game's)
+        if (!hostLiving || !followed)
+            return; // (a corpse: where it lies, its sequence, are the game's; one just found: not placed yet)
         if (CharacterSequence(o) == s.seq)
             ++sequenceAlike;
         FighterState here;
@@ -2201,7 +2201,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     }
     // a Cooperative mission's other characters: the host's (the latest of each)
     static uint32_t missing = 0;
-    if (frame % 30 == 0) { // the followed ones still there (gone ones' memory is not theirs any more)
+    { // the followed ones still there (gone ones' memory is not theirs any more)
         g_GuestFollowed.clear();
         for (uint32_t key : g_GuestKeys)
             if (uint8_t* o = BoundOf(key))
@@ -2225,7 +2225,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
                 if (frame - since >= kMakeAfter)
                     o = MakeCharacter(c.key, c.state, frame);
             }
-            g_Identity.Note(o, c.state);
+            g_Identity.Note(o, c.state, g_CharFollow.count(c.key) != 0);
             if (!o) {
                 if (missing++ < 40 || missing % 500 == 0)
                     LOG_INFO("Online: the host's character %08X is not in this game yet (%u so far)", c.key, missing);
