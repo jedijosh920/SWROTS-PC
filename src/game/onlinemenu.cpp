@@ -2269,7 +2269,7 @@ constexpr uint32_t kRestartEvent = 0x002B3F20, kQuitEvent = 0x002B3DE0, kRowDraw
 constexpr uint32_t kRestartGo = 0x002B0F90, kQuitGo = 0x002B0E10;
 constexpr uint32_t kGameOverChild = 0x45D00363; // the pause screen's game_over child, as the front end switches to it
 uint8_t* g_VoteRows[2] = {};          // the Restart and Quit rows drawn last (their handlers)
-float g_VoteRowY[2] = { -1, -1 }, g_VoteRowX = 0;
+float g_VoteRowY[2] = { -1, -1 }, g_VoteRowX = 0, g_VoteRowAlpha = 1.0f; // (their alpha: the screen's fades)
 ULONGLONG g_VoteRowsAt = 0;           // when they were last drawn
 bool g_VoteCarried = false;           // the outcome carried out (once, until the rows go)
 
@@ -2310,11 +2310,18 @@ bool CoopOnline()
     return s.matchOn && s.room.mode == 1 && s.phase != net::OnlinePhase::Ended && s.phase != net::OnlinePhase::Off;
 }
 
+// A vote's row: the pause screen's "restart" or "quit" (its "continue" is a Restart item too: left to the game).
+int VoteRowOf(uint8_t* handler)
+{
+    const uint32_t key = ItemKey(handler);
+    return key == MenuKey("restart") ? 0 : key == MenuKey("quit") ? 1 : -1;
+}
+
 char __fastcall VoteRowEvent(uint8_t* handler, void*, int event, int pad)
 {
     const bool restart = *reinterpret_cast<const uint32_t*>(handler) == kRestartVtable;
     const uint32_t original = restart ? kRestartEvent : kQuitEvent;
-    if (event != kChosen || !CoopOnline())
+    if (event != kChosen || VoteRowOf(handler) < 0 || !CoopOnline())
         return reinterpret_cast<ItemEventFn>(uintptr_t(original))(handler, nullptr, event, pad);
     int player = 0;
     if (uint8_t* shell = *reinterpret_cast<uint8_t**>(uintptr_t(0x007F33F0)))
@@ -2342,13 +2349,15 @@ void CarryOut(net::CoopVote outcome)
 char __fastcall VoteRowDraw(uint8_t* handler, void*, uint32_t value)
 {
     const char result = reinterpret_cast<DrawFn>(uintptr_t(kRowDraw))(handler, nullptr, value);
+    if (VoteRowOf(handler) < 0)
+        return result;
     if (!CoopOnline()) {
         PausePadBoth(false);
         return result;
     }
     PausePadBoth(true);
-    const bool restart = *reinterpret_cast<const uint32_t*>(handler) == kRestartVtable;
-    const int which = restart ? 0 : 1;
+    const int which = VoteRowOf(handler);
+    const bool restart = which == 0;
     const ULONGLONG now = GetTickCount64();
     if (now - g_VoteRowsAt > 600) { // the rows up again: a new vote
         g_VoteCarried = false;
@@ -2362,12 +2371,18 @@ char __fastcall VoteRowDraw(uint8_t* handler, void*, uint32_t value)
         g_VoteRowY[which] = y;
         g_VoteRowX = x;
     }
+    if (const uint8_t* item = *reinterpret_cast<uint8_t* const*>(handler + 8)) { // its alpha (+0x97), as the screen fades
+        g_VoteRowAlpha = std::clamp(float(item[0x97]) / 255.0f, 0.0f, 1.0f);
+        static int logged = 0;
+        if (logged++ < 3)
+            LOG_INFO("Online menu: the vote's row alpha %u", unsigned(item[0x97]));
+    }
     // the players who chose this row: the game's box, lit, in their column right of the rows
     const net::OnlineStatusInfo s = net::OnlineStatus();
     for (int p = 0; p < 2; ++p)
         if (s.coopVotes[p] == uint8_t(restart ? net::CoopVote::Retry : net::CoopVote::Quit) && g_VoteRowY[which] >= 0) {
             const float bx = kVoteColumn + kVoteColumnStep * float(p), by = g_VoteRowY[which] + 1.0f;
-            DrawPicture(kBoxOn, bx, by, bx + 20.0f, by + 20.0f, 1.0f, 1.0f);
+            DrawPicture(kBoxOn, bx, by, bx + 20.0f, by + 20.0f, 1.0f, g_VoteRowAlpha);
         }
     if (restart) { // once a frame: the vote's turn (its outcome carried out here once)
         const bool gameOver = LastShellChildScreen() == kGameOverChild;
@@ -2380,8 +2395,9 @@ char __fastcall VoteRowDraw(uint8_t* handler, void*, uint32_t value)
 
 } // namespace
 
-bool CoopVoteRows(float& restartY, float& quitY, float& column, float& step)
+bool CoopVoteRows(float& restartY, float& quitY, float& column, float& step, float& alpha)
 {
+    alpha = g_VoteRowAlpha;
     if (GetTickCount64() - g_VoteRowsAt > 200 || g_VoteRowY[0] < 0 || g_VoteRowY[1] < 0)
         return false;
     restartY = g_VoteRowY[0];

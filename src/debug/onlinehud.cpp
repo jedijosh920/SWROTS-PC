@@ -219,8 +219,8 @@ void MenuSpace(const ImGuiViewport* vp, float& left, float& top, float& sx, floa
 // and colours.
 void CoopVote(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u)
 {
-    float restartY = 0, quitY = 0, column = 0, step = 0;
-    if (!game::CoopVoteRows(restartY, quitY, column, step))
+    float restartY = 0, quitY = 0, column = 0, step = 0, alpha = 1;
+    if (!game::CoopVoteRows(restartY, quitY, column, step, alpha) || alpha <= 0.01f)
         return;
     float left, top, sx, sy;
     MenuSpace(vp, left, top, sx, sy);
@@ -232,15 +232,15 @@ void CoopVote(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u)
             continue;
         const float rowY = vote == uint8_t(net::CoopVote::Retry) ? restartY : quitY;
         const ImVec2 at(left + (column + step * float(p) + 26.0f) * sx, top + (rowY + 11.0f) * sy - h / 2);
-        if (!GameFontTextOf(GameFont::Menu, g_Draw, at, h, kNameText, names[p], false))
-            Text(at.x, at.y, h, kNameText, names[p], 0.0f);
+        if (!GameFontTextOf(GameFont::Menu, g_Draw, at, h, WithAlpha(kNameText, alpha), names[p], false))
+            Text(at.x, at.y, h, WithAlpha(kNameText, alpha), names[p], 0.0f);
     }
     if (s.coopVoteSeconds < 0)
         return;
     const std::string line = "RESTART NEEDS BOTH PLAYERS - BACK TO THE ROOM IN " + std::to_string(s.coopVoteSeconds);
     const float lh = 20 * u;
     const ImVec2 at(left + 155.0f * sx, top + (quitY + 46.0f) * sy);
-    const ImU32 colour = s.coopVoteSeconds <= 10 ? kClockLow : kNameText;
+    const ImU32 colour = WithAlpha(s.coopVoteSeconds <= 10 ? kClockLow : kNameText, alpha);
     if (!GameFontTextOf(GameFont::Menu, g_Draw, at, lh, colour, line, false))
         Text(at.x, at.y, lh, colour, line, 0.0f);
 }
@@ -337,8 +337,8 @@ void DrawOnlineHud()
             DuelClock(s, vp, u, fade);
         }
         else if (!s.remoteName.empty()) {
-            float ry, qy, col, step;
-            if (!game::CoopVoteRows(ry, qy, col, step))
+            float ry, qy, col, step, alpha;
+            if (!game::CoopVoteRows(ry, qy, col, step, alpha))
                 OtherPlayer(s, vp, u); // (not over the pause screen's rows)
             CoopVote(s, vp, u);
         }

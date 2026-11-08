@@ -564,6 +564,7 @@ struct Session {
     int voteSeconds = -1;               // the game over's time left to vote (-1 none)
     uint8_t decided = 0;                // the outcome (the host's; the guest's as it came)
     Clock::time_point voteMenuAt{}, voteDeadline{}; // the host: the vote's menu last drawn; the game over's deadline
+    bool retryVoted = false;            // the host: the players chose the mission again (its launch is not its end)
     uint32_t matchDraws = 0;            // this duel's draws (three end the match: back to the room)
     bool drawEnded = false;             // the last match ended so (the room says it once: OnlineTakeDrawEnd)
     Clock::time_point drawEndAt = {};   // the host: when the match ends (after the third draw's own end)
@@ -1222,7 +1223,12 @@ void LaunchObserved(std::string& arguments)
             g_S.toRoomAt = g_S.frame;
         }
         // Cooperative: a mission over (won, lost or quit), the game back at its menus: to the room
-        if (g_S.room.mode == 1 && g_S.inLevel && LaunchMap(arguments).empty()) {
+        if (g_S.room.mode == 1 && g_S.inLevel && LaunchMap(arguments).empty() &&
+            g_S.retryVoted) { // (the mission again: through the game's shell map, not the room)
+            g_S.retryVoted = false;
+            LOG_INFO("Online: the cooperative mission again (the players' vote)");
+        }
+        else if (g_S.room.mode == 1 && g_S.inLevel && LaunchMap(arguments).empty()) {
             g_S.toRoom = true;
             g_S.toRoomAt = g_S.frame;
             LOG_INFO("Online: the cooperative mission is over: back to the room");
@@ -2259,6 +2265,7 @@ void ResetSessionLocked(bool host)
     g_S.votes[0] = g_S.votes[1] = g_S.decided = 0;
     g_S.voteSeconds = -1;
     g_S.voteMenuAt = g_S.voteDeadline = {};
+    g_S.retryVoted = false;
     g_S.propsIn.clear();
     g_S.charsIn.clear();
     g_S.haveState = false;
@@ -2423,6 +2430,7 @@ CoopVote OnlineCoopVoteFrame(bool gameOver)
         outcome = CoopVote::Quit; // the time out: a missing vote counts as Quit
     if (outcome != CoopVote::None) {
         g_S.decided = uint8_t(outcome);
+        g_S.retryVoted = outcome == CoopVote::Retry;
         LOG_INFO("Online: the vote: %s (player 1 %u, player 2 %u)", outcome == CoopVote::Retry ? "the mission again" :
             "back to the room", g_S.votes[0], g_S.votes[1]);
     }
