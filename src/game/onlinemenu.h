@@ -24,6 +24,9 @@ bool OnlineGoToScreen(uint32_t key);
 bool OnlineStartVersus();
 // The session ended without this player leaving (`why`): the Online screen with the game's popup saying so.
 bool OnlineShowLost(const std::string& why);
+// The host whose guest left: its room opened again at once and its screen up (the restart after a match brought its
+// main menu); a notice there when `notice` (the guest went during a match). False: not yet.
+bool OnlineRehost(bool notice, const std::string& why);
 // The room code's keyboard is on screen (its legend for pasting: the online HUD).
 bool OnlineCodeKeyboardShown();
 // The code screen has the game's own Paste prompt (Y; Ctrl+V too).

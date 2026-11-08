@@ -70,6 +70,9 @@ uint32_t HeldStartsRefused();
 // `ticks`): the guest's characters between two of the host's states, carried on as they were going.
 bool StatePosition(const FighterState& s, float out[3]);
 void MoveState(FighterState& s, const float delta[3], uint32_t ticks);
+// Between two of the host's states: the character's place alone (its transform, its position and copies), its
+// animation left to run on (writing a state's action frame and timers again would set its pose back each frame).
+void PlaceCharacter(uint8_t* character, const FighterState& s);
 uint32_t CharactersApplied();
 // An object of a character's class (its behaviour at +0x434).
 bool IsCharacter(const uint8_t* object);

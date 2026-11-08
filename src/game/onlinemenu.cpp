@@ -625,7 +625,7 @@ bool RowDisabled(int row)
     case kName: return !idle;
     case kMode: case kRoomName: case kArena: case kPublic: return !s.host || idle; // the host's alone
     case kRounds: case kTime: case kRematch: return !s.host || idle || !VersusRow(row);
-    case kRoomSettings: return idle;
+    case kRoomSettings: return !s.host || idle; // the host's alone (greyed for the guest)
     case kPlayer1: case kPlayer2: case kGap: return true;
     case kCode: return !(s.host && !idle && !s.roomCode.empty());
     case kLeave: return false;
@@ -945,7 +945,11 @@ void KeepOnRightScreen(int row)
         GoToShellScreen(kScreenNames[kRoom]);
     } else if ((screen == kRoom || screen == kRoomSettingsScreen) && !inRoom) { // the room is over: the main menu (the game's popup when the other left)
         g_LastRedirect = GetTickCount64();
-        if (s.phase == net::OnlinePhase::Ended && s.lost && !s.matchOn)
+        bool notice = false;
+        std::string why;
+        if (net::OnlineTakeRehost(notice, why)) // the host whose guest left: the room again, where it is
+            OnlineRehost(notice, why);
+        else if (s.phase == net::OnlinePhase::Ended && s.lost && !s.matchOn)
             OnlineShowLost(s.message);
         else
             GoToShellScreen(kScreenNames[kOnline]);
@@ -960,6 +964,7 @@ void KeepOnRightScreen(int row)
 // 0)), then shown (its slot 22, +0x58, with the handler that owns it).
 constexpr uint32_t kFindPopup = 0x002F5A00, kPopupTitle = 0x002E8B80, kPopupMessage = 0x002E99E0;
 constexpr uint32_t kEngine = 0x00645F7C, kTextToStringFn = 0x00222FA0;
+std::string g_RoomNotice; // a notice for the room once it is up again (the host's: its guest went during a match)
 bool g_LostPopup = false; // the session ended without this player leaving: the popup at the Online screen
 
 const void* GameText(const char* id)
@@ -1053,10 +1058,14 @@ bool NoticeOpen()
 }
 
 // A row's event while a notice is up: the notice's (true: taken).
+bool g_NoticeHeld = false; // the notice up has no legend: nothing closes it (the join's: the match's start does)
+
 bool NoticeTakes(int event, int value)
 {
     if (!NoticeOpen())
         return false;
+    if (g_NoticeHeld)
+        return true; // (taken: neither A nor B closes it)
     if (event == kChosen || event == kB) {
         __try {
             reinterpret_cast<ItemEventFn>((*reinterpret_cast<void* const* const*>(g_OpenNotice))[4])(g_OpenNotice,
@@ -1068,7 +1077,10 @@ bool NoticeTakes(int event, int value)
     return true;
 }
 
-bool ShowPopup(uint8_t* owner, const char* titleId, const char* messageId, const char* name = "DefaultPopup")
+// The game's DefaultPopup (vtable 0x5D9870) draws its A legend (the button 0x2E6E10, IDS_OK 0x2E9460) while its
+// +0x30 is set: `legend` false leaves it out (a notice nothing closes: the join's, taken away by the match's start).
+bool ShowPopup(uint8_t* owner, const char* titleId, const char* messageId, const char* name = "DefaultPopup",
+    bool legend = true)
 {
     // a keyboard (the code screen's) owns its popup as the game's Codes keyboard does; any other owner a stand-in
     const bool keyboard = owner && *reinterpret_cast<uint32_t**>(owner) == g_KeyboardVtable;
@@ -1087,9 +1099,12 @@ bool ShowPopup(uint8_t* owner, const char* titleId, const char* messageId, const
         reinterpret_cast<void(__fastcall*)(uint8_t*, void*, uint8_t*)>(
             (*reinterpret_cast<void* const* const*>(popup))[0x58 / 4])(popup, nullptr,
             keyboard ? owner : NoticeOwnerFor(owner));
+        if (std::strcmp(name, "DefaultPopup") == 0 || std::strcmp(name, "popup") == 0)
+            popup[0x30] = legend ? 1 : 0; // (the same popup shown again: its legend as asked)
         if (!keyboard) {
             g_OpenNotice = popup;
             g_OpenNoticeScreen = LastShellScreen();
+            g_NoticeHeld = !legend;
         }
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -1159,7 +1174,7 @@ void ShowRoomNotice(uint8_t* handler, const char* popupName = "DefaultPopup")
         const std::string room = !s.room.name[0] ? g_PendingJoinName : std::string(s.room.name);
         SetMenuText("IDS_PORT_JOINING_TEXT", Wide(room.empty() ? std::string("Joining the room...") :
             "Joining " + Shorten(room, 24) + "..."));
-        ShowPopup(handler, "IDS_PORT_JOINING_TITLE", "IDS_PORT_JOINING_TEXT", popupName);
+        ShowPopup(handler, "IDS_PORT_JOINING_TITLE", "IDS_PORT_JOINING_TEXT", popupName, false); // (no A: it waits)
     }
     if (!settingUp && s.phase != net::OnlinePhase::Playing)
         g_JoinNotice = g_JoinNotice && s.phase == net::OnlinePhase::Off; // a join that ended: nothing to say
@@ -1256,6 +1271,10 @@ char __fastcall ValueDraw(uint8_t* handler, void*, uint32_t value)
         CoopAllUnlocked(false); // (back in the room: the game's own lock again; not while it fades to the select)
     if (row == kMode && net::OnlineTakeDrawEnd())
         ShowNotice(handler, "Three draws: the match is over.");
+    if (row == kMode && !g_RoomNotice.empty() && LastShellScreen() == MenuKey(kScreenNames[kRoom])) {
+        ShowNotice(handler, g_RoomNotice); // (the host's: its guest went during a match)
+        g_RoomNotice.clear();
+    }
     if (row == kMode) {
         ShowRoomNotice(handler);
         TitleAsRoomName(handler);
@@ -2088,15 +2107,30 @@ bool OnlineCodeKeyboardShown()
     return g_CodeKeyboardAt && GetTickCount64() - g_CodeKeyboardAt < 250;
 }
 
+bool OnlineRehost(bool notice, const std::string& why)
+{
+    const bool left = why.find("left") != std::string::npos;
+    LOG_INFO("Online menu: the guest gone (%s): the room opened again", why.c_str());
+    if (!net::OnlineHost()) // (the room's settings are kept: its name, Public, the mode)
+        return OnlineShowLost(why);
+    g_RoomNotice = !notice ? std::string() : left ? "The other player left the room." :
+        "The connection to the other player was lost.";
+    if (LastShellScreen() == MenuKey(kScreenNames[kRoom]))
+        return true;
+    return GoToShellScreen(kScreenNames[kRoom]);
+}
+
 bool OnlineShowLost(const std::string& why)
 {
     const bool left = why.find("left") != std::string::npos;
     const bool otherIdle = why.find("other player was removed") != std::string::npos;
     const bool idle = !otherIdle && why.find("inactivity") != std::string::npos;
+    const bool closed = left && !net::OnlineStatus().host; // the guest: its host left (the room is no more)
     SetMenuText("IDS_PORT_LOST_TEXT", otherIdle ? L"The other player was removed from the room for inactivity." :
         idle ? L"You were removed from the room after five minutes without any action." :
+        closed ? L"The host closed the room." :
         left ? L"The other player left the room." : L"The connection to the other player was lost.");
-    SetMenuText("IDS_PORT_LOST_TITLE", idle ? L"Removed from the Room" : L"Connection Lost");
+    SetMenuText("IDS_PORT_LOST_TITLE", idle ? L"Removed from the Room" : closed ? L"Room Closed" : L"Connection Lost");
     g_LostPopup = true; // shown by the Online row once the main menu is up (MainButtonDraw)
     if (LastShellScreen() == MenuKey(kScreenNames[kOnline]))
         return true;

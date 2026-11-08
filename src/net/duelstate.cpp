@@ -920,6 +920,29 @@ bool StatePosition(const FighterState& s, float out[3])
     return true;
 }
 
+namespace {
+bool PlaceRaw(uint8_t* character, const FighterState& s)
+{
+    static const uint16_t kPlace[] = { 0x150, 0x160, 0x170, 0x180, 0x630, 0x750 }; // the transform's rows, the position
+    __try {
+        for (uint16_t off : kPlace) {
+            const int at = FieldAt(off);
+            if (at >= 0)
+                std::memcpy(character + off, s.fields + at, 12);
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+} // namespace
+
+void PlaceCharacter(uint8_t* character, const FighterState& s)
+{
+    if (character && s.valid)
+        PlaceRaw(character, s);
+}
+
 void MoveState(FighterState& s, const float delta[3], uint32_t ticks)
 {
     for (uint16_t place : kPlaces) {

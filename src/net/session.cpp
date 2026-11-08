@@ -559,6 +559,9 @@ struct Session {
     int roundWinner = -1;               // the host: the last round's winner (0 player 1, 1 player 2), -1 none yet
     int matchWinner = -1;               // the host: the last match's (its last round's), for the arena's picker
     bool entering = false;              // from the match's start to its room: the game's restart covered (the HUD)
+    bool enteringRoom = false;          // and back to the room after a match or a mission (its main menu covered too)
+    bool enteringSawShell = false;      // the menus seen since (a level after them lifts the cover: a mission again)
+    uint32_t enteringAt = 0;            // the frame the cover came (25 s at most)
     uint32_t roomSince = 0;             // the frame the room's screen came (the cover lifted a little after)
     input::GamePad hostLive = {};       // the host's own pad in the level, as its game gets it
     uint32_t remoteReads = 0, remoteChanges = 0;
@@ -592,6 +595,9 @@ struct Session {
     std::string ownMenuArgs;            // this PC's own start at its main menu (its profile), for the session's end
     uint32_t joinAt = ~0u, arenaAt = ~0u; // the frames the port's own presses start (InjectLocked)
     bool lost = false;                  // the session ended by a lost connection (the popup says so)
+    // The host whose guest left (or was lost): the room opened again at once, the host kept on its screen; a notice
+    // there only when the guest went during a match (in the room together, nothing to say).
+    bool rehost = false, rehostNotice = false;
 };
 
 Session g_S;
@@ -613,6 +619,15 @@ void SendLocked(const T& msg, size_t size = sizeof(T))
 {
     g_S.socket.SendTo(g_S.peer, &msg, size);
     g_S.lastSent = Clock::now();
+}
+
+// Back to the room after a match or a mission: the game's restart and its main menu under the cover, until the room.
+void CoverToRoomLocked()
+{
+    g_S.entering = g_S.enteringRoom = true;
+    g_S.enteringSawShell = false;
+    g_S.enteringAt = g_S.frame;
+    g_S.roomSince = 0;
 }
 
 // A player's name as received: printable characters only, at most `size` (none: `fallback`).
@@ -757,6 +772,8 @@ void EndLocked(const std::string& why, bool tellOther)
     }
     g_S.phase = OnlinePhase::Ended;
     SetMessage(why);
+    g_S.rehost = g_S.host && !tellOther && why.find("removed for inactivity") == std::string::npos;
+    g_S.rehostNotice = g_S.rehost && g_S.inLevel;
     g_S.lost = !tellOther;
     g_S.lostPopup = !tellOther && matchOn;
     g_S.endedAt = Clock::now();
@@ -1280,6 +1297,7 @@ void LaunchObserved(std::string& arguments)
         if (arguments.find("v_roundsp1:") != std::string::npos && !g_S.room.rematch) {
             g_S.toRoom = true;
             g_S.toRoomAt = g_S.frame;
+            CoverToRoomLocked();
         }
         // Cooperative: a mission over (won, lost or quit), the game back at its menus: to the room
         if (g_S.room.mode == 1 && g_S.inLevel && LaunchMap(arguments).empty() &&
@@ -1290,6 +1308,7 @@ void LaunchObserved(std::string& arguments)
         else if (g_S.room.mode == 1 && g_S.inLevel && LaunchMap(arguments).empty()) {
             g_S.toRoom = true;
             g_S.toRoomAt = g_S.frame;
+            CoverToRoomLocked();
             LOG_INFO("Online: the cooperative mission is over: back to the room");
         }
         LaunchMsg m = {};
@@ -1503,8 +1522,11 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         const bool room = screen == game::MenuKey("online_room");
         if (room && !g_S.roomSince)
             g_S.roomSince = g_S.frame;
-        if ((room && g_S.frame - g_S.roomSince > 12) || g_S.inLevel || g_S.frame > 25 * 60) {
-            g_S.entering = false;
+        if (!g_S.inLevel)
+            g_S.enteringSawShell = true;
+        const bool level = g_S.inLevel && (!g_S.enteringRoom || g_S.enteringSawShell);
+        if ((room && g_S.frame - g_S.roomSince > 12) || level || g_S.frame - g_S.enteringAt > 25 * 60) {
+            g_S.entering = g_S.enteringRoom = false;
             LOG_INFO("Online: the room is in (frame %u)", g_S.frame);
         }
     }
@@ -1541,6 +1563,8 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         g_S.guestInDuel = false;
         g_S.followingLaunch = true;
         g_S.followStarted = true;
+        if (g_S.inLevel && LaunchMap(args).empty())
+            CoverToRoomLocked(); // (the menus after a level: the room, or the mission again)
         lock.unlock();
         LOG_INFO("Online: following the host's launch '%s'", args.c_str());
         if (args.empty())
@@ -1640,6 +1664,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
                 g_S.drawEnded = true;
                 g_S.toRoom = true; // the front end up: the room (as after a match)
                 g_S.toRoomAt = g_S.frame;
+                CoverToRoomLocked();
                 endArgs = g_S.menuArgs;
                 if (endArgs.empty())
                     LOG_WARN("Online: three draws, but no start at the main menu to end the match with");
@@ -1784,14 +1809,16 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
             it = g_CharFollow.erase(it);
             continue;
         }
-        FighterState s = it->second.state;
-        if (since > 0) {
+        if (since == 0) { // a new state from the host: all of it
+            ApplyCharacter(it->first, o, it->second.state, lead);
+        } else { // between two: its place carried on at its pace, its animation running on its own
+            FighterState s = it->second.state;
             const uint32_t carried = std::min<uint32_t>(since, 12); // (no further: the host's next state is late)
             const float delta[3] = { it->second.pace[0] * carried, it->second.pace[1] * carried,
                 it->second.pace[2] * carried };
             MoveState(s, delta, since);
+            PlaceCharacter(o, s);
         }
-        ApplyCharacter(it->first, o, s, lead);
         ++it;
     }
     if (frame % 600 == 0 && coopMission)
@@ -2383,7 +2410,7 @@ void ResetSessionLocked(bool host)
     g_S.haveState = false;
     g_S.guestInDuel = false;
     g_S.ownPad = g_S.hostLive = {};
-    g_S.inLevel = g_S.entering = false;
+    g_S.inLevel = g_S.entering = g_S.enteringRoom = false;
     g_S.roundWinner = g_S.matchWinner = -1;
     g_S.roomSince = 0;
     g_S.ownPacket = g_S.remoteReads = g_S.remoteChanges = 0;
@@ -2561,6 +2588,17 @@ CoopVote OnlineCoopVoteFrame(bool gameOver)
     return outcome;
 }
 
+bool OnlineTakeRehost(bool& notice, std::string& why)
+{
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    if (!g_S.rehost || g_S.leaving || g_S.phase != OnlinePhase::Ended)
+        return false;
+    g_S.rehost = false;
+    notice = g_S.rehostNotice;
+    why = g_S.message;
+    return true;
+}
+
 OnlineStatusInfo OnlineStatus()
 {
     std::lock_guard<std::mutex> lock(g_S.lock);
@@ -2589,6 +2627,7 @@ OnlineStatusInfo OnlineStatus()
     i.coopVoteSeconds = g_S.voteSeconds;
     i.coopVoteDecided = g_S.decided;
     i.entering = g_S.entering && (g_S.phase == OnlinePhase::Starting || g_S.phase == OnlinePhase::Playing);
+    i.enteringRoom = i.entering && g_S.enteringRoom;
     i.leaving = g_S.leaving && g_S.phase == OnlinePhase::Ended;
     if (g_S.inLevel && !g_S.lastMap.empty()) { // U170_EP4_Deathstar_02: EP4 DEATHSTAR 02
         std::string map = g_S.lastMap;
@@ -2710,6 +2749,7 @@ void OnlineReboot()
     g_S.bootPending = false;
     g_S.armed = true;
     g_S.frame = 0;
+    g_S.enteringAt = 0;
     g_S.localLatest = g_S.inputDelay; // frames up to the delay are neutral on both PCs
     g_S.remoteContiguous = std::max(g_S.remoteContiguous, g_S.inputDelay); // the other may have started first
     g_S.paceFrame = 0;
@@ -2790,11 +2830,13 @@ void OnlineFrame()
                 g_S.leaveTried = now;
                 const bool popup = g_S.lostPopup;
                 const std::string why = g_S.message;
-                g_S.lostPopup = false;
+                const bool rehost = g_S.rehost, notice = g_S.rehostNotice;
+                g_S.lostPopup = g_S.rehost = false;
                 lock.unlock();
-                const bool ok = popup ? game::OnlineShowLost(why) // the main menu, the game's popup over it
-                                      : game::LastShellScreen() == game::MenuKey("main_menu") ||
-                                            game::GoToShellScreen("main_menu");
+                const bool ok = rehost ? game::OnlineRehost(notice, why) // the host: its room again, at once
+                    : popup ? game::OnlineShowLost(why) // the main menu, the game's popup over it
+                            : game::LastShellScreen() == game::MenuKey("main_menu") ||
+                                game::GoToShellScreen("main_menu");
                 lock.lock();
                 if (ok)
                     g_S.leaveSent = true;

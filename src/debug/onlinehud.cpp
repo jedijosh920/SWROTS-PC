@@ -282,7 +282,8 @@ void EnteringCover(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, floa
 {
     g_Draw->AddRectFilled(vp->Pos, ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y), IM_COL32(0, 0, 0, 255));
     const int dots = int(GetTickCount64() / 400 % 4);
-    const std::string line = Upper(s.leaving ? "Leaving the room" : s.host ? "Opening the room" : "Joining the room");
+    const std::string line = Upper(s.leaving ? "Leaving the room" : s.enteringRoom ? "Back to the room" :
+        s.host ? "Opening the room" : "Joining the room");
     const float h = 30 * u, cx = vp->Pos.x + vp->Size.x / 2, y = vp->Pos.y + vp->Size.y * 0.47f;
     const float w = GameFontWidthOf(GameFont::Menu, h, line);
     const ImVec2 at(cx - w / 2, y);
@@ -322,8 +323,8 @@ void DrawOnlineHud()
     if (s.entering || s.leaving) {
         if (!coverFrom)
             coverFrom = d3d::DeviceGeneration();
-        if (!d3d::FrameHeld() && d3d::DeviceGeneration() != coverFrom)
-            EnteringCover(s, vp, u);
+        if (s.enteringRoom || (!d3d::FrameHeld() && d3d::DeviceGeneration() != coverFrom))
+            EnteringCover(s, vp, u); // (back to the room: its line over the held picture, the mission's last)
         return;
     }
     coverFrom = 0;

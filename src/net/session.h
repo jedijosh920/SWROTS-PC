@@ -61,6 +61,7 @@ struct OnlineStatusInfo {
     OnlineRoomSettings room;
     bool entering = false;  // the match's start until its room shows (the game's restart, its main menu: covered)
     bool leaving = false;   // the match's end until the Online screen shows (the same)
+    bool enteringRoom = false; // back to the room after a match or a mission (the cover says so)
     std::string arenaPlayed; // the host in a duel: its arena (from its map)
     bool localReady = false, remoteReady = false; // in the room: each player's Ready (both: the host starts the match)
     int clockTenths = -1;   // a Versus duel with a time limit: the round's time left (tenths of a second; -1 none)
@@ -77,6 +78,9 @@ struct OnlineStatusInfo {
 enum class CoopVote : uint8_t { None = 0, Retry = 1, Quit = 2 };
 // A player's choice (0 player 1, 1 player 2): the host's counted, the guest's sent to the host.
 void OnlineCoopVote(int player, CoopVote choice);
+// The host whose guest left while no restart was under way (the room's screen still up): true once, the room to open
+// again (its notice: the guest went during a match).
+bool OnlineTakeRehost(bool& notice, std::string& why);
 // Each frame the vote's menu is up (`gameOver`: the game over's, with its time limit): the outcome to carry out now on
 // this game (the host's once, as it decides; the guest's as the host's came), else None.
 CoopVote OnlineCoopVoteFrame(bool gameOver);
