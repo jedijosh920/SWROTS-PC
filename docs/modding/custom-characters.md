@@ -44,6 +44,7 @@ Saber2=255 0 0           ; player 2's when both Versus players pick it (optional
 SaberLeft=255 0 0        ; its second saber's colour, the one in its left hand (optional; on a two-saber base)
 Blades=single            ; its saber: single, double (double-bladed) or dual (two sabers) (optional; the base's)
 Hilt=LsaberObi\LsaberObi ; its hilt, a weapon mesh under meshes\weapons, without .msh (optional; the base's)
+Hilt2=LsaberAnakin\LsaberAnakin ; player 2's when both Versus players pick it (optional; else its own)
 Scale=1                  ; its size (optional; 0.86 makes a Jedi Brute body about as tall as Vader)
 Health=1000              ; its health (optional; the base's: the Jedi Brute 220, Anakin 1000)
 Force=1000               ; the Force it holds (optional; the base's: the Jedi Brute has none, Anakin 1000)
@@ -89,6 +90,7 @@ inside `luke_body_duel`), declared with the body like its other textures. Withou
 `Saber2=` (or the other side's colour) still tells them apart.
 Player 2 can also wear another body: `Mesh2=` (a body under `meshes\chars`, as `Mesh=`, on the same skeleton) is
 player 2's in a mirror duel, with its own textures (its `_duel` ones where it has them).
+`Hilt2=` is player 2's hilt in a mirror duel, as `Hilt=`.
 Its HUD portrait for player 2 is `<portrait>_duel.stx` next to its own (e.g. `hud_face_luke01_duel.stx`), when the
 pack has one.
 

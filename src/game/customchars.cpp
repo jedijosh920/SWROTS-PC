@@ -444,9 +444,11 @@ void __cdecl ApplyBlades(uint8_t* character)
         for (int i = 0; i < 2; ++i)
             std::memcpy(first + i * kWeaponRecordSize + 8, i == 1 && custom->hasSaberLeft ? custom->saberLeft
                 : SaberColourOf(character, *custom), sizeof custom->saber);
-    // its own hilt (a single blade's: a double-bladed one keeps the double hilt the blades need)
-    if (!custom->hilt.empty() && custom->blades != 2 && !first[0])
-        AssignString(first + 4, custom->hilt.c_str());
+    // its own hilt (a single blade's: a double-bladed one keeps the double hilt the blades need); player 2's in a
+    // Versus mirror (Hilt2=) when it has one
+    const std::string& ownHilt = !custom->hilt2.empty() && IsMirrorPlayer2(character) ? custom->hilt2 : custom->hilt;
+    if (!ownHilt.empty() && custom->blades != 2 && !first[0])
+        AssignString(first + 4, ownHilt.c_str());
     if (!custom->blades)
         return;
     const char* hilt = *reinterpret_cast<const char**>(first + 4);
@@ -1298,6 +1300,9 @@ void ReadCharacters(const std::wstring& mods)
         c.hilt = Profile(file, L"Hilt");
         if (!c.hilt.empty() && _strnicmp(c.hilt.c_str(), "Meshes", 6) != 0) // "lsaberluke\lsaberluke" alone too
             c.hilt = "Meshes\\Weapons\\" + c.hilt;
+        c.hilt2 = Profile(file, L"Hilt2");
+        if (!c.hilt2.empty() && _strnicmp(c.hilt2.c_str(), "Meshes", 6) != 0)
+            c.hilt2 = "Meshes\\Weapons\\" + c.hilt2;
         const std::string blades = Profile(file, L"Blades");
         c.blades = _stricmp(blades.c_str(), "single") == 0 ? 1 : _stricmp(blades.c_str(), "double") == 0 ? 2
             : _stricmp(blades.c_str(), "dual") == 0 ? 3 : 0;
