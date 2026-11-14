@@ -22,6 +22,7 @@
 
 #include "core/log.h"
 #include "core/patch.h"
+#include "game/characters.h"
 #include "game/classsetup.h"
 #include "game/devmap.h"
 #include "game/eventtree.h"
@@ -593,6 +594,7 @@ struct ForcePowersChoice {
     const uint8_t* character;
     uint32_t id;
     int powers;
+    bool ownRules; // a Jedi class's own Force rules (not ForceFrom=): its enable bytes written each frame
 };
 std::vector<ForcePowersChoice> g_ForcePowersChosen;
 
@@ -1638,17 +1640,47 @@ void SetCharacterQuiet(const uint8_t* character, bool quiet)
         g_QuietCharacters.emplace_back(character, *reinterpret_cast<const uint32_t*>(character + 4));
 }
 
+// The game's Jedi classes, whose own Force rules read the Jedi set-up's enable bytes (script instance +0x2D9..0x2DF).
+bool JediClass(const std::string& name)
+{
+    static const char* const kJedi[] = { "IAnakin", "IObiwan", "IMace", "IDooku", "IVader", "ISerra", "ICinDrallig",
+        "IOldObiwan", "IYoda", "IJediKnight" };
+    for (const char* jedi : kJedi)
+        if (_stricmp(name.c_str(), jedi) == 0)
+            return true;
+    return false;
+}
+
 bool SetForcePowers(const uint8_t* character, const std::string& powers)
 {
     const CustomCharacter* custom = character ? CustomCharacterOf(character) : nullptr;
-    if (!custom || !custom->forceControls)
+    if (!custom || (!custom->forceControls && !JediClass(custom->base)))
         return false;
     const uint32_t id = *reinterpret_cast<const uint32_t*>(character + 4);
     g_ForcePowersChosen.erase(std::remove_if(g_ForcePowersChosen.begin(), g_ForcePowersChosen.end(),
                                   [&](const ForcePowersChoice& c) { return c.character == character; }),
         g_ForcePowersChosen.end());
-    g_ForcePowersChosen.push_back({ character, id, ForcePowersFrom(powers) });
+    g_ForcePowersChosen.push_back({ character, id, ForcePowersFrom(powers), !custom->forceControls });
     return true;
+}
+
+// A custom character on a Jedi class whose powers a mission chose: its class's own rules (and the computer's, which
+// run them) offer only the powers whose enable bytes are on, so they are written into its script instance (+0x434)
+// every frame (its class's Init and set-ups write them too).
+void ApplyChosenForcePowers()
+{
+    if (std::none_of(g_ForcePowersChosen.begin(), g_ForcePowersChosen.end(),
+            [](const ForcePowersChoice& c) { return c.ownRules; }))
+        return;
+    const std::vector<uint8_t*> level = LevelCharacters();
+    for (const ForcePowersChoice& chosen : g_ForcePowersChosen) {
+        if (!chosen.ownRules || std::find(level.begin(), level.end(), chosen.character) == level.end() ||
+            *reinterpret_cast<const uint32_t*>(chosen.character + 4) != chosen.id)
+            continue;
+        uint8_t* inst = *reinterpret_cast<uint8_t* const*>(chosen.character + 0x434);
+        if (inst)
+            SetPowerFlags(inst, chosen.powers);
+    }
 }
 
 void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameData, const std::wstring& cache)

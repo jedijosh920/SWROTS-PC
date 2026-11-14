@@ -98,6 +98,8 @@ const CustomCharacter* CustomCharacterOf(const uint8_t* character);
 // ForcePowers= ("Push Grip SaberThrow Lightning Heal", any of them; none for ""): a mission's choice, until the next
 // start. False for any other character.
 bool SetForcePowers(const uint8_t* character, const std::string& powers);
+// Each frame of a mission: the powers chosen for custom characters on a Jedi class's own rules, written again.
+void ApplyChosenForcePowers();
 // True for Versus player 2 when both players chose the same fighter (its look's texture suffix "_duel").
 bool IsMirrorPlayer2(const uint8_t* character);
 // The HUD portrait a custom character shows now (player 2's in a Versus mirror, else its own).

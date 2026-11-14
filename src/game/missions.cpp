@@ -889,7 +889,8 @@ int L_pushable(lua_State* L)
 }
 
 // force_powers(c, "Push Grip SaberThrow Lightning Heal"): the Force powers a custom character with the port's Force
-// (ForceFrom=) uses from now on, e.g. a Maul who does not heal; "" for none. False for any other character.
+// (ForceFrom=) or on a Jedi class uses from now on, e.g. a Maul who does not heal; "" for none. False for any other
+// character.
 int L_force_powers(lua_State* L)
 {
     uint8_t* c = CheckCharacter(L, 1);
@@ -3092,6 +3093,7 @@ void MissionFrame()
     if (!player)
         return;
     WalkersFrame();
+    ApplyChosenForcePowers();
     const uint64_t now = GameTime();
     if (!g_InLevelAt)
         g_InLevelAt = now;

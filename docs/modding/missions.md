@@ -217,7 +217,7 @@ level is safe to use: functions on it do nothing, `alive()` and `exists()` are f
 | `side(c, "ally" / "enemy" / "neutral" / "riot")` | changes its side |
 | `ai(c, on)` | its AI on or off (off: it stands still); a `go` it is on no longer switches its AI off when it gets there |
 | `attack(c, target)` | its AI goes after that target |
-| `force_powers(c, powers)` | the Force powers a custom character with the port's Force (`ForceFrom=`) uses from now on, any of `"Push Grip SaberThrow Lightning Heal"` (`""`: none), e.g. a boss who does not heal himself; false for any other character |
+| `force_powers(c, powers)` | the Force powers a custom character uses from now on, any of `"Push Grip SaberThrow Lightning Heal"` (`""`: none), e.g. a boss who does not heal himself: one with the port's Force (`ForceFrom=`), or one on a Jedi class (its own Force rules offer only those; a power its class has no move for stays out of reach); false for any other character |
 | `quiet(c [, on])` | it says no line of its own (battle cries, taunts, grunts), only the script's (`say`); `quiet(c, false)`: as before |
 | `walk(c, marker [, timeout])` | it runs to a marker of `[Markers]` its own way (as the game's AI goes to places) and the script waits until it is there (true) or `timeout` seconds (default 20) passed (false); works in cutscenes too, and for characters whose AI is off (actors): their AI is on for the way, off again once there |
 | `go(c, marker [, fight])` / `going(c, marker)` | the same without waiting (with `fight`, it fights what it meets on the way); whether it is still on its way |
