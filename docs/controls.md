@@ -59,6 +59,9 @@ clicked into the game (which hides and captures the cursor); that click itself, 
 title bar or window buttons, are not game input. Alt alone does not release the mouse (Alt+F4 still
 quits).
 
+To quit without the keyboard, the main menu has **Quit Game** under Features, and so does the screen after the
+title (under New Game and Load Game). Both ask first, in the game's own Yes/No popup.
+
 ## Button prompts
 
 The buttons the game shows (menu footers, tips, the HUD's prompts, the pause screen's combat chart) follow the

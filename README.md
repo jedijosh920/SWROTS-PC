@@ -20,6 +20,9 @@ What's new in each release: [changelog](CHANGELOG.md).
   filtering, a sharp picture on high-DPI displays.
 - Keyboard and mouse, Xbox controllers, and PlayStation controllers (DualShock 4, DualSense) with rumble.
 - Level changes and mission restarts happen in the same window, like on the console.
+- **Quit Game** in the menus, for a way out without Alt+F4 in fullscreen: on the main menu (under Features) and
+  on the screen after the title (under New Game and Load Game). It asks "Are you sure you want to quit the game?"
+  in the game's own Yes/No popup, No first.
 - Mods as loose files: replace textures, models and other game files without rebuilding archives.
 - Yoda as a versus fighter with his own select-screen slot (the game's planned but unfinished
   fighter), and characters a level never had loaded from the rest of the disc.

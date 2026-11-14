@@ -26,6 +26,7 @@
 #include "game/hvv.h"
 #include "game/menus.h"
 #include "game/missionsmenu.h"
+#include "game/quitmenu.h"
 #include "game/resources.h"
 #include "game/roster.h"
 #include "input/controls.h"
@@ -161,6 +162,7 @@ void PatchMainMenuResource(std::vector<uint8_t>& data)
     if (PatchMainMenu(copy))
         data.swap(copy);
     PatchMissionsMainMenu(data); // Single Player > Custom Missions (missionsmenu.cpp)
+    PatchQuitMainMenu(data);     // Features > Quit Game (quitmenu.cpp)
 }
 
 using EventFn = bool(__fastcall*)(uint8_t*, void*, int, int);
