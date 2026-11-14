@@ -2588,6 +2588,14 @@ bool OnlineMatchScreens()
     return s.matchOn && s.phase != net::OnlinePhase::Ended && s.phase != net::OnlinePhase::Off;
 }
 
+// The arena select's Rounds prompt's text is not its footer item alone (the screen has two items named "rounds": the
+// footer's and the Rounds popup's, and the list writes it): in an online match the text itself is none.
+uint32_t RoundsTextRedirect(uint32_t key)
+{
+    static const uint32_t rounds = MenuKey("IDS_ROUNDS"), nothing = MenuKey("IDS_PORT_NOTHING");
+    return key == rounds && OnlineMatchScreens() ? nothing : key;
+}
+
 char __fastcall ArenaListEvent(uint8_t* list, void*, int event, int pad)
 {
     if (OnlineMatchScreens() && (event == kB || event == kRoundsPopup)) {
@@ -2812,6 +2820,8 @@ void InstallOnlineMenu()
     SetMenuText("IDS_PORT_LOST_TEXT", L"The connection to the other player was lost.");
     SetMenuText("IDS_PORT_ONLINE_PASTE", L"Paste");
     SetMenuText("IDS_PORT_KEYBOARD_DONE", L"Done");
+    SetMenuText("IDS_PORT_NOTHING", L"");
+    SetMenuTextRedirect(&RoundsTextRedirect);
     SetMenuText("IDS_PORT_ONLINE_PUBLIC", L"Public Rooms");
     SetMenuText("IDS_PORT_NOTICE_TITLE", L"Online");
     SetMenuText("IDS_PORT_NOTICE_TEXT", L"");

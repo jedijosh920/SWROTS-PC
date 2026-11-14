@@ -661,6 +661,40 @@ the share there on the guest, alive alike, playing the same sequence, how far ea
 guest shows them a few frames behind it, as the transport and its interpolation need: a few units for one walking,
 some twenty for one running) and the players' distances from the host's. The tests read it.
 
+### The guest on the host's time (2026-11-14)
+
+A Versus match between two PCs (the host's at about 50 frames a second, the guest's at 60) showed what the guest's
+play ahead of the host's costs. The guest's own fighter was played at once from its own pad (a round trip ahead of
+the host's game), the other from the host's pad as it came: two fighters on two times, whose hits, grabs and
+reactions the host's game then decided otherwise. In a 60 s duel 74 sequences were started again on the guest and
+its own fighter held to the host's for 600 frames: movements that hesitate, fighters taken back. A state of the
+host's was also applied again on every guest frame without a new one (one in six): the other fighter stepped back.
+
+`[Online] Predict=0` (the default; `SWROTS_ONLINE_PREDICT`): the guest's game plays a level **on the host's time**.
+
+- Each `State` carries the pads the host's game played that frame (`pads[2]`: player 1's, and player 2's as the
+  host had it; protocol 13).
+- On the guest, both fighters are played from those pads (`PadFromServer`: `echoPads`, for ports 0 and 1) for one
+  frame, **then** that state is applied (`playing`): the guest's game computes what the host's did from the same
+  pads, and the state corrects only what parted. Presses of states the guest's frames skip (a slower guest) are kept
+  for the next frame; no state for half a second gives the pads back to the devices.
+- Corrections (`ApplyInto`, a player not `own`): the fields as before; a place less than 45 units off closes by half
+  at each state instead of jumping (the two games' frames are not the same length); another sequence than the
+  host's is started again when the host started one and the guest's has differed for two states, or after three.
+- A state is applied once (in a duel too).
+- The guest's own presses show after a round trip and some three frames (the host's frame, the guest's frame);
+  nothing is taken back. `Predict=1` keeps the play ahead.
+
+The guest logs every ten seconds how far its own play was from the host's states before each correction
+(`following the host's play`: the distance, the states with another sequence, the sequences started again), and both
+games their fighters' steps back and jumps (`motion here`) in a duel as in a mission. Tests on one PC can be made
+two PCs apart: `SWROTS_TEST_LAG_MS` and `SWROTS_TEST_LAG_JITTER_MS` hold each packet, `SWROTS_TEST_FRAME_SLEEP`
+makes a game's frames longer (`follow-test.bat`).
+
+Rollback proper (the guest's own presses at once, the frames since a correction played again) is not what this is:
+it needs the whole game saved and played again several times a frame, which the SyncTest study above measured at
+about 4 ms a save and 6 ms a frame played again with frames that still differed from one play to the next.
+
 ### Phases
 
 1. **Duel state capture/apply** on one PC: the state's size (a few KiB expected), and whether writing it into a
