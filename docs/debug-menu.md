@@ -53,6 +53,7 @@ Up/Down recall earlier commands.
 | `unlockprofile` | the game's developer cheat: unlocks everything in the signed-in profile (story, fighters, arenas, bonus missions, concept art); the game saves it with the profile, so back up `saves\` first to keep your progress |
 | `freecam [on\|off]` | the free camera (see below); alone, turns it on or off |
 | `screenshot [name]` | saves the game's picture as the window shows it, without the debug menu, to `screenshots\<name>.png` (no name: the date and time) |
+| `synctest [<distance> [<every>] \| off]` | netplay's rollback check: every `<every>` frames, back `<distance>` frames and played again; the checksums must come out the same (results in the log, see [netplay](research/netplay.md#phase-1-synctest)); alone, its state |
 | `clear` | empties the console (also the Clear button) |
 | anything else | runs through the game's console: the game's own commands |
 

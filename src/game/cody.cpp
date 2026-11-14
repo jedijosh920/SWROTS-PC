@@ -44,6 +44,7 @@
 #include "game/hvv.h"
 #include "game/meshedit.h"
 #include "game/resources.h"
+#include "kernel/clock.h"
 
 namespace swrots::game {
 
@@ -128,7 +129,7 @@ const float* Position(uint8_t* character)
 
 uint32_t Dice()
 {
-    static uint32_t state = 0x9E3779B9u ^ uint32_t(GetTickCount64());
+    static uint32_t state = 0x9E3779B9u ^ uint32_t(kernel::GameTickCount64());
     state ^= state << 13;
     state ^= state >> 17;
     state ^= state << 5;
@@ -943,9 +944,9 @@ void InstallCody()
     AddClassSequences(&MoveSequences);
     if (FindCustomCharacter("IDroidCommander")) {
         if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kDroidStateManager)), kStateManagerBytes, sizeof kStateManagerBytes) == 0) {
-            static uint8_t* stub = Trampoline(kDroidStateManager, kStateManagerBytes, sizeof kStateManagerBytes);
+            uint8_t* stub = Trampoline(kDroidStateManager, kStateManagerBytes, sizeof kStateManagerBytes);
             g_OriginalDroidStateManager = reinterpret_cast<StateManagerFn>(stub);
-            PatchJump(kDroidStateManager, reinterpret_cast<const void*>(&DroidStateManagerHook));
+            PatchHook(kDroidStateManager, reinterpret_cast<const void*>(&DroidStateManagerHook));
         } else {
             LOG_WARN("Cody: unexpected code at the battle droid's turn; the droid commander has no kit");
         }

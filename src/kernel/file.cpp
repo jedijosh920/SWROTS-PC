@@ -25,6 +25,7 @@
 #include "kernel/exports.h"
 #include "kernel/host_nt.h"
 #include "kernel/kernel.h"
+#include "kernel/sched.h"
 #include "kernel/reboot.h"
 
 namespace swrots::kernel {
@@ -128,12 +129,50 @@ void FileSystemInit(const Paths& paths)
 // Host folder for an Xbox hard disk partition: 1 is the save drive (E:),
 // 3 the utility drive (Z:); the others (the system partition and the other
 // cache partitions) are created under the cache folder if a title uses them.
+static std::wstring g_SessionSaves, g_SessionUtility; // an online match's own (SetSessionDrives)
+
+void SetSessionDrives(const std::wstring& saves, const std::wstring& utility)
+{
+    g_SessionSaves = saves;
+    g_SessionUtility = utility;
+    for (const std::wstring& dir : { saves, utility })
+        if (!dir.empty())
+            CreateDirectoryW(dir.c_str(), nullptr);
+    if (!saves.empty()) {
+        CreateDirectoryW((saves + L"\\TDATA").c_str(), nullptr);
+        CreateDirectoryW((saves + L"\\UDATA").c_str(), nullptr);
+    }
+    LOG_INFO("Drives: the save drive is %ls, the utility drive %ls", (saves.empty() ? g_Saves : saves).c_str(),
+        (utility.empty() ? g_Cache : utility).c_str());
+}
+
+static std::wstring g_DefaultMods, g_DefaultCache; // the PC's own, while a match has its own (SetSessionFolders)
+
+void SetSessionFolders(const std::wstring& mods, const std::wstring& cache)
+{
+    if (g_DefaultMods.empty()) {
+        g_DefaultMods = g_Mods;
+        g_DefaultCache = g_Cache;
+    }
+    g_Mods = mods.empty() ? g_DefaultMods : mods;
+    g_Cache = cache.empty() ? g_DefaultCache : cache;
+    CreateDirectoryW(g_Mods.c_str(), nullptr);
+    CreateDirectoryW(g_Cache.c_str(), nullptr);
+    LOG_INFO("Folders: mods %ls, cache %ls", g_Mods.c_str(), g_Cache.c_str());
+}
+
+std::wstring ModsPath() { return g_Mods; }
+std::wstring CachePath() { return g_Cache; }
+
+std::wstring SaveDrivePath() { return g_SessionSaves.empty() ? g_Saves : g_SessionSaves; }
+std::wstring UtilityDrivePath() { return g_SessionUtility.empty() ? g_Cache : g_SessionUtility; }
+
 static std::wstring PartitionRoot(const std::string& number)
 {
     if (number == "1")
-        return g_Saves;
+        return SaveDrivePath();
     if (number == "3")
-        return g_Cache;
+        return UtilityDrivePath();
     std::wstring root = g_Cache + L"\\partition" + Widen(number);
     CreateDirectoryW(root.c_str(), nullptr);
     return root;
@@ -255,7 +294,7 @@ static NTSTATUS TranslateAttributes(const xbox::OBJECT_ATTRIBUTES* xoa, ::OBJECT
     std::wstring& storage, std::string* xboxPathOut = nullptr)
 {
     std::string xpath = FromObjectString(xoa->ObjectName);
-    HANDLE root = xoa->RootDirectory;
+    HANDLE root = ToHostHandle(xoa->RootDirectory);
 
     if (root == reinterpret_cast<HANDLE>(-3)) { // ObDosDevicesDirectory()
         xpath = "\\??\\" + xpath;
@@ -290,6 +329,7 @@ void ResetLinkHandlesForReboot()
 {
     std::lock_guard<std::mutex> lock(g_PseudoLock);
     g_LinkHandles.clear();
+    g_NextPseudo = 0x7F000000; // the same numbers after each start (netplay: the same on every PC)
 }
 
 static bool IsPseudoHandle(HANDLE h)
@@ -440,8 +480,10 @@ NTSTATUS XBAPI NtCreateFile(HANDLE* FileHandle, ACCESS_MASK DesiredAccess, xbox:
     if (!QuietFileLog(xpath))
         LOG_DEBUG("NtCreateFile '%s' disp %lu opts %08lX -> %08lX handle %p", xpath.c_str(), CreateDisposition, CreateOptions,
             status, status >= 0 ? *FileHandle : nullptr);
-    if (status >= 0)
+    if (status >= 0) {
         TrackGameHandle(*FileHandle);
+        *FileHandle = ToGameHandle(*FileHandle);
+    }
     TraceOpenCallers(xpath, _AddressOfReturnAddress());
     return status;
 }
@@ -452,9 +494,32 @@ NTSTATUS XBAPI NtOpenFile(HANDLE* FileHandle, ACCESS_MASK DesiredAccess, xbox::O
     return NtCreateFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, nullptr, 0, ShareAccess, FILE_OPEN, OpenOptions);
 }
 
+// The deterministic scheduler (kernel/sched.h): an asynchronous read or write is finished before it returns (when
+// the PC finishes it is not deterministic), its event set then, and its completion routine run at the thread's
+// next alertable wait, by the scheduler.
+static NTSTATUS FinishIo(NTSTATUS status, xbox::IO_STATUS_BLOCK* IoStatusBlock, xbox::PIO_APC_ROUTINE ApcRoutine,
+    void* ApcContext)
+{
+    if (status == STATUS_PENDING) {
+        auto* iosb = reinterpret_cast<volatile IO_STATUS_BLOCK*>(IoStatusBlock);
+        while (iosb->Status == STATUS_PENDING)
+            SwitchToThread();
+        status = iosb->Status;
+    }
+    if (ApcRoutine && status >= 0)
+        SchedQueueApc(reinterpret_cast<ApcFunction>(ApcRoutine), ApcContext, IoStatusBlock);
+    return status;
+}
+
 NTSTATUS XBAPI NtReadFile(HANDLE FileHandle, HANDLE Event, xbox::PIO_APC_ROUTINE ApcRoutine, void* ApcContext,
     xbox::IO_STATUS_BLOCK* IoStatusBlock, void* Buffer, ULONG Length, LARGE_INTEGER* ByteOffset)
 {
+    FileHandle = ToHostHandle(FileHandle);
+    Event = ToHostHandle(Event);
+    if (SchedHolding())
+        return FinishIo(Check("NtReadFile", FileHandle, ::NtReadFile(FileHandle, Event, nullptr, nullptr,
+            reinterpret_cast<PIO_STATUS_BLOCK>(IoStatusBlock), Buffer, Length, ByteOffset, nullptr)),
+            IoStatusBlock, ApcRoutine, ApcContext);
     return Check("NtReadFile", FileHandle, ::NtReadFile(FileHandle, Event, reinterpret_cast<PIO_APC_ROUTINE>(ApcRoutine),
         ApcContext, reinterpret_cast<PIO_STATUS_BLOCK>(IoStatusBlock), Buffer, Length, ByteOffset, nullptr));
 }
@@ -462,6 +527,12 @@ NTSTATUS XBAPI NtReadFile(HANDLE FileHandle, HANDLE Event, xbox::PIO_APC_ROUTINE
 NTSTATUS XBAPI NtWriteFile(HANDLE FileHandle, HANDLE Event, xbox::PIO_APC_ROUTINE ApcRoutine, void* ApcContext,
     xbox::IO_STATUS_BLOCK* IoStatusBlock, void* Buffer, ULONG Length, LARGE_INTEGER* ByteOffset)
 {
+    FileHandle = ToHostHandle(FileHandle);
+    Event = ToHostHandle(Event);
+    if (SchedHolding())
+        return FinishIo(Check("NtWriteFile", FileHandle, ::NtWriteFile(FileHandle, Event, nullptr, nullptr,
+            reinterpret_cast<PIO_STATUS_BLOCK>(IoStatusBlock), Buffer, Length, ByteOffset, nullptr)),
+            IoStatusBlock, ApcRoutine, ApcContext);
     return Check("NtWriteFile", FileHandle, ::NtWriteFile(FileHandle, Event, reinterpret_cast<PIO_APC_ROUTINE>(ApcRoutine),
         ApcContext, reinterpret_cast<PIO_STATUS_BLOCK>(IoStatusBlock), Buffer, Length, ByteOffset, nullptr));
 }
@@ -469,6 +540,7 @@ NTSTATUS XBAPI NtWriteFile(HANDLE FileHandle, HANDLE Event, xbox::PIO_APC_ROUTIN
 NTSTATUS XBAPI NtQueryInformationFile(HANDLE FileHandle, xbox::IO_STATUS_BLOCK* IoStatusBlock, void* FileInformation,
     ULONG Length, ULONG FileInformationClass)
 {
+    FileHandle = ToHostHandle(FileHandle);
     switch (FileInformationClass) {
     case xbox::XFileBasicInformation:
     case xbox::XFileStandardInformation:
@@ -489,6 +561,7 @@ NTSTATUS XBAPI NtQueryInformationFile(HANDLE FileHandle, xbox::IO_STATUS_BLOCK* 
 NTSTATUS XBAPI NtSetInformationFile(HANDLE FileHandle, xbox::IO_STATUS_BLOCK* IoStatusBlock, void* FileInformation,
     ULONG Length, ULONG FileInformationClass)
 {
+    FileHandle = ToHostHandle(FileHandle);
     if (FileInformationClass == xbox::XFileRenameInformation) {
         // Xbox: { BOOLEAN ReplaceIfExists; HANDLE RootDirectory; OBJECT_STRING FileName; }
         struct XRename {
@@ -522,6 +595,7 @@ NTSTATUS XBAPI NtSetInformationFile(HANDLE FileHandle, xbox::IO_STATUS_BLOCK* Io
 NTSTATUS XBAPI NtQueryVolumeInformationFile(HANDLE FileHandle, xbox::IO_STATUS_BLOCK* IoStatusBlock, void* FsInformation,
     ULONG Length, ULONG FsInformationClass)
 {
+    FileHandle = ToHostHandle(FileHandle);
     NTSTATUS status = ::NtQueryVolumeInformationFile(FileHandle, reinterpret_cast<PIO_STATUS_BLOCK>(IoStatusBlock),
         FsInformation, Length, FsInformationClass);
     if (status >= 0 && FsInformationClass == 3 /*FileFsSizeInformation*/) {
@@ -635,6 +709,8 @@ NTSTATUS XBAPI NtQueryDirectoryFile(HANDLE FileHandle, HANDLE Event, xbox::PIO_A
     xbox::IO_STATUS_BLOCK* IoStatusBlock, void* FileInformation, ULONG Length, ULONG FileInformationClass,
     xbox::OBJECT_STRING* FileMask, BOOLEAN RestartScan)
 {
+    FileHandle = ToHostHandle(FileHandle);
+    Event = ToHostHandle(Event);
     if (ApcRoutine)
         LOG_WARN("NtQueryDirectoryFile: APC completion not supported");
     if (FileInformationClass != xbox::XFileDirectoryInformation) {
@@ -723,6 +799,7 @@ NTSTATUS XBAPI NtQueryDirectoryFile(HANDLE FileHandle, HANDLE Event, xbox::PIO_A
 
 NTSTATUS XBAPI NtFlushBuffersFile(HANDLE FileHandle, xbox::IO_STATUS_BLOCK* IoStatusBlock)
 {
+    FileHandle = ToHostHandle(FileHandle);
     return Check("NtFlushBuffersFile", FileHandle, ::NtFlushBuffersFile(FileHandle, reinterpret_cast<PIO_STATUS_BLOCK>(IoStatusBlock)));
 }
 
@@ -751,6 +828,7 @@ NTSTATUS XBAPI NtClose(HANDLE Handle)
         if (g_LinkHandles.erase(uintptr_t(Handle)))
             return xbox::X_STATUS_SUCCESS;
     }
+    Handle = ForgetGameHandle(Handle); // the host's (netplay's numbering: the number is free again)
     UntrackGameHandle(Handle);
     return Check("NtClose", Handle, ::NtClose(Handle));
 }

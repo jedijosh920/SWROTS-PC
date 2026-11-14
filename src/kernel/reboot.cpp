@@ -27,6 +27,7 @@
 #include "game/game.h"
 #include "kernel/kernel.h"
 #include "kernel/reboot.h"
+#include "kernel/sched.h"
 
 namespace swrots::kernel {
 
@@ -34,10 +35,14 @@ namespace {
 
 HANDLE g_RebootEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr); // manual reset
 std::atomic<bool> g_Rebooting = false;
+std::atomic<bool> g_RebootRequested = false; // a reboot asked for, until its new game starts
 RebootHandlers g_Handlers;
 
 std::mutex g_HandleLock;
 std::unordered_set<HANDLE> g_GameHandles;
+// Netplay's handles (ToGameHandle): slot i is the game's handle kVirtualHandles + 4 * (i + 1); null when free.
+constexpr uintptr_t kVirtualHandles = 0x10000000;
+std::vector<HANDLE> g_VirtualSlots;
 
 bool InGameImage(DWORD eip) { return eip >= game::kImageBase && eip < game::kImageEnd; }
 
@@ -130,6 +135,7 @@ void CloseGameHandles()
     {
         std::lock_guard<std::mutex> lock(g_HandleLock);
         handles.swap(g_GameHandles);
+        g_VirtualSlots.clear();
     }
     for (HANDLE h : handles) {
         CancelIoEx(h, nullptr); // no late read into memory that is about to be reloaded
@@ -167,6 +173,7 @@ DWORD WINAPI RebootWorker(void* param)
     ResetKernelForReboot();
     ResetEvent(g_RebootEvent);
     g_Rebooting = false;
+    g_RebootRequested = false;
     LOG_INFO("Reboot: starting the game");
     if (g_Handlers.boot)
         g_Handlers.boot(request->launchData.empty() ? nullptr : request->launchData.data());
@@ -194,10 +201,69 @@ bool UntrackGameHandle(HANDLE h)
     return g_GameHandles.erase(h) != 0;
 }
 
-void ExitGameThread() { ExitThread(0); }
+static bool IsVirtualHandle(HANDLE h)
+{
+    const uintptr_t v = uintptr_t(h);
+    return (v & 0xFF000000) == kVirtualHandles && !(v & 3) && v != kVirtualHandles;
+}
+
+HANDLE ToGameHandle(HANDLE host)
+{
+    if (!SchedActive() || !host || host == INVALID_HANDLE_VALUE)
+        return host;
+    std::lock_guard<std::mutex> lock(g_HandleLock);
+    size_t i = 0;
+    while (i < g_VirtualSlots.size() && g_VirtualSlots[i]) // the lowest free number, as Windows does
+        ++i;
+    if (i == g_VirtualSlots.size())
+        g_VirtualSlots.push_back(nullptr);
+    g_VirtualSlots[i] = host;
+    return reinterpret_cast<HANDLE>(kVirtualHandles + 4 * (i + 1));
+}
+
+HANDLE ToHostHandle(HANDLE handle)
+{
+    if (!IsVirtualHandle(handle))
+        return handle;
+    const size_t i = (uintptr_t(handle) - kVirtualHandles) / 4 - 1;
+    std::lock_guard<std::mutex> lock(g_HandleLock);
+    return i < g_VirtualSlots.size() ? g_VirtualSlots[i] : nullptr;
+}
+
+HANDLE ForgetGameHandle(HANDLE handle)
+{
+    if (!IsVirtualHandle(handle))
+        return handle;
+    const size_t i = (uintptr_t(handle) - kVirtualHandles) / 4 - 1;
+    std::lock_guard<std::mutex> lock(g_HandleLock);
+    if (i >= g_VirtualSlots.size())
+        return nullptr;
+    HANDLE host = g_VirtualSlots[i];
+    g_VirtualSlots[i] = nullptr;
+    return host;
+}
+
+void ExitGameThread()
+{
+    SchedThreadEnd(); // the baton goes on (deterministic scheduler)
+    ExitThread(0);
+}
+
+HANDLE RebootEvent() { return g_RebootEvent; }
 
 DWORD GameWait(DWORD count, const HANDLE* handles, BOOL waitAll, DWORD ms, BOOL alertable)
 {
+    HANDLE host[MAXIMUM_WAIT_OBJECTS];
+    if (count && count <= MAXIMUM_WAIT_OBJECTS) { // the game's handles (netplay's numbering) as the host's
+        for (DWORD i = 0; i < count; ++i)
+            host[i] = ToHostHandle(handles[i]);
+        handles = host;
+    }
+    if (SchedHolding()) { // the deterministic scheduler: the wait is a turn handed over
+        if (g_Rebooting)
+            ExitGameThread();
+        return SchedWait(count, handles, waitAll, ms, alertable);
+    }
     if (!CurrentThread())
         return count ? WaitForMultipleObjectsEx(count, handles, waitAll, ms, alertable) : SleepEx(ms, alertable);
     if (count == 0) {
@@ -238,6 +304,12 @@ DWORD GameWait(DWORD count, const HANDLE* handles, BOOL waitAll, DWORD ms, BOOL 
 
 void RebootInProcess(const void* launchData)
 {
+    // One at a time: two game threads may ask at once (an online guest following the host's launch while its own game
+    // launches the same level); the second only stops, the first's reboot takes the game's threads down.
+    if (g_RebootRequested.exchange(true)) {
+        LOG_INFO("Reboot: one is already on its way; this thread stops");
+        ExitGameThread();
+    }
     auto* request = new RebootRequest();
     if (launchData) {
         auto* p = static_cast<const uint8_t*>(launchData);

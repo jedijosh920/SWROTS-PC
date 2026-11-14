@@ -23,6 +23,7 @@
 #include "game/resources.h"
 #include "input/controls.h"
 #include "kernel/kernel.h"
+#include "kernel/clock.h"
 
 namespace swrots::game {
 
@@ -876,7 +877,7 @@ SpawnChoice ChooseSpawn(uint8_t* player)
     uint8_t* clone = nullptr;
     Side side = PlayerSide(player, clone);
     if (side == Side::Unknown) {
-        if (GetTickCount64() - g_State.levelSeen < kSideWaitMs)
+        if (kernel::GameTickCount64() - g_State.levelSeen < kSideWaitMs)
             return {}; // not yet: the level's characters are still loading
         side = _strnicmp(TypeName(player), "IVader", 6) == 0 ? Side::Sith : Side::Jedi;
     }
@@ -1012,7 +1013,7 @@ void Leash(uint8_t* player, ULONGLONG now)
 // player 2.
 bool SharedCamera(float m[16], float fov)
 {
-    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG now = kernel::GameTickCount64();
     const float dt = g_LastCameraTick ? std::min(float(now - g_LastCameraTick) / 1000.0f, 0.1f) : 0.0f;
     g_LastCameraTick = now;
     float target[3] = {};
@@ -1074,7 +1075,7 @@ void Respawn(uint8_t* player)
     PlaceSafely(player);
     Field<float>(g_State.p2, kCharacterHealth) = Field<float>(g_State.p2, kCharacterMaxHealth);
     Field<uint8_t>(g_State.p2, kCharacterInvincible) = 1;
-    g_State.shieldUntil = GetTickCount64() + kShieldMs;
+    g_State.shieldUntil = kernel::GameTickCount64() + kShieldMs;
     LOG_INFO("Co-op: player 2 came back beside player 1");
 }
 
@@ -1135,7 +1136,7 @@ void ClonePlayer2Shooting(uint8_t* script, uint8_t* instance)
         }
         return;
     }
-    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG now = kernel::GameTickCount64();
     if (!g_CloneShooting) {
         reinterpret_cast<void(__cdecl*)(const char*, int, int, float, int, int, int, int, int)>(uintptr_t(kScriptPlayLayer))(
             kCloneShootingLoop, 0, 0, 1.0f, 5, 2, 0, 1, 2);
@@ -1239,33 +1240,33 @@ void InstallCoop()
         std::memcpy(stub + length + 1, &rel, 4);
         return stub;
     };
-    static uint8_t* changeHealthStub = trampoline(kChangeHealth, kChangeHealthBytes, sizeof(kChangeHealthBytes));
-    static uint8_t* instantKillStub = trampoline(kInstantKill, kInstantKillBytes, sizeof(kInstantKillBytes));
+    uint8_t* changeHealthStub = trampoline(kChangeHealth, kChangeHealthBytes, sizeof(kChangeHealthBytes));
+    uint8_t* instantKillStub = trampoline(kInstantKill, kInstantKillBytes, sizeof(kInstantKillBytes));
     g_OriginalChangeHealth = reinterpret_cast<ChangeHealthFn>(changeHealthStub);
     g_OriginalInstantKill = reinterpret_cast<InstantKillFn>(instantKillStub);
-    PatchJump(kChangeHealth, reinterpret_cast<const void*>(&ChangeHealthHook));
+    PatchHook(kChangeHealth, reinterpret_cast<const void*>(&ChangeHealthHook));
     // The pause screen's Cooperative Mod entry and its screen.
     InstallCoopMenus();
-    PatchJump(kInstantKill, reinterpret_cast<const void*>(&InstantKillHook));
+    PatchHook(kInstantKill, reinterpret_cast<const void*>(&InstantKillHook));
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kCloneStateManager)), kCloneStateManagerBytes,
             sizeof(kCloneStateManagerBytes)) == 0) {
-        static uint8_t* stateManagerStub = trampoline(kCloneStateManager, kCloneStateManagerBytes, sizeof(kCloneStateManagerBytes));
+        uint8_t* stateManagerStub = trampoline(kCloneStateManager, kCloneStateManagerBytes, sizeof(kCloneStateManagerBytes));
         g_OriginalCloneStateManager = reinterpret_cast<StateManagerFn>(stateManagerStub);
-        PatchJump(kCloneStateManager, reinterpret_cast<const void*>(&CloneStateManagerHook));
+        PatchHook(kCloneStateManager, reinterpret_cast<const void*>(&CloneStateManagerHook));
     } else {
         LOG_WARN("Co-op: unexpected code at the clone trooper's script; player 2's clone does not shoot");
     }
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kDismemberNotify)), kDismemberNotifyBytes, sizeof(kDismemberNotifyBytes)) == 0) {
-        static uint8_t* dismemberStub = trampoline(kDismemberNotify, kDismemberNotifyBytes, sizeof(kDismemberNotifyBytes));
+        uint8_t* dismemberStub = trampoline(kDismemberNotify, kDismemberNotifyBytes, sizeof(kDismemberNotifyBytes));
         g_OriginalDismemberNotify = reinterpret_cast<DismemberNotifyFn>(dismemberStub);
-        PatchJump(kDismemberNotify, reinterpret_cast<const void*>(&DismemberNotifyHook));
+        PatchHook(kDismemberNotify, reinterpret_cast<const void*>(&DismemberNotifyHook));
     } else {
         LOG_WARN("Co-op: unexpected code at the dismemberment notice; player 2 can lose limbs");
     }
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kDismemberCut)), kDismemberCutBytes, sizeof(kDismemberCutBytes)) == 0) {
-        static uint8_t* cutStub = trampoline(kDismemberCut, kDismemberCutBytes, sizeof(kDismemberCutBytes));
+        uint8_t* cutStub = trampoline(kDismemberCut, kDismemberCutBytes, sizeof(kDismemberCutBytes));
         g_OriginalDismemberCut = reinterpret_cast<DismemberCutFn>(cutStub);
-        PatchJump(kDismemberCut, reinterpret_cast<const void*>(&DismemberCutHook));
+        PatchHook(kDismemberCut, reinterpret_cast<const void*>(&DismemberCutHook));
     } else {
         LOG_WARN("Co-op: unexpected code at the dismemberment notice; player 2 can lose limbs");
     }
@@ -1284,7 +1285,7 @@ void CoopFrame()
         g_State.reason = "no story mission is running";
         return;
     }
-    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG now = kernel::GameTickCount64();
     FollowPlayer1(player, now);
     if (!g_State.levelSeen)
         g_State.levelSeen = now;
@@ -1529,6 +1530,12 @@ void SetDamageObserver(DamageObserver observer)
     g_DamageObserver = observer;
 }
 
+void ChangeHealthDirect(uint8_t* character, float change)
+{
+    if (character && g_OriginalChangeHealth)
+        g_OriginalChangeHealth(character, nullptr, change, 0, 0);
+}
+
 void SetDamageFilter(DamageFilter filter)
 {
     g_DamageFilter = filter;
@@ -1540,7 +1547,26 @@ void CoopCharacterRemoving(uint8_t* character)
         return;
     Unregister("the character is removed", true);
     g_State.p2 = nullptr;
-    g_State.respawnAt = GetTickCount64() + kRespawnDelayMs;
+    g_State.respawnAt = kernel::GameTickCount64() + kRespawnDelayMs;
+}
+
+uint8_t* GamePlayerSlot(int slot)
+{
+    uint8_t* manager = Manager();
+    if (!manager || slot < 0 || slot > 1 || Field<int>(manager, kManagerPlayerCount) <= slot)
+        return nullptr;
+    return ObjectById(Field<uint32_t>(manager, kManagerPlayerIds + 4 * uint32_t(slot)));
+}
+
+uint8_t* GamePlayer2()
+{
+    if (uint8_t* p2 = CoopPlayer2())
+        return p2;
+    uint8_t* manager = Manager();
+    if (!manager || Field<int>(manager, kManagerPlayerCount) < 2)
+        return nullptr;
+    uint8_t* other = ObjectById(Field<uint32_t>(manager, kManagerPlayerIds + 4));
+    return other && other != PlayerObject() ? other : nullptr;
 }
 
 uint8_t* CoopPlayer2()

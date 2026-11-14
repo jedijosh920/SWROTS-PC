@@ -39,6 +39,7 @@
 #include "game/resources.h"
 #include "input/controls.h"
 #include "kernel/kernel.h"
+#include "kernel/clock.h"
 
 namespace swrots::game {
 
@@ -361,7 +362,7 @@ Image Label(const std::string& text, float scale)
 
 // --- The key caps ----------------------------------------------------------------------------------------------------
 enum class Look { Menu, Tip };
-enum class Kind { Text, Mouse, Arrows, Blank };
+enum class Kind { Text, Mouse, Arrows, Blank, Pill };
 
 struct CapSpec {
     Look look = Look::Menu;
@@ -371,7 +372,8 @@ struct CapSpec {
     std::string Name() const
     {
         std::string n = look == Look::Menu ? "m_" : "t_";
-        n += kind == Kind::Text ? "k" : kind == Kind::Mouse ? "mouse" : kind == Kind::Arrows ? "arrows" : "blank";
+        n += kind == Kind::Text ? "k" : kind == Kind::Mouse ? "mouse" : kind == Kind::Arrows ? "arrows" :
+             kind == Kind::Pill ? "pill" : "blank";
         if (kind == Kind::Mouse)
             n += std::to_string(mouse);
         for (char c : text) // a file name: letters and digits as they are, the rest by number
@@ -464,6 +466,21 @@ Image MakeCap(const CapSpec& spec)
         }
         return img;
     }
+    if (spec.kind == Kind::Pill) { // a controller's small round button (Start, Back): a light pill, its name in dark
+        Image label = Label(spec.text, 0.5f);
+        for (Colour& c : label.px)
+            c.r = c.g = c.b = 0.08f;
+        const int w = std::max(32, (label.w + 14 + 3) / 4 * 4);
+        const int texture = w <= 32 ? 32 : w <= 64 ? 64 : 128;
+        Image img(texture, 32);
+        const int ox = (texture - w) / 2;
+        Image glow(img.w, img.h);
+        RoundRect(glow, float(ox + 2), 6, float(ox + w - 3), 25, 9, Rgba(164, 198, 246, 200));
+        Over(img, Blurred(glow, 1), 0, 0);
+        OutlinedRoundRect(img, float(ox + 4), 8, float(ox + w - 5), 23, 7, Rgba(226, 230, 236), Rgba(150, 180, 220));
+        Over(img, label, ox + (w - label.w) / 2, std::max(0, 16 - label.h / 2));
+        return img;
+    }
     const Image label = Label(spec.text, spec.text.size() <= 2 ? 0.72f : 0.62f);
     const int w = std::max(32, (label.w + 14 + 3) / 4 * 4);
     const int texture = w <= 32 ? 32 : w <= 64 ? 64 : 128;
@@ -521,6 +538,7 @@ std::wstring g_Cache;
 struct Cap {
     void* handle = nullptr;
     int w = 32, h = 32;
+    int left = 0, right = 32; // its drawn part's columns (the picture is wider for a long label)
     bool tried = false;
 };
 std::unordered_map<std::string, Cap> g_Caps; // this start's, by name
@@ -552,6 +570,15 @@ const Cap* CapOf(const CapSpec& spec)
     cap.handle = LoadPictureFile(("interfc\\port_prompts\\" + name).c_str());
     cap.w = img.w;
     cap.h = img.h;
+    cap.left = img.w;
+    cap.right = 0;
+    for (int x = 0; x < img.w; ++x)
+        for (int y = 0; y < img.h; ++y)
+            if (img.at(x, y).a > 0.05f) {
+                cap.left = std::min(cap.left, x);
+                cap.right = std::max(cap.right, x + 1);
+                break;
+            }
     if (!cap.handle)
         LOG_WARN("Prompts: the key cap %s did not load", name.c_str());
     return cap.handle ? &cap : nullptr;
@@ -871,7 +898,7 @@ uint32_t __fastcall DrawQuadHook(void* self, void*, const float* topLeft, const 
     const uintptr_t from = reinterpret_cast<uintptr_t>(_ReturnAddress());
     const bool keyboard = input::KeyboardPrompts();
     static ULONGLONG lastSync = 0;
-    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG now = kernel::GameTickCount64();
     if (now - lastSync >= 100) { // the tip table, a few times a second
         lastSync = now;
         __try {
@@ -959,7 +986,7 @@ void InstallPrompts(const std::wstring& cache)
     patch(3, reinterpret_cast<const void*>(&ReleaseHook));
     patch(5, reinterpret_cast<const void*>(&DrawQuadHook));
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kTextureOf)), kTextureOfBytes, sizeof kTextureOfBytes) == 0) {
-        static uint8_t* stub = [] { // once: the port's memory outlives the game's restarts
+        uint8_t* stub = [] { // made again at every start (ResetStubsForBoot)
             uint8_t* s = AllocStub(sizeof kTextureOfBytes + 5);
             std::memcpy(s, kTextureOfBytes, sizeof kTextureOfBytes);
             s[sizeof kTextureOfBytes] = 0xE9;
@@ -968,9 +995,25 @@ void InstallPrompts(const std::wstring& cache)
             return s;
         }();
         g_OriginalTextureOf = reinterpret_cast<TextureOfFn>(stub);
-        PatchJump(kTextureOf, reinterpret_cast<const void*>(&TextureOfHook));
+        PatchHook(kTextureOf, reinterpret_cast<const void*>(&TextureOfHook));
     }
     SetMenuTextRedirect(&RedirectText);
+}
+
+bool ButtonPicture(bool keyboard, const char* label, void*& picture, int& width, int& left, int& right)
+{
+    CapSpec spec;
+    spec.look = Look::Menu;
+    spec.kind = keyboard ? Kind::Text : Kind::Pill;
+    spec.text = label;
+    const Cap* cap = CapOf(spec);
+    if (!cap)
+        return false;
+    picture = cap->handle;
+    width = cap->w;
+    left = cap->left;
+    right = cap->right;
+    return true;
 }
 
 } // namespace swrots::game

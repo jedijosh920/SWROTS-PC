@@ -25,6 +25,7 @@
 #include "debug/menu.h"
 #include "input/controls.h"
 #include "input/playstation.h"
+#include "kernel/reboot.h"
 #include "game/game.h"
 #include "xapi/xapi.h"
 
@@ -119,10 +120,13 @@ static std::vector<Source> Sources()
 
 // Co-op (SetCoopInput): whether the keyboard alone is player 1, the host controllers then starting at port 1.
 static std::atomic<bool> g_CoopInput = false;
+// An online match (SetOnlinePorts): ports 0 and 1 are connected on both PCs whatever their devices, everything on
+// this PC plays its player (sampled as port 0), and player 2's shooting comes from the frame's own input.
+static std::atomic<bool> g_OnlinePorts = false;
 
 static bool KeyboardAlone(size_t controllers)
 {
-    if (!g_CoopInput)
+    if (!g_CoopInput || g_OnlinePorts)
         return false;
     const int mode = GetSettings().coopInput;
     return mode == 1 || (mode == 0 && controllers == 1);
@@ -145,8 +149,12 @@ void SetPlayer2ShootButton(bool active)
     g_Player2Shoot = active;
 }
 
+static std::atomic<bool> g_OnlineShooting = false;
+
 bool Player2Shooting()
 {
+    if (g_OnlinePorts)
+        return g_Player2Shoot && g_OnlineShooting;
     return g_Player2Shoot && GetTickCount64() - g_Player2ShotAt < 150;
 }
 
@@ -230,6 +238,8 @@ bool Player2HasController()
 // Connected-port mask: port 0 always, others by host controller presence.
 static ULONG ConnectedMask()
 {
+    if (g_OnlinePorts)
+        return 3;
     ULONG mask = TestPad2() ? 3 : 1;
     const size_t count = Sources().size();
     for (DWORD i = 1; i < 4; ++i)
@@ -709,13 +719,19 @@ static void __stdcall XbInputClose(HANDLE device)
         static_cast<Port*>(device)->open = false;
 }
 
-static DWORD __stdcall XbInputGetState(HANDLE device, XInputState* state)
+static std::atomic<PadSource> g_PadSource{ nullptr };
+
+void SetPadSource(PadSource source) { g_PadSource = source; }
+
+void SetOnlinePorts(bool on)
 {
-    auto* port = static_cast<Port*>(device);
-    if (!port || !port->open)
-        return ERROR_DEVICE_NOT_CONNECTED;
-    DWORD index = DWORD(port - g_Ports);
-    XGamepad g = {};
+    g_OnlinePorts = on;
+    g_OnlineShooting = false;
+}
+
+// What port `index`'s player holds now (the keyboard and mouse, controllers, the test inputs).
+static void ReadPortLive(DWORD index, XGamepad& g)
+{
     if (index == 0 && g_HoldPlayer) { // held back: only A or Start pressed is noted (TakeHeldPress)
         XGamepad held = {};
         if (!RunningInBackground())
@@ -780,6 +796,40 @@ static DWORD __stdcall XbInputGetState(HANDLE device, XInputState* state)
             g.bAnalogButtons[XB_Y] = 0;
         }
     }
+}
+
+static_assert(sizeof(XGamepad) == sizeof(GamePad), "GamePad is XGamepad");
+
+void ReadLivePad(int port, GamePad& pad)
+{
+    XGamepad g = {};
+    if (port >= 0 && port < int(std::size(g_Ports)))
+        ReadPortLive(DWORD(port), g);
+    std::memcpy(&pad, &g, sizeof(pad));
+}
+
+static DWORD __stdcall XbInputGetState(HANDLE device, XInputState* state)
+{
+    auto* port = static_cast<Port*>(device);
+    if (!port || !port->open)
+        return ERROR_DEVICE_NOT_CONNECTED;
+    const DWORD index = DWORD(port - g_Ports);
+    if (const PadSource source = g_PadSource) { // netplay: the frame's input, the same however often it is read
+        GamePad pad;
+        uint32_t packet = 0;
+        if (source(int(index), pad, packet)) {
+            if (index == 1 && g_Player2Shoot) { // co-op's clone trooper: Y held is shooting; the game does not see it
+                g_OnlineShooting = pad.analog[XB_Y] > 0x40;
+                pad.analog[XB_Y] = 0;
+            }
+            std::memcpy(&port->last, &pad, sizeof(pad));
+            state->dwPacketNumber = packet;
+            std::memcpy(&state->Gamepad, &pad, sizeof(pad));
+            return ERROR_SUCCESS;
+        }
+    }
+    XGamepad g = {};
+    ReadPortLive(index, g);
     if (std::memcmp(&g, &port->last, sizeof(g)) != 0) {
         port->last = g;
         ++port->packet;
@@ -808,7 +858,7 @@ static DWORD __stdcall XbInputSetState(HANDLE device, XFeedback* feedback)
     // Rumble completes asynchronously on the Xbox; here it is done at once.
     feedback->Header.dwStatus = ERROR_SUCCESS;
     if (feedback->Header.hEvent)
-        SetEvent(feedback->Header.hEvent);
+        SetEvent(kernel::ToHostHandle(feedback->Header.hEvent));
     return ERROR_IO_PENDING;
 }
 

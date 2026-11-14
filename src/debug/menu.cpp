@@ -28,6 +28,7 @@
 #include "debug/gamefont.h"
 #include "debug/hvvhud.h"
 #include "debug/missionhud.h"
+#include "debug/onlinehud.h"
 #include "game/game.h"
 #include "imgui.h"
 #include "kernel/kernel.h"
@@ -1101,8 +1102,8 @@ void HvvTab()
 
 bool OverlayShown()
 {
-    // HvV's screen, Cody's clones' marks, a mission's screen
-    return g_Ready && (game::HvvActive() || !game::CodyHelpers().empty() || game::MissionActive());
+    // HvV's screen, Cody's clones' marks, a mission's screen, online play's notices
+    return g_Ready && (game::HvvActive() || !game::CodyHelpers().empty() || game::MissionActive() || OnlineHudWanted());
 }
 
 void RenderMenu()
@@ -1138,6 +1139,7 @@ void RenderMenu()
     ImGui::NewFrame();
     DrawHvvHud();
     DrawMissionHud();
+    DrawOnlineHud();
     if (g_Open)
         BuildMenu();
     ImGui::Render();

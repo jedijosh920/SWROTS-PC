@@ -11,4 +11,8 @@ namespace swrots::game {
 // At every boot; `cache`: where the made pictures are kept.
 void InstallPrompts(const std::wstring& cache);
 
+// A button's picture in the menus' look, made the first time: a key cap labelled `label` (`keyboard`) or a controller's
+// small round button (Start, Back) named so. Its texture's width, and its drawn part's columns in it (32 high).
+bool ButtonPicture(bool keyboard, const char* label, void*& picture, int& width, int& left, int& right);
+
 } // namespace swrots::game

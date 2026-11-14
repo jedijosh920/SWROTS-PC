@@ -23,19 +23,30 @@ namespace swrots::debug {
 
 namespace {
 
-constexpr const char* kSheet = "interfc\\fonts\\font_large_white.stx";
-constexpr const char* kBoxes = "interfc\\fonts\\font_large_white.txt";
+// The game's fonts (its shell loads them as 1-7, 0x2DF1A0): the HUD's large one, the menus' small one.
+constexpr const char* kFontNames[] = { "font_large_white", "font_small_white" };
 
 struct Glyph {
     float x0, y0, x1, y1; // in the sheet, pixels
     bool present = false;
 };
 
+struct Font {
+    IDirect3DTexture9* texture = nullptr;
+    bool tried = false;
+    float sheetW = 0, sheetH = 0, lineHeight = 37;
+    Glyph glyphs[256];
+};
+
 IDirect3DDevice9* g_Device = nullptr;
-IDirect3DTexture9* g_Texture = nullptr;
-bool g_Tried = false;
-float g_SheetW = 0, g_SheetH = 0, g_LineHeight = 37;
-Glyph g_Glyphs[256];
+Font g_Fonts[2];
+int g_Current = 0; // the font the calls below use (set by each public call)
+#define g_Texture g_Fonts[g_Current].texture
+#define g_Tried g_Fonts[g_Current].tried
+#define g_SheetW g_Fonts[g_Current].sheetW
+#define g_SheetH g_Fonts[g_Current].sheetH
+#define g_LineHeight g_Fonts[g_Current].lineHeight
+#define g_Glyphs g_Fonts[g_Current].glyphs
 
 bool Load()
 {
@@ -44,6 +55,10 @@ bool Load()
     if (g_Tried || !g_Device)
         return false;
     g_Tried = true;
+    const std::string base = std::string("interfc\\fonts\\") + kFontNames[g_Current];
+    const std::string sheetName = base + ".stx", boxesName = base + ".txt";
+    const char* kSheet = sheetName.c_str();
+    const char* kBoxes = boxesName.c_str();
     std::vector<uint8_t> sheet, boxes;
     if (!game::ReadDiscResource(kSheet, sheet) || !game::ReadDiscResource(kBoxes, boxes) || sheet.size() < 0x40 ||
         std::memcmp(sheet.data(), "STX", 3) != 0) {
@@ -127,10 +142,17 @@ constexpr float kGap = 2.0f; // between letters, in sheet pixels
 
 } // namespace
 
-bool GameFontReady() { return Load(); }
+bool GameFontReady() { g_Current = 0; return Load(); }
 
 float GameFontWidth(float height, const std::string& text)
 {
+    g_Current = 0;
+    return GameFontWidthOf(GameFont::Hud, height, text);
+}
+
+float GameFontWidthOf(GameFont font, float height, const std::string& text)
+{
+    g_Current = int(font);
     if (!Load())
         return 0;
     const float scale = height / g_LineHeight;
@@ -146,6 +168,13 @@ float GameFontWidth(float height, const std::string& text)
 bool GameFontText(ImDrawList* draw, const ImVec2& at, float height, unsigned colour, const std::string& text,
     bool shadow)
 {
+    return GameFontTextOf(GameFont::Hud, draw, at, height, colour, text, shadow);
+}
+
+bool GameFontTextOf(GameFont font, ImDrawList* draw, const ImVec2& at, float height, unsigned colour,
+    const std::string& text, bool shadow)
+{
+    g_Current = int(font);
     if (!Load())
         return false;
     const float scale = height / g_LineHeight;
@@ -174,14 +203,17 @@ bool GameFontText(ImDrawList* draw, const ImVec2& at, float height, unsigned col
 void GameFontDeviceCreated(IDirect3DDevice9* device)
 {
     g_Device = device;
-    g_Tried = false;
+    for (Font& f : g_Fonts)
+        f.tried = false;
 }
 
 void GameFontDeviceReleasing()
 {
-    if (g_Texture)
-        g_Texture->Release();
-    g_Texture = nullptr;
+    for (Font& f : g_Fonts) {
+        if (f.texture)
+            f.texture->Release();
+        f.texture = nullptr;
+    }
     g_Device = nullptr;
 }
 

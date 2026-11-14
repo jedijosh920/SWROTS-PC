@@ -15,6 +15,7 @@
 #include "core/icon.h"
 #include "core/install.h"
 #include "core/log.h"
+#include "core/patch.h"
 #include "core/settings.h"
 #include "core/window.h"
 #include "core/xbe.h"
@@ -36,6 +37,7 @@
 #include "game/hvv.h"
 #include "game/missions.h"
 #include "game/missionsmenu.h"
+#include "game/onlinemenu.h"
 #include "game/hvvmenu.h"
 #include "game/menus.h"
 #include "game/prompts.h"
@@ -48,6 +50,10 @@
 #include "kernel/kernel.h"
 #include "kernel/mm.h"
 #include "kernel/reboot.h"
+#include "kernel/sched.h"
+#include "net/duelstate.h"
+#include "net/rollback.h"
+#include "net/session.h"
 #include "xapi/xapi.h"
 #include "version.h"
 
@@ -172,7 +178,12 @@ static BootConfig g_Boot;
 // On the first boot and after each in-process reboot (kernel/reboot.cpp).
 static void StartGame(const void* launchData)
 {
+    ResetStubsForBoot(); // the same stubs at the same places at every start (netplay)
     kernel::BootInit(launchData);
+    if (kernel::SchedActive()) { // a netplay match's start: the sound model from the start too
+        audio::SetDeterministic(true);
+        kernel::SetSchedTurnHook(&audio::OnFrame); // its streams move on with the fixed clock, at every turn
+    }
     kernel::InstallThunks(g_Xbe.KernelThunkAddress());
     kernel::InstallFsPatches();
     xapi::InstallHooks();
@@ -180,7 +191,8 @@ static void StartGame(const void* launchData)
     game::InstallDevOptions(g_Boot.debugDisplays);
     game::InstallGameFixes();
     game::InstallClassSetup();
-    game::InstallCustomCharacters(g_Boot.paths.mods, g_Boot.paths.gameData, g_Boot.paths.cache);
+    const std::wstring mods = kernel::ModsPath(), cache = kernel::CachePath(); // an online match's own
+    game::InstallCustomCharacters(mods, g_Boot.paths.gameData, cache);
     game::InstallCody();
     game::InstallRevan();
     game::InstallVersus();
@@ -188,15 +200,20 @@ static void StartGame(const void* launchData)
     game::InstallAnimationAliases();
     game::InstallCharacters();
     game::InstallMenus();
-    game::InstallPrompts(g_Boot.paths.cache);
+    // The keyboard's button prompts load their own pictures through the game (its allocations and file reads): not in
+    // a netplay match, where the game must run the same on both PCs (one may play with the keyboard, the other not).
+    if (!kernel::SchedActive())
+        game::InstallPrompts(cache);
     game::InstallCoop();
-    game::InstallCustomMaps(g_Boot.paths.mods);
-    game::InstallDevMap(g_Boot.paths.gameData, g_Boot.paths.mods);
+    game::InstallCustomMaps(mods);
+    game::InstallDevMap(g_Boot.paths.gameData, mods);
     game::InstallHvv();
     game::InstallHvvMenu();
     game::InstallMissions(g_Boot.paths.mods);
     game::InstallMissionsMenu();
-    game::InstallResourceHooks(g_Boot.paths.gameData, g_Boot.paths.mods, g_Boot.paths.cache, g_Boot.dumpDir,
+    game::InstallOnlineMenu();
+    net::InstallSequenceHold();
+    game::InstallResourceHooks(g_Boot.paths.gameData, mods, cache, g_Boot.dumpDir,
         g_Boot.logResources);
     game::InstallFreeCamera();
     audio::InitXboxGlobals();
@@ -218,6 +235,8 @@ static void StartGame(const void* launchData)
 // In-process reboot, once the old instance's threads are gone.
 static void ResetRuntime()
 {
+    net::ResetRollbackForReboot();
+    net::OnlineReboot();
     audio::ResetForReboot();
     d3d::ResetForReboot();
     input::ResetPortsForReboot();
@@ -246,14 +265,41 @@ static void Run(void* reserveBase, unsigned reserveSize, void* contiguousBase, u
     // continues it.
     const std::wstring logDir = exeDir + L"\\logs";
     CreateDirectoryW(logDir.c_str(), nullptr);
-    const std::wstring logPath = logDir + L"\\swrots.log";
+    // Test switch SWROTS_INSTANCE=<name>: a second copy of the game running from the same folder (online tests on one
+    // PC) has its own log (swrots.<name>.log) and cache folder (cache.<name>).
+    // A copy started while another runs from the same folder (two copies on one PC, e.g. trying online play alone)
+    // takes the next free name itself ("2", "3"...): two copies sharing the log, cache and online play's folder
+    // break each other (one's match start deletes the other's match folder).
+    wchar_t instance[64] = {};
+    GetEnvironmentVariableW(L"SWROTS_INSTANCE", instance, 64);
+    {
+        std::wstring key = exeDir;
+        for (wchar_t& c : key)
+            c = c == L'\\' || c == L':' ? L'_' : wchar_t(towlower(c));
+        for (int n = 1; n <= 8; ++n) {
+            const std::wstring name = instance[0] ? std::wstring(instance) : (n == 1 ? std::wstring() : std::to_wstring(n));
+            HANDLE mutex = CreateMutexW(nullptr, TRUE, (L"Local\\SWROTS-PC-" + key + L"-" + name).c_str());
+            const bool taken = mutex && GetLastError() == ERROR_ALREADY_EXISTS;
+            if (!taken || instance[0]) { // kept for the process's life
+                if (!instance[0] && !name.empty()) {
+                    wcsncpy_s(instance, name.c_str(), _TRUNCATE);
+                    SetEnvironmentVariableW(L"SWROTS_INSTANCE", instance); // for the rest (online play's folders)
+                }
+                break;
+            }
+            CloseHandle(mutex);
+        }
+    }
+    const std::wstring suffix = instance[0] ? std::wstring(L".") + instance : std::wstring();
+    const std::wstring logPath = logDir + L"\\swrots" + suffix + L".log";
     const bool relaunch = wcsstr(GetCommandLineW(), L"--relaunch") != nullptr;
     if (!relaunch)
-        MoveFileExW(logPath.c_str(), (logDir + L"\\swrots.previous.log").c_str(), MOVEFILE_REPLACE_EXISTING);
+        MoveFileExW(logPath.c_str(), (logDir + L"\\swrots" + suffix + L".previous.log").c_str(), MOVEFILE_REPLACE_EXISTING);
     LogInit(logPath.c_str(), console, relaunch);
     if (relaunch)
         LOG_INFO("---- The game was restarted to reboot (fallback) ----");
     LOG_INFO("Star Wars: Episode III - Revenge of the Sith (PC) starting, SWROTS-PC %s", SWROTS_VERSION);
+    LOG_INFO("core.dll at %p", static_cast<void*>(GetModuleHandleW(L"core.dll"))); // fixed for netplay: 60000000
     LogSystem();
     LoadSettings(ini);
 
@@ -279,7 +325,7 @@ static void Run(void* reserveBase, unsigned reserveSize, void* contiguousBase, u
         paths.saves = testSaves;
         CreateDirectoryW(testSaves, nullptr);
     }
-    paths.cache = exeDir + L"\\cache";
+    paths.cache = exeDir + L"\\cache" + suffix;
     paths.mods = exeDir + L"\\mods";
     paths.logs = logDir;
     LOG_INFO("Game data: %ls", paths.gameData.c_str());

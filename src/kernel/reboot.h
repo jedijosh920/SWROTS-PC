@@ -29,6 +29,15 @@ DWORD GameWait(DWORD count, const HANDLE* handles, BOOL waitAll, DWORD ms, BOOL 
 void TrackGameHandle(HANDLE h);
 bool UntrackGameHandle(HANDLE h);
 
+// The handles the game sees. While the deterministic scheduler runs (netplay, kernel/sched.h) they are numbered in
+// the order the game made them (0x10000004, 0x10000008..., the lowest free number first), not the host's, whose
+// values depend on everything else the process did: two PCs' games then hold the same values. Otherwise the host's.
+// ToGameHandle: a new handle for the game; ToHostHandle: the host's for one the game passes (others as they are;
+// null for a closed one, which Windows refuses); ForgetGameHandle: the same, and the number is free again (NtClose).
+HANDLE ToGameHandle(HANDLE host);
+HANDLE ToHostHandle(HANDLE handle);
+HANDLE ForgetGameHandle(HANDLE handle);
+
 // Implemented by the kernel modules: wake threads parked in host waits (the DPC thread),
 // and release what the old instance created (ke.cpp, thread.cpp, mm.cpp, file.cpp).
 void WakeKernelThreads();

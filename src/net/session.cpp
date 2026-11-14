@@ -1,0 +1,3626 @@
+// Online play in lockstep (see session.h).
+
+#include "net/session.h"
+
+#include <windows.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <map>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+#include "core/log.h"
+#include "core/settings.h"
+#include "game/characters.h"
+#include "game/coop.h"
+#include "game/hvv.h"
+#include "game/hvvmenu.h"
+#include "game/menus.h"
+#include "game/onlinemenu.h"
+#include "game/roster.h"
+#include "game/versus.h"
+#include "input/controls.h"
+#include "kernel/clock.h"
+#include "kernel/kernel.h"
+#include "kernel/sched.h"
+#include "net/duelstate.h"
+#include "net/props.h"
+#include "net/transport.h"
+#include "net/upnp.h"
+
+#include "version.h"
+
+namespace swrots::net {
+
+namespace {
+
+using Clock = std::chrono::steady_clock;
+
+constexpr uint32_t kMagic = 0x4E525753; // 'SWRN'
+constexpr uint16_t kProtocol = 13; // 2: the players' names; 3: client/server matches; 4: the arena's picker; 5: props; 6: a public room;
+                                  // 7: the room's name, the players' Ready; 8: Versus's time limit (the room, the duel's clock); 9: Cooperative's characters;
+                                  // 10: Cooperative's Restart/Quit vote; 11: the guest's vote its own;
+                                  // 12: the host's spawned characters' classes (the guest makes those it lacks);
+                                  // 13: the pads the host's game played, in each state (the guest plays them)
+constexpr uint16_t kDefaultPort = 27960;
+constexpr uint32_t kHistory = 512;      // frames of inputs kept (a power of two)
+constexpr uint32_t kMaxSend = 48;       // inputs in one packet at most
+constexpr uint32_t kChunk = 1024;       // bytes of the package in one packet
+constexpr uint32_t kHashEveryDefault = 60; // frames between two checks that the games have not parted
+
+// SWROTS_ONLINE_CHECK_EVERY=<frames> (diagnostics): checks more often, to find the first frame that parts.
+// [Online] Mode: "server" (the default: the host's game is the match, the guest's follows its state) or "lockstep"
+// (both games computed alike, the deterministic scheduler). SWROTS_ONLINE_MODE overrides it.
+bool ServerModeWanted()
+{
+    char v[32] = "";
+    if (!GetEnvironmentVariableA("SWROTS_ONLINE_MODE", v, sizeof(v))) {
+        wchar_t path[MAX_PATH];
+        GetModuleFileNameW(nullptr, path, MAX_PATH);
+        std::wstring ini = path;
+        ini = ini.substr(0, ini.find_last_of(L"\\/")) + L"\\settings.ini";
+        wchar_t w[32] = L"";
+        GetPrivateProfileStringW(L"Online", L"Mode", L"server", w, 32, ini.c_str());
+        for (int i = 0; i < 31 && w[i]; ++i)
+            v[i] = char(w[i]);
+    }
+    return _stricmp(v, "lockstep") != 0;
+}
+
+// [Online] Predict (SWROTS_ONLINE_PREDICT): how the guest's game plays a level.
+// 0 (the default): on the host's time. Both fighters are played from the pads the host's game played (they come
+//   with each of its states), each state applied once its pads have been played: the guest's game computes what the
+//   host's did, the state only correcting what parted. The guest's own presses show a round trip (and some three
+//   frames) later, and nothing is taken back.
+// 1: the guest's own fighter at once from its own pad, ahead of the host's by a round trip, corrected when it parts
+//   (hits and grabs decided by the host land on it late: it is then put back).
+bool PredictWanted()
+{
+    static const bool wanted = [] {
+        char v[16] = "";
+        if (GetEnvironmentVariableA("SWROTS_ONLINE_PREDICT", v, sizeof(v)))
+            return v[0] == '1';
+        wchar_t path[MAX_PATH];
+        GetModuleFileNameW(nullptr, path, MAX_PATH);
+        std::wstring ini = path;
+        ini = ini.substr(0, ini.find_last_of(L"\\/")) + L"\\settings.ini";
+        return GetPrivateProfileIntW(L"Online", L"Predict", 0, ini.c_str()) == 1;
+    }();
+    return wanted;
+}
+
+uint32_t HashEvery()
+{
+    static const uint32_t every = [] {
+        char v[16] = "";
+        const uint32_t n = GetEnvironmentVariableA("SWROTS_ONLINE_CHECK_EVERY", v, sizeof(v)) ? uint32_t(std::atoi(v)) : 0;
+        return n ? n : kHashEveryDefault;
+    }();
+    return every;
+}
+constexpr int kSilenceMs = 10000;       // the other PC is gone after that long without a word (a closed game says so)
+constexpr int kConnectMs = 20000;       // the guest gives up calling after that long
+
+enum class Msg : uint8_t {
+    Hello = 1, Welcome, Reject, Chunk, ChunkAck, Ready, Start, Started, Input, Ping, Pong, Bye, Pages,
+    Pad, Launch, State, Room, Props, // client/server
+    Seat, // the guest's Ready in the room
+    Chars, // a Cooperative mission's other characters (client/server)
+    Vote,  // the guest's Restart/Quit vote (its own cursor, its own choice)
+    Born,  // the host's spawned characters' classes and costumes (the guest makes those its game has not spawned)
+};
+
+constexpr uint32_t kPage = 1024;      // a desync's report: the data checked, hashed by 1 KiB pages
+constexpr uint32_t kPagesPerMsg = 256;
+#pragma pack(push, 1)
+struct Header {
+    uint32_t magic;
+    uint16_t protocol;
+    uint8_t type;
+    uint8_t pad;
+    uint32_t token; // the session's, chosen by the host (0 in the guest's first Hello)
+};
+// A desync's report: the hashes of the data a PC checked at a frame, page by page, so that each PC logs which pages
+// (which addresses of the game's data) differ.
+struct PagesMsg {
+    Header h;
+    uint32_t frame;
+    uint64_t trace;     // the scheduler's course hash at that frame
+    uint16_t first;     // the first page in this message
+    uint16_t count;
+    uint32_t hashes[kPagesPerMsg];
+};
+struct HelloMsg {
+    Header h;
+    uint64_t build;   // the port's binaries
+    uint64_t content; // the game's files and the mods
+    uint32_t nonce;
+    char version[40];
+    char name[24];    // the guest's player name ([Online] Name)
+};
+struct WelcomeMsg {
+    Header h;
+    uint32_t nonce;
+    uint8_t inputDelay;
+    uint8_t fps;
+    uint16_t reserved;
+    uint32_t packageSize;
+    uint64_t packageHash;
+    char name[24];    // the host's player name
+};
+struct RejectMsg {
+    Header h;
+    char text[96];
+};
+struct ChunkMsg {
+    Header h;
+    uint32_t offset;
+    uint16_t size;
+    uint8_t data[kChunk];
+};
+struct ChunkAckMsg {
+    Header h;
+    uint32_t offset;
+};
+struct InputMsg {
+    Header h;
+    uint32_t ack;       // the sender has every frame of the receiver's inputs up to this one
+    uint32_t first;     // the first frame of the inputs below
+    uint8_t count;
+    uint8_t reserved[3];
+    uint32_t hashFrame; // a check of the sender's game at the start of that frame (0: none yet)
+    uint64_t hash;
+    input::GamePad pads[kMaxSend];
+};
+struct PingMsg {
+    Header h;
+    uint64_t time;
+};
+// Client/server: a player's pad now (both ways, every frame).
+struct PadMsg {
+    Header h;
+    uint32_t seq;
+    input::GamePad pad;
+    uint8_t inDuel;   // the sender's game is in a duel (the host waits for the guest's at a duel's start)
+    uint32_t screen;  // the front-end screen the sender's game shows (the guest's follows the host's), 0 none
+};
+// Client/server: the host's room (its settings, the players' Ready), a few times a second.
+struct RoomMsg {
+    Header h;
+    OnlineRoomSettings room;
+    uint8_t hostReady, guestReady;
+    uint16_t starts; // the matches started from the room so far (a Ready counts for the next one only)
+};
+// Client/server: the guest's Ready in the room, a few times a second.
+struct SeatMsg {
+    Header h;
+    uint8_t ready;
+    uint8_t reserved;
+    uint16_t starts; // the host's count it is for
+};
+// Client/server: the host's game starts a level (or the menus): the guest's follows.
+struct LaunchMsg {
+    Header h;
+    uint32_t id;
+    char args[1024];
+};
+// Client/server: the host's duel, every frame: both fighters' gameplay state.
+struct StateMsg {
+    Header h;
+    uint32_t seq;
+    uint32_t hostFrame;
+    FighterState fighters[2];
+    int16_t clockTenths; // the round's time left (the room's time limit; -1 none)
+    uint16_t draws;      // the duels' draws so far (DRAW shown as it moves)
+    uint8_t votes[2];    // Cooperative's game over: each player's vote (CoopVote)
+    int8_t voteSeconds;  // its time left (-1: none, a pause's Restart/Quit has none)
+    uint8_t decided;     // the votes' outcome (CoopVote: none, Retry, Quit), each game making it once
+    input::GamePad pads[2]; // the pads the host's game played that frame (player 1's, player 2's as it had it)
+};
+// The arena's props that moved or are gone on the host's game (props.h).
+struct PropsMsg {
+    Header h;
+    uint32_t seq;
+    uint8_t count, goneCount;
+    uint16_t reserved;
+    PropState props[kPropsPerMsg];
+    uint32_t gone[kGonePerMsg];
+};
+// A Cooperative mission's other characters on the host's game (enemies, allies), a few a frame in turn.
+constexpr int kCharsPerMsg = 5;
+struct CharState {
+    uint32_t key; // the character's key on both games (props.h: its instance id, or its class and spawn rank)
+    FighterState state;
+};
+struct CharsMsg {
+    Header h;
+    uint32_t seq;
+    uint32_t hostFrame;
+    uint8_t count;
+    uint8_t reserved[3];
+    CharState chars[kCharsPerMsg];
+};
+// The host's spawned characters' classes and costumes, each sent a few times as it appears.
+constexpr int kBornPerMsg = 4;
+struct Born {
+    uint32_t key;
+    char cls[40];
+    char costume[24];
+};
+struct BornMsg {
+    Header h;
+    uint32_t seq;
+    uint8_t count;
+    uint8_t reserved[3];
+    Born born[kBornPerMsg];
+};
+// The guest's Restart/Quit vote (CoopVote), sent a few times (the host keeps the latest).
+struct VoteMsg {
+    Header h;
+    uint32_t seq;
+    uint8_t choice;
+    uint8_t reserved[3];
+};
+// The host's gameplay settings, which the guest plays with for the match.
+struct GameplaySettings {
+    int32_t fpsLimit;
+    int32_t coopDeath;
+    int32_t coopCamera;
+    int32_t hvvOverheadInfo;
+    uint8_t widescreen, coop, coopStorySafety, coopBoss, coopFriendlyFire, hvvOthersSlowMotion, reserved[2];
+    char coopPlayer2[48];
+};
+#pragma pack(pop)
+
+uint64_t Fnv(const void* data, size_t size, uint64_t h = 0xCBF29CE484222325ull)
+{
+    const auto* p = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < size; ++i)
+        h = (h ^ p[i]) * 0x100000001B3ull;
+    return h;
+}
+
+// A fast hash of a large block (the game's memory): 8 bytes at a time.
+uint64_t HashBlock(const void* data, size_t size, uint64_t h)
+{
+    const auto* p = static_cast<const uint64_t*>(data);
+    for (size_t i = 0; i < size / 8; ++i)
+        h = (h ^ p[i]) * 0x9E3779B97F4A7C15ull + (h >> 29);
+    return h;
+}
+
+// The game's data checked between the PCs, less what the port writes there for this PC alone (not the match's
+// course): the button prompts' tip table (game/prompts.cpp: the keyboard's caps on a PC playing with the keyboard).
+uint64_t HashGameData(const uint8_t* data, size_t size, uint64_t h)
+{
+    static const struct { uint32_t address, size; } kLocal[] = { { 0x007F0608, 18 * 16 } };
+    size_t at = 0;
+    for (const auto& r : kLocal) {
+        const size_t begin = r.address - 0x00612BE0, end = begin + r.size;
+        if (begin < at || end > size)
+            continue;
+        h = HashBlock(data + at, (begin - at) & ~size_t(7), h);
+        at = (end + 7) & ~size_t(7);
+    }
+    return HashBlock(data + at, size - at, h);
+}
+
+std::wstring ExeDirectory()
+{
+    wchar_t path[MAX_PATH];
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    std::wstring dir = path;
+    return dir.substr(0, dir.find_last_of(L"\\/"));
+}
+
+bool ReadWholeFile(const std::wstring& path, std::vector<uint8_t>& data, size_t limit = 64u << 20)
+{
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE)
+        return false;
+    LARGE_INTEGER size;
+    bool ok = GetFileSizeEx(f, &size) && size.QuadPart <= LONGLONG(limit);
+    if (ok) {
+        data.resize(size_t(size.QuadPart));
+        DWORD read = 0;
+        ok = data.empty() || (ReadFile(f, data.data(), DWORD(data.size()), &read, nullptr) && read == data.size());
+    }
+    CloseHandle(f);
+    return ok;
+}
+
+bool WriteWholeFile(const std::wstring& path, const uint8_t* data, size_t size)
+{
+    for (size_t i = 0; (i = path.find(L'\\', i + 1)) != std::wstring::npos;)
+        CreateDirectoryW(path.substr(0, i).c_str(), nullptr);
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE)
+        return false;
+    DWORD written = 0;
+    const bool ok = size == 0 || (WriteFile(f, data, DWORD(size), &written, nullptr) && written == size);
+    CloseHandle(f);
+    return ok;
+}
+
+void DeleteTree(const std::wstring& dir)
+{
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            const std::wstring name = fd.cFileName;
+            if (name == L"." || name == L"..")
+                continue;
+            const std::wstring path = dir + L"\\" + name;
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                DeleteTree(path);
+            else {
+                SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_NORMAL);
+                DeleteFileW(path.c_str());
+            }
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    RemoveDirectoryW(dir.c_str());
+}
+
+// Every file under `dir` (relative paths, sorted), for the content hash and the saves' package.
+void ListFiles(const std::wstring& dir, const std::wstring& relative, std::vector<std::wstring>& out)
+{
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + relative + L"\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE)
+        return;
+    do {
+        const std::wstring name = fd.cFileName;
+        if (name == L"." || name == L"..")
+            continue;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            ListFiles(dir, relative + L"\\" + name, out);
+        else
+            out.push_back(relative + L"\\" + name);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    std::sort(out.begin(), out.end());
+}
+
+uint64_t HashFileQuick(const std::wstring& path, uint64_t h, uint64_t wholeUpTo = 4 * 1024 * 1024)
+{
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE)
+        return Fnv("missing", 7, h);
+    LARGE_INTEGER size = {};
+    GetFileSizeEx(f, &size);
+    h = Fnv(&size.QuadPart, 8, h);
+    // Small files whole; large ones (the PAKs) by their size, start and end.
+    std::vector<uint8_t> buffer(64 * 1024);
+    auto readAt = [&](LONGLONG at) {
+        LARGE_INTEGER to;
+        to.QuadPart = at;
+        SetFilePointerEx(f, to, nullptr, FILE_BEGIN);
+        DWORD read = 0;
+        ReadFile(f, buffer.data(), DWORD(buffer.size()), &read, nullptr);
+        h = Fnv(buffer.data(), read, h);
+    };
+    if (uint64_t(size.QuadPart) <= wholeUpTo) {
+        for (LONGLONG at = 0; at < size.QuadPart; at += LONGLONG(buffer.size()))
+            readAt(at);
+    } else {
+        readAt(0);
+        readAt(size.QuadPart / 2);
+        readAt(size.QuadPart - LONGLONG(buffer.size()));
+    }
+    CloseHandle(f);
+    return h;
+}
+
+// The port's binaries, and the files a match reads (the game's, the mods).
+uint64_t BuildHash()
+{
+    wchar_t path[MAX_PATH];
+    GetModuleFileNameW(GetModuleHandleW(L"core.dll"), path, MAX_PATH);
+    return HashFileQuick(path, Fnv(SWROTS_VERSION, std::strlen(SWROTS_VERSION)));
+}
+
+// The game's files by their names and sizes (and the small ones whole: the settings files); the mods' by their
+// contents. Computed once (a few seconds at most), on the network thread.
+// The game's files and the mods, as both PCs must have them: GameData by name and size (its small files whole), the
+// mods whole (not their notes: .txt, .md). Each file's own hash goes to netplay\\content.txt, to compare two PCs'
+// when one refuses the other.
+uint64_t ContentHash()
+{
+    static uint64_t cached = 0;
+    if (cached)
+        return cached;
+    const std::wstring exe = ExeDirectory();
+    uint64_t h = 0xCBF29CE484222325ull;
+    std::string manifest;
+    for (const wchar_t* folder : { L"\\GameData" }) { // matches are played without mods (SetSessionFolders)
+        const bool mods = folder[1] == L'm';
+        std::vector<std::wstring> files;
+        ListFiles(exe + folder, L"", files);
+        for (const std::wstring& f : files) {
+            std::wstring lower = f;
+            for (wchar_t& c : lower)
+                c = wchar_t(towlower(c));
+            if (mods && ((lower.size() > 4 && (lower.compare(lower.size() - 4, 4, L".txt") == 0 ||
+                                                  lower.compare(lower.size() - 3, 3, L".md") == 0)) ||
+                            lower.rfind(L"\\_", 0) == 0 || lower.find(L"\\__pycache__\\") != std::wstring::npos))
+                continue; // a mod's notes, and work folders (mods\\_work...) the game never reads
+            uint64_t one = 0xCBF29CE484222325ull;
+            WIN32_FILE_ATTRIBUTE_DATA a = {};
+            GetFileAttributesExW((exe + folder + f).c_str(), GetFileExInfoStandard, &a);
+            const uint64_t size = uint64_t(a.nFileSizeHigh) << 32 | a.nFileSizeLow;
+            if (mods || size <= 64 * 1024)
+                one = HashFileQuick(exe + folder + f, one);
+            else
+                one = Fnv(&size, 8, one);
+            h = Fnv(lower.data(), lower.size() * sizeof(wchar_t), h);
+            h = Fnv(&one, 8, h);
+            char line[64];
+            std::snprintf(line, sizeof(line), " %llu %016llX\n", (unsigned long long)size, (unsigned long long)one);
+            for (wchar_t c : std::wstring(folder + 1) + lower)
+                manifest += c < 128 ? char(c) : '?';
+            manifest += line;
+        }
+    }
+    CreateDirectoryW((exe + L"\\netplay").c_str(), nullptr);
+    WriteWholeFile(exe + L"\\netplay\\content.txt", reinterpret_cast<const uint8_t*>(manifest.data()), manifest.size());
+    cached = h;
+    return h;
+}
+
+GameplaySettings CurrentGameplay()
+{
+    const Settings& s = GetSettings();
+    GameplaySettings g = {};
+    g.fpsLimit = s.fpsLimit;
+    g.coopDeath = s.coopDeath;
+    g.coopCamera = s.coopCamera;
+    g.hvvOverheadInfo = s.hvvOverheadInfo;
+    g.widescreen = s.widescreen;
+    g.coop = s.coop;
+    g.coopStorySafety = s.coopStorySafety;
+    g.coopBoss = s.coopBoss;
+    g.coopFriendlyFire = s.coopFriendlyFire;
+    g.hvvOthersSlowMotion = s.hvvOthersSlowMotion;
+    std::snprintf(g.coopPlayer2, sizeof(g.coopPlayer2), "%s", s.coopPlayer2.c_str());
+    return g;
+}
+
+void ApplyGameplay(const GameplaySettings& g)
+{
+    Settings& s = EditSettings();
+    s.fpsLimit = g.fpsLimit;
+    s.coopDeath = g.coopDeath;
+    s.coopCamera = g.coopCamera;
+    s.hvvOverheadInfo = g.hvvOverheadInfo;
+    s.widescreen = g.widescreen != 0;
+    s.coop = g.coop != 0;
+    s.coopStorySafety = g.coopStorySafety != 0;
+    s.coopBoss = g.coopBoss != 0;
+    s.coopFriendlyFire = g.coopFriendlyFire != 0;
+    s.hvvOthersSlowMotion = g.hvvOthersSlowMotion != 0;
+    s.coopPlayer2 = std::string(g.coopPlayer2, strnlen(g.coopPlayer2, sizeof(g.coopPlayer2)));
+}
+
+// --- The session's state --------------------------------------------------------------------------------------------
+
+struct Session {
+    std::string localName, remoteName; // the players' names ([Online] Name: the Windows user name by default)
+    std::mutex lock;
+    std::condition_variable inputs; // a frame's remote input came, or the session ended
+    OnlinePhase phase = OnlinePhase::Off;
+    bool host = false;
+    std::string roomCode, message;
+
+    UdpSocket socket;
+    Endpoint peer;                    // the other PC (the guest: the host, once it answered)
+    std::vector<Endpoint> candidates; // the guest: the host's addresses to call
+    uint32_t token = 0, nonce = 0;
+    uint64_t build = 0, content = 0;
+    Clock::time_point started, lastHeard, lastSent;
+
+    // The package: the gameplay settings, the start's arguments, the host's profile and saves.
+    std::vector<uint8_t> package;
+    uint64_t packageHash = 0;
+    std::vector<bool> chunksDone;
+    bool packageWanted = false; // the host builds it on a game thread (OnlineFrame)
+    bool welcomed = false, ready = false, startSeen = false, bootRequested = false;
+
+    // The match.
+    uint32_t inputDelay = 3;
+    uint32_t fps = 30;
+    int local = 0;                        // 0 the host (player 1), 1 the guest (player 2)
+    input::GamePad pads[2][kHistory] = {};
+    uint32_t padFrame[2][kHistory] = {};  // the frame each slot holds (+1; 0: none)
+    uint32_t localLatest = 0;             // the last frame of this PC's input made
+    uint32_t remoteContiguous = 0;        // every frame of the other's input up to this one is here
+    uint32_t remoteAck = 0;               // the other has every frame of ours up to this one
+    uint32_t remoteLatest = 0;
+    bool bootPending = false, armed = false;
+    uint32_t frame = 0;                   // the frame being played
+    uint32_t packets[2] = {};
+    uint32_t stalls = 0;
+    int pingMs = -1;
+    Clock::time_point paceStart;
+    uint32_t paceFrame = 0;
+    uint64_t paceClock = 0; // the fixed clock at paceStart: the match runs at the game's own time
+    struct Check {
+        uint32_t frame;
+        uint64_t hash;
+    } checks[16] = {};
+    Check lastLocal = {}, lastRemote = {};
+    bool desync = false;
+    uint32_t desyncFrame = 0;
+    Clock::time_point endAt = {};      // a desync's end: after the reports were swapped
+    std::string endWhy;
+    std::vector<bool> pageLogged;      // the pages already reported as different
+    // The game's data at the last check (for a desync's report: written next to the executable).
+    struct Checked {
+        std::vector<uint8_t> data;
+        uint32_t frame = 0;
+        uint64_t trace = 0;
+    } checked[8];
+
+    Settings saved;          // the guest's own settings, given back after the match
+    bool settingsSaved = false;
+
+    // Client/server ([Online] Mode=server, the default): the host's game is the match; the guest's follows it.
+    bool server = true;
+    uint32_t padSeqOut = 0, padSeqIn = 0;
+    input::GamePad remotePad = {};
+    uint32_t remotePacket = 0;
+    uint32_t launchIdOut = 0, launchIdIn = 0;
+    std::string pendingLaunch;         // the guest: the host's launch to follow
+    bool pendingLaunchSet = false, followingLaunch = false, followStarted = false;
+    LaunchMsg lastLaunch = {};       // the host: its last launch, sent again a while (a lost one: the guest left behind)
+    uint32_t lastLaunchFrame = 0, lastLaunchResends = 0;
+    uint32_t stateSeqOut = 0, stateSeqIn = 0, statesIn = 0;
+    StateMsg latestState = {};
+    bool haveState = false;
+    bool guestInDuel = false;           // this game is in a duel (both players play it: BothPlayLocked)
+    input::GamePad ownPad = {};
+    uint32_t ownPacket = 0;
+    bool inLevel = false;               // the match's level is up (no pause there: NoPause)
+    std::string lastMap;                // the host: the last duel's map (its level)
+    std::vector<PropsMsg> propsIn;      // the guest: the host's props messages, for the game thread
+    std::vector<CharsMsg> charsIn;      // the guest: the host's characters, for the game thread
+    uint32_t charsSeqOut = 0, charsSeqIn = 0;
+    std::vector<BornMsg> bornIn;        // the guest: the host's spawned characters' classes, for the game thread
+    uint32_t bornSeqOut = 0, bornSeqIn = 0;
+    uint32_t propsSeqOut = 0, propsSeqIn = 0;
+    int roundWinner = -1;               // the host: the last round's winner (0 player 1, 1 player 2), -1 none yet
+    int matchWinner = -1;               // the host: the last match's (its last round's), for the arena's picker
+    bool entering = false;              // from the match's start to its room: the game's restart covered (the HUD)
+    bool enteringRoom = false;          // and back to the room after a match or a mission (its main menu covered too)
+    bool enteringSawShell = false;      // the menus seen since (a level after them lifts the cover: a mission again)
+    uint32_t enteringAt = 0;            // the frame the cover came (25 s at most)
+    uint32_t roomSince = 0;             // the frame the room's screen came (the cover lifted a little after)
+    input::GamePad hostLive = {};       // the host's own pad in the level, as its game gets it
+    input::GamePad played[2] = {};      // the host: the pads its game read this frame (sent with its state)
+    // The guest, on the host's time (PredictWanted off): the pads of the host's latest state are played for a frame,
+    // then that state is applied (`playing`); presses of states in between kept (`echoHeld`).
+    input::GamePad echoPads[2] = {}, echoHeld[2] = {};
+    uint32_t echoPacket[2] = {};
+    uint32_t echoAt = 0;                // the frame its last new state was taken at
+    bool echoValid = false;
+    StateMsg playing = {};
+    bool playingValid = false, playingApplied = false;
+    uint32_t remoteReads = 0, remoteChanges = 0;
+    bool remoteInDuel = false, duelStartWaited = false;
+    OnlineRoomSettings room;            // the host's (the guest: as it last came)
+    bool localReady = false, remoteReady = false; // the players' Ready in the room (this PC's, the other's)
+    uint16_t starts = 0;                // the matches started from the room (the host's count; the guest's as it came)
+    int clockTenths = -1;               // a duel with a time limit: the round's time left (the host's; the guest's as it came)
+    uint32_t draws = 0;                 // the duels' draws (the host's count; the guest's as it came)
+    bool drawsKnown = false;            // the guest: the host's count has come once (a change after is a draw)
+    uint8_t votes[2] = {};              // Cooperative's Restart/Quit vote: each player's (the host's; the guest's as it came)
+    int voteSeconds = -1;               // the game over's time left to vote (-1 none)
+    uint8_t decided = 0;                // the outcome (the host's; the guest's as it came)
+    Clock::time_point voteMenuAt{}, voteDeadline{}; // the host: the vote's menu last drawn; the game over's deadline
+    bool retryVoted = false;            // the host: the players chose the mission again (its launch is not its end)
+    uint32_t matchDraws = 0;            // this duel's draws (three end the match: back to the room)
+    bool drawEnded = false;             // the last match ended so (the room says it once: OnlineTakeDrawEnd)
+    Clock::time_point drawEndAt = {};   // the host: when the match ends (after the third draw's own end)
+    std::string menuArgs;               // the host: the match's start at its main menu (its profile), to end a duel
+    uint32_t remoteScreen = 0;          // the other's front-end screen (the guest follows the host's)
+    uint32_t screen = 0, screenSince = 0; // this game's, and the frame it came
+    bool toRoom = false;                // to the room's screen once the front end is up
+    uint32_t toRoomAt = 0;              // the frame it was asked
+    bool lostPopup = false;             // after the session's end: the game's popup at the Online screen
+    // After a match's end: the game restarts (its own profile) at its main menu and goes on to the Online screen,
+    // covered until it is there (the HUD).
+    bool leaving = false, leaveBooted = false, leaveSent = false;
+    Clock::time_point leaveTried = {}, leaveSeen = {};
+    Clock::time_point endedAt = {};
+    uint32_t followTried = 0;
+    std::string ownMenuArgs;            // this PC's own start at its main menu (its profile), for the session's end
+    uint32_t joinAt = ~0u, arenaAt = ~0u; // the frames the port's own presses start (InjectLocked)
+    bool lost = false;                  // the session ended by a lost connection (the popup says so)
+    // The host whose guest left (or was lost): the room opened again at once, the host kept on its screen; a notice
+    // there only when the guest went during a match (in the room together, nothing to say).
+    bool rehost = false, rehostNotice = false;
+};
+
+Session g_S;
+std::thread g_Thread;
+std::atomic<bool> g_ThreadStop{ false };
+
+uint64_t NowMs()
+{
+    return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count());
+}
+
+Header MakeHeader(Msg type, uint32_t token)
+{
+    return { kMagic, kProtocol, uint8_t(type), 0, token };
+}
+
+template <typename T>
+void SendLocked(const T& msg, size_t size = sizeof(T))
+{
+    g_S.socket.SendTo(g_S.peer, &msg, size);
+    g_S.lastSent = Clock::now();
+}
+
+// Back to the room after a match or a mission: the game's restart and its main menu under the cover, until the room.
+void CoverToRoomLocked()
+{
+    g_S.entering = g_S.enteringRoom = true;
+    g_S.enteringSawShell = false;
+    g_S.enteringAt = g_S.frame;
+    g_S.roomSince = 0;
+}
+
+// A player's name as received: printable characters only, at most `size` (none: `fallback`).
+std::string PlayerName(const char* text, size_t size, const char* fallback)
+{
+    std::string name;
+    for (size_t i = 0; i < size && text[i]; ++i)
+        if (text[i] >= 32 && text[i] < 127)
+            name += text[i];
+    while (!name.empty() && name.back() == ' ')
+        name.pop_back();
+    return name.empty() ? fallback : name;
+}
+
+// This PC's player name: [Online] Name, else the Windows user name (letters without accents kept as they are,
+// others dropped), at most 20 characters.
+// The name of the profile last saved on this PC (the newest UDATA\<title>\<save>\jedi: a u32, then its name in
+// wide characters), or "".
+std::string ProfileName()
+{
+    const std::wstring root = kernel::SaveDrivePath() + L"\\UDATA\\4c410017\\";
+    WIN32_FIND_DATAW f;
+    HANDLE find = FindFirstFileW((root + L"*").c_str(), &f);
+    if (find == INVALID_HANDLE_VALUE)
+        return {};
+    FILETIME newest = {};
+    std::wstring best;
+    do {
+        if (!(f.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || f.cFileName[0] == L'.')
+            continue;
+        WIN32_FILE_ATTRIBUTE_DATA a;
+        const std::wstring file = root + f.cFileName + L"\\jedi";
+        if (GetFileAttributesExW(file.c_str(), GetFileExInfoStandard, &a) && CompareFileTime(&a.ftLastWriteTime, &newest) > 0) {
+            newest = a.ftLastWriteTime;
+            best = file;
+        }
+    } while (FindNextFileW(find, &f));
+    FindClose(find);
+    std::vector<uint8_t> data;
+    if (best.empty() || !ReadWholeFile(best, data, 1 << 16) || data.size() < 8)
+        return {};
+    std::string name;
+    for (size_t i = 4; i + 1 < data.size() && name.size() < 15; i += 2) {
+        const wchar_t w = wchar_t(data[i] | data[i + 1] << 8);
+        if (!w)
+            break;
+        if (w >= 32 && w < 127)
+            name += char(w);
+    }
+    return name;
+}
+
+// A name as the menus show it: letters, digits and spaces, upper case, at most 15.
+std::string CleanName(const std::wstring& text)
+{
+    std::string name;
+    for (wchar_t w : text) {
+        static const wchar_t* const kFrom = L"\u00e0\u00e2\u00e4\u00e9\u00e8\u00ea\u00eb\u00ee\u00ef\u00f4\u00f6\u00f9\u00fb\u00fc\u00e7\u00c0\u00c9\u00c8\u00ca\u00c7";
+        static const char kTo[] = "aaaeeeeiioouuucAEEEC";
+        if (const wchar_t* at = wcschr(kFrom, w); at && w)
+            w = wchar_t(kTo[at - kFrom]);
+        if (w >= 'a' && w <= 'z')
+            w = wchar_t(w - 'a' + 'A');
+        if ((w >= 'A' && w <= 'Z') || (w >= '0' && w <= '9') || (w == ' ' && !name.empty()))
+            name += char(w);
+        if (name.size() >= 15)
+            break;
+    }
+    while (!name.empty() && name.back() == ' ')
+        name.pop_back();
+    return name;
+}
+
+// The player's name online: [Online] Name (Online Settings), else the profile's, else "NONAME". Never the PC's user.
+std::string LocalPlayerNameNow();
+// Cached: the menus ask every frame (the profile's file is read at most once a second).
+std::string LocalPlayerName()
+{
+    static std::string name;
+    static ULONGLONG at = 0;
+    if (!at || GetTickCount64() - at > 1000) {
+        name = LocalPlayerNameNow();
+        at = GetTickCount64();
+    }
+    return name;
+}
+
+std::string LocalPlayerNameNow()
+{
+    wchar_t text[64] = {};
+    const std::wstring ini = ExeDirectory() + L"\\settings.ini";
+    GetPrivateProfileStringW(L"Online", L"Name", L"", text, 64, ini.c_str());
+    std::string name = CleanName(text);
+    if (name.empty()) {
+        const std::string profile = ProfileName();
+        name = CleanName(std::wstring(profile.begin(), profile.end()));
+    }
+    return name.empty() ? "NONAME" : name;
+}
+
+void SetMessage(const std::string& text)
+{
+    if (g_S.message != text) {
+        g_S.message = text;
+        LOG_INFO("Online: %s", text.c_str());
+    }
+}
+
+// --- The end ------------------------------------------------------------------------------------------------------------
+
+// The game as before the match: the PC's own inputs, drives and settings, its normal starts.
+void RestoreLocked()
+{
+    input::SetPadSource(nullptr);
+    game::SetStripLocalPlayer(-1);
+    input::SetOnlinePorts(false);
+    kernel::SetLaunchObserver(nullptr);
+    if (g_S.server && !g_S.host)
+        game::SetDamageFilter(nullptr);
+    kernel::SetDeterministicBoot(false);
+    kernel::SetDeterministicAddresses(false);
+    kernel::SetSessionDrives(std::wstring(), std::wstring());
+    kernel::SetSessionFolders(std::wstring(), std::wstring());
+    if (g_S.settingsSaved) {
+        EditSettings() = g_S.saved;
+        g_S.settingsSaved = false;
+    }
+    SetOwnGameplaySettings(nullptr);
+}
+
+void EndLocked(const std::string& why, bool tellOther)
+{
+    if (g_S.phase == OnlinePhase::Off || g_S.phase == OnlinePhase::Ended)
+        return;
+    const bool matchOn = g_S.armed || g_S.bootPending;
+    if (tellOther && g_S.peer.Valid()) {
+        RejectMsg bye = {};
+        bye.h = MakeHeader(Msg::Bye, g_S.token);
+        std::snprintf(bye.text, sizeof(bye.text), "%s", why.c_str());
+        for (int i = 0; i < 3; ++i)
+            SendLocked(bye);
+    }
+    g_S.phase = OnlinePhase::Ended;
+    SetMessage(why);
+    g_S.rehost = g_S.host && !tellOther && why.find("removed for inactivity") == std::string::npos;
+    g_S.rehostNotice = g_S.rehost && g_S.inLevel;
+    g_S.lost = !tellOther;
+    g_S.lostPopup = !tellOther && matchOn;
+    g_S.endedAt = Clock::now();
+    g_S.leaving = matchOn;
+    g_S.leaveBooted = g_S.leaveSent = false;
+    g_S.leaveTried = g_S.leaveSeen = {};
+    g_S.armed = false;
+    g_S.bootPending = false;
+    RestoreLocked();
+    g_ThreadStop = true;
+    g_S.inputs.notify_all();
+    if (matchOn) { // the game back to its main menu, as a PC alone (its own profile)
+        LOG_INFO("Online: the match is over; back to the main menu");
+        if (g_S.ownMenuArgs.empty())
+            kernel::RestartFromDashboard();
+        else
+            kernel::LaunchGame(g_S.ownMenuArgs);
+    }
+}
+
+// --- Inputs -------------------------------------------------------------------------------------------------------------
+
+uint32_t Slot(uint32_t frame) { return frame & (kHistory - 1); }
+
+bool HaveInput(int player, uint32_t frame)
+{
+    return frame <= g_S.inputDelay || g_S.padFrame[player][Slot(frame)] == frame + 1;
+}
+
+const input::GamePad& InputOf(int player, uint32_t frame)
+{
+    static const input::GamePad neutral = {};
+    if (frame <= g_S.inputDelay || g_S.padFrame[player][Slot(frame)] != frame + 1)
+        return neutral;
+    return g_S.pads[player][Slot(frame)];
+}
+
+void StoreInput(int player, uint32_t frame, const input::GamePad& pad)
+{
+    g_S.pads[player][Slot(frame)] = pad;
+    g_S.padFrame[player][Slot(frame)] = frame + 1;
+}
+
+void SendInputsLocked()
+{
+    InputMsg m = {};
+    m.h = MakeHeader(Msg::Input, g_S.token);
+    m.ack = g_S.remoteContiguous;
+    uint32_t first = std::max(g_S.remoteAck + 1, g_S.inputDelay + 1);
+    if (g_S.localLatest >= kMaxSend && first + kMaxSend <= g_S.localLatest)
+        first = g_S.localLatest - kMaxSend + 1;
+    m.first = first;
+    uint32_t count = 0;
+    for (uint32_t f = first; f <= g_S.localLatest && count < kMaxSend; ++f)
+        m.pads[count++] = InputOf(g_S.local, f);
+    m.count = uint8_t(count);
+    m.hashFrame = g_S.lastLocal.frame;
+    m.hash = g_S.lastLocal.hash;
+    SendLocked(m, offsetof(InputMsg, pads) + count * sizeof(input::GamePad));
+}
+
+uint32_t PageHash(const uint8_t* p, size_t n)
+{
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < n; ++i)
+        h = (h ^ p[i]) * 16777619u;
+    return h;
+}
+
+void SendPagesLocked(const Session::Checked& k)
+{
+    const uint32_t pages = uint32_t((k.data.size() + kPage - 1) / kPage);
+    for (int round = 0; round < 2; ++round) // twice: a lost datagram loses a part of the report
+        for (uint32_t first = 0; first < pages; first += kPagesPerMsg) {
+            PagesMsg m = {};
+            m.h = MakeHeader(Msg::Pages, g_S.token);
+            m.frame = k.frame;
+            m.trace = k.trace;
+            m.first = uint16_t(first);
+            m.count = uint16_t(std::min(kPagesPerMsg, pages - first));
+            for (uint32_t i = 0; i < m.count; ++i) {
+                const size_t at = size_t(first + i) * kPage;
+                m.hashes[i] = PageHash(k.data.data() + at, std::min<size_t>(kPage, k.data.size() - at));
+            }
+            SendLocked(m);
+        }
+}
+
+// The other PC's report: the pages of the game's data that differ from this PC's at that frame, logged.
+void OnPagesLocked(const PagesMsg& m)
+{
+    const Session::Checked& k = g_S.checked[(m.frame / HashEvery()) % std::size(g_S.checked)];
+    if (k.frame != m.frame || k.data.empty())
+        return;
+    const uint32_t pages = uint32_t((k.data.size() + kPage - 1) / kPage);
+    if (g_S.pageLogged.size() != pages) {
+        g_S.pageLogged.assign(pages, false);
+        LOG_INFO("Online: desync report from the other PC (frame %u): scheduler trace %016llX here, %016llX there",
+            m.frame, k.trace, m.trace);
+    }
+    for (uint32_t i = 0; i < m.count && m.first + i < pages; ++i) {
+        const uint32_t page = m.first + i;
+        const size_t at = size_t(page) * kPage;
+        if (g_S.pageLogged[page] ||
+            PageHash(k.data.data() + at, std::min<size_t>(kPage, k.data.size() - at)) == m.hashes[i])
+            continue;
+        g_S.pageLogged[page] = true;
+        LOG_INFO("Online: desync: the game's data differs in %08X-%08X", uint32_t(0x00612BE0 + at),
+            uint32_t(0x00612BE0 + at + kPage - 1));
+    }
+}
+
+void CompareChecksLocked()
+{
+    const Session::Check& r = g_S.lastRemote;
+    if (!r.frame || g_S.desync)
+        return;
+    for (const Session::Check& c : g_S.checks) {
+        if (c.frame != r.frame)
+            continue;
+        if (c.hash != r.hash) {
+            g_S.desync = true;
+            g_S.desyncFrame = r.frame;
+            LOG_ERROR("Online: the two games parted (desync) at frame %u: %016llX here, %016llX there", r.frame,
+                c.hash, r.hash);
+            SetMessage("the two games parted (desync) at frame " + std::to_string(r.frame));
+            const Session::Checked& k = g_S.checked[(r.frame / HashEvery()) % std::size(g_S.checked)];
+            if (k.frame == r.frame && !k.data.empty()) { // the data as checked, for a comparison
+                wchar_t instance[64] = {};
+                GetEnvironmentVariableW(L"SWROTS_INSTANCE", instance, 64);
+                const std::wstring path = ExeDirectory() + L"\\netplay\\desync-" + (instance[0] ? instance : (g_S.host ? L"host" : L"guest")) + L".bin";
+                std::vector<uint8_t> out(8);
+                std::memcpy(out.data(), &k.trace, 8);
+                out.insert(out.end(), k.data.begin(), k.data.end());
+                WriteWholeFile(path, out.data(), out.size());
+                LOG_INFO("Online: the game's data at frame %u written to %ls (scheduler trace %016llX)", r.frame,
+                    path.c_str(), k.trace);
+            }
+            // the two games no longer play the same match: it ends on both (each back to its title), once both
+            // reports were swapped
+            if (k.frame == r.frame && !k.data.empty())
+                SendPagesLocked(k);
+            g_S.endWhy = "the two games no longer match (desync at frame " + std::to_string(r.frame) + ")";
+            g_S.endAt = Clock::now() + std::chrono::milliseconds(2500);
+        }
+        return;
+    }
+}
+
+void OnInputLocked(const InputMsg& m, size_t size)
+{
+    const int remote = 1 - g_S.local;
+    g_S.remoteAck = std::max(g_S.remoteAck, m.ack);
+    const uint32_t count = std::min<uint32_t>(m.count, uint32_t((size - offsetof(InputMsg, pads)) / sizeof(input::GamePad)));
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t f = m.first + i;
+        if (f + kHistory / 2 < g_S.frame || f > g_S.frame + kHistory / 2)
+            continue;
+        if (!HaveInput(remote, f))
+            StoreInput(remote, f, m.pads[i]);
+        g_S.remoteLatest = std::max(g_S.remoteLatest, f);
+    }
+    while (HaveInput(remote, g_S.remoteContiguous + 1) && g_S.remoteContiguous + 1 <= g_S.remoteLatest)
+        ++g_S.remoteContiguous;
+    if (m.hashFrame > g_S.lastRemote.frame) {
+        g_S.lastRemote = { m.hashFrame, m.hash };
+        CompareChecksLocked();
+    }
+    g_S.inputs.notify_all();
+}
+
+bool PadFromSession(int port, input::GamePad& pad, uint32_t& packet)
+{
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    if (!g_S.armed)
+        return false;
+    if (port == 0 || port == 1) {
+        pad = InputOf(port, g_S.frame);
+        packet = g_S.packets[port];
+    } else {
+        pad = {};
+        packet = 0;
+    }
+    return true;
+}
+
+// --- Client/server ---------------------------------------------------------------------------------------------------
+
+// The host: player 1 is this PC's own (its devices), player 2 the guest's pad as it last came. The guest: its game
+// only shows the host's duel (no input in it); out of a duel its player 1 has this PC's devices (its own menus, to
+// leave).
+// Where both players play this game's player 1 and 2 (the select screens, a duel): the host's player 2 is the
+// guest's pad, the guest's player 1 the host's and its player 2 its own. Elsewhere each PC's player 1 is its own
+// devices and player 2 nothing (the guest's pad does not move the host's menus).
+constexpr uint32_t kVersusSelectKey = 0x8DC51DC9u; // the fighters' select as the Versus row opens it
+
+// A duel's fighter still in the round (not dead, health above 0).
+bool Living(const uint8_t* fighter)
+{
+    __try {
+        return !fighter[0x12C] && *reinterpret_cast<const float*>(fighter + 0x130) > 0.0f;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return true;
+    }
+}
+
+// --- Versus's time limit (the host's: its duel is the match) ---------------------------------------------------------
+// The round's clock runs while the game's Versus logic has the round fought (its state 4: the intros over, nobody down;
+// game::VersusRoundState) and counts the fighters' game ticks (player 1's +0x314: one per game step, 60 a second;
+// none in slow motion or a hitch's catch-up). At its end the fighter with less health is put down (the game's own
+// health change: the game's round end and its winner's outro follow, on both games through the host's state); with
+// the same health the round ends as the game ends a draw (game::VersusRoundDraw: IDS_ROUND_DRAW, no point, the next
+// round; the guest's game ends its round alike when the draws' count moves). The clock stays at 0 through the round's
+// end and starts again with the next round's fight.
+constexpr uint32_t kTicksPerSecond = 60;
+constexpr uint32_t kDrawsToEnd = 3; // a duel's draws that end its match (back to the room: no room held forever)
+struct DuelClock {
+    bool fighting = false;     // the game's round is being fought (state 4) since the last frame
+    bool over = false;         // the time ran out this round
+    uint32_t startTick = 0;
+    ULONGLONG startedAt = 0;   // (the ticks' pace checked once in the log)
+    bool paceLogged = false;
+};
+DuelClock g_Clock;
+
+uint32_t FighterTick(const uint8_t* fighter)
+{
+    __try {
+        return *reinterpret_cast<const uint32_t*>(fighter + 0x314);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+float FighterHealth(const uint8_t* fighter)
+{
+    __try {
+        return *reinterpret_cast<const float*>(fighter + 0x130);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0.0f;
+    }
+}
+
+// The host, every frame of a duel (the game thread, the session's lock not held): the round's clock; its time left
+// (tenths of a second; -1 none) and the draws so far, for the state sent to the guest.
+void HostDuelClock(uint8_t* const fighters[2], uint8_t limit, int& tenths, uint32_t& draws)
+{
+    DuelClock& c = g_Clock;
+    if (!limit) {
+        c = DuelClock();
+        tenths = -1;
+        return;
+    }
+    const uint32_t tick = FighterTick(fighters[0]);
+    const bool fighting = game::VersusRoundState() == 4;
+    if (fighting && !c.fighting) { // a round's fight starts: the clock from the full time
+        c = DuelClock();
+        c.startTick = tick;
+        c.startedAt = GetTickCount64();
+        LOG_INFO("Online: the round's clock starts (%u s, tick %u)", unsigned(limit), tick);
+    }
+    c.fighting = fighting;
+    if (!fighting) { // the intros (the full time shown), or the round's end (the time it ended at)
+        if (c.startedAt == 0)
+            tenths = int(limit) * 10;
+        return;
+    }
+    if (tick < c.startTick)
+        c.startTick = tick;
+    const uint32_t full = uint32_t(limit) * kTicksPerSecond, elapsed = tick - c.startTick;
+    const uint32_t left = elapsed >= full ? 0 : full - elapsed;
+    tenths = int((left * 10 + kTicksPerSecond - 1) / kTicksPerSecond);
+    if (!c.paceLogged && GetTickCount64() - c.startedAt >= 10000) {
+        c.paceLogged = true;
+        LOG_INFO("Online: the round's clock: %u ticks in %llu ms", elapsed,
+            static_cast<unsigned long long>(GetTickCount64() - c.startedAt));
+    }
+    if (left > 0 || c.over)
+        return;
+    c.over = true;
+    const float h1 = FighterHealth(fighters[0]), h2 = FighterHealth(fighters[1]);
+    if (std::fabs(h1 - h2) < 0.05f) {
+        const bool ended = game::VersusRoundDraw();
+        if (ended) {
+            ++draws;
+            std::lock_guard<std::mutex> lock(g_S.lock);
+            if (++g_S.matchDraws >= kDrawsToEnd && g_S.drawEndAt == Clock::time_point{}) {
+                g_S.drawEndAt = Clock::now() + std::chrono::milliseconds(4500); // the draw's own end shown first
+                LOG_INFO("Online: %u draws: the match ends after this one", g_S.matchDraws);
+            }
+        }
+        LOG_INFO("Online: time out, the same health (%.1f): %s (%u so far)", h1,
+            ended ? "the game's draw" : "the round could not be ended", draws);
+        return;
+    }
+    uint8_t* loser = h1 < h2 ? fighters[0] : fighters[1];
+    LOG_INFO("Online: time out: P%d has less health (%.1f against %.1f): down", h1 < h2 ? 1 : 2, std::min(h1, h2),
+        std::max(h1, h2));
+    game::ChangeHealthDirect(loser, -1.0e6f);
+}
+
+bool IsSelectScreen(uint32_t screen)
+{
+    return screen == kVersusSelectKey || screen == game::MenuKey("select_jedi");
+}
+
+bool BothPlayLocked()
+{
+    const uint32_t screen = g_S.screen;
+    return g_S.guestInDuel || IsSelectScreen(screen) || screen == game::MenuKey("select_arena") ||
+        screen == game::MenuKey("select_challenge"); // Cooperative's missions: the host picks, the guest joins
+}
+
+// Presses of the port's own: player 2 joins the fighters' select (Start), player 1 takes the arena (A).
+void InjectLocked(int port, input::GamePad& pad)
+{
+    const uint32_t f = g_S.frame;
+    if (port == 1 && f >= g_S.joinAt && f < g_S.joinAt + 9)
+        pad.buttons |= 0x0010; // Start
+    if (port == 0 && f >= g_S.arenaAt && f < g_S.arenaAt + 6)
+        pad.analog[0] = 0xFF;  // A
+}
+
+// No pause in an online match's level: the other game plays on (Start and Back are the game's pause).
+constexpr uint16_t kPauseButtons = 0x0010 | 0x0020;
+void NoPauseLocked(input::GamePad& pad)
+{
+    if (g_S.inLevel)
+        pad.buttons &= ~kPauseButtons;
+}
+
+bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
+{
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    if (!g_S.armed)
+        return false;
+    const bool both = BothPlayLocked();
+    if (g_S.host) {
+        if (port == 0) {
+            const bool arena = g_S.frame >= g_S.arenaAt && g_S.frame < g_S.arenaAt + 6;
+            if (!arena && g_S.screen == game::MenuKey("select_arena") && g_S.room.picker == 1) {
+                pad = {}; // the guest picks the arena
+                packet = g_S.ownPacket;
+                return true;
+            }
+            if (!arena && !g_S.inLevel)
+                return false; // this PC's own devices
+            input::ReadLivePad(0, pad);
+            if (arena) {
+                InjectLocked(0, pad);
+                packet = ++g_S.ownPacket;
+                return true;
+            }
+            NoPauseLocked(pad);
+            if (std::memcmp(&pad, &g_S.hostLive, sizeof(pad)) != 0) {
+                g_S.hostLive = pad;
+                ++g_S.ownPacket;
+            }
+            g_S.played[0] = pad;
+            packet = g_S.ownPacket;
+            return true;
+        }
+        if (port == 1) { // the guest's pad, always there (the menus only listen to a pad they have seen all along);
+            pad = both ? g_S.remotePad : input::GamePad{}; // its buttons only where both play (its join: a Start of
+            NoPauseLocked(pad);                              // the guest's own)
+            if (g_S.screen == game::MenuKey("select_arena") && g_S.room.picker != 1)
+                pad = {}; // the arena: the host's to pick
+            g_S.played[1] = pad;
+            packet = g_S.remotePacket;
+            ++g_S.remoteReads;
+            return true;
+        }
+    } else if (both && (port == 0 || port == 1) && g_S.inLevel && g_S.echoValid && g_S.frame - g_S.echoAt < 30) {
+        pad = g_S.echoPads[port]; // on the host's time: the pads its game played (ServerFrameLocked)
+        NoPauseLocked(pad);
+        packet = g_S.echoPacket[port];
+        return true;
+    } else if (both) {
+        if (port == 0) {
+            pad = g_S.remotePad;
+            if (g_S.screen == game::MenuKey("select_arena")) { // the arena is the host's game's to take (it starts
+                if (g_S.room.picker == 1)                       // the duel; this one follows that): here only its
+                    pad = {};                                   // cursor, moved by the one who picks
+                pad.analog[0] = pad.analog[1] = 0;
+                pad.buttons &= ~(0x0010 | 0x0020);
+            }
+            NoPauseLocked(pad);
+            packet = g_S.remotePacket;
+            return true;
+        }
+        if (port == 1) {
+            input::ReadLivePad(0, pad);
+            InjectLocked(1, pad);
+            NoPauseLocked(pad);
+            if (g_S.screen == game::MenuKey("select_arena")) { // the guest's own pad: the cursor when it picks
+                if (g_S.room.picker != 1)
+                    pad = {};
+                pad.analog[0] = pad.analog[1] = 0;
+                pad.buttons &= ~(0x0010 | 0x0020);
+            }
+            if (std::memcmp(&pad, &g_S.ownPad, sizeof(pad)) != 0) {
+                g_S.ownPad = pad;
+                ++g_S.ownPacket;
+            }
+            packet = g_S.ownPacket;
+            return true;
+        }
+    } else if (port == 0) {
+        return false; // this PC's own menus
+    } else if (port == 1) { // player 2 (this PC's own pad), seen all along without its buttons
+        input::GamePad live;
+        input::ReadLivePad(0, live);
+        if (std::memcmp(&live, &g_S.ownPad, sizeof(live)) != 0) {
+            g_S.ownPad = live;
+            ++g_S.ownPacket;
+        }
+        pad = {};
+        packet = g_S.ownPacket;
+        return true;
+    }
+    pad = {};
+    packet = 0;
+    return true;
+}
+
+// The guest's fighters in a duel: no health change of their own (the host's come through ApplyFighter).
+std::atomic<uint8_t*> g_GuestFighters[2] = {};
+// The guest's Cooperative characters following the host's (their damage the host's too).
+std::unordered_set<uint8_t*> g_GuestFollowed;
+std::unordered_set<uint32_t> g_GuestKeys; // their keys (the set above made again from them: gone ones out)
+// The guest: each character's last state from the host, when it came (this game's frame) and its pace (its position's
+// change a frame, from its last two states): applied every frame, carried on between two of the host's states (a few
+// frames apart, five characters a frame in turn), so that it does not stand and jump.
+struct CharFollow {
+    static constexpr int kKept = 4;
+    FighterState state;             // the host's last state
+    uint32_t frame = 0;             // the frame it came (this game's)
+    float places[kKept][3] = {};    // the last states' places, oldest first
+    uint32_t frames[kKept] = {};    // and the frames they came
+    int kept = 0;
+    void Push(const FighterState& s, uint32_t at)
+    {
+        float p[3];
+        if (!StatePosition(s, p))
+            return;
+        if (kept) { // a jump (a teleport, a respawn): its places start again from there
+            const float* l = places[kept - 1];
+            if ((l[0] - p[0]) * (l[0] - p[0]) + (l[2] - p[2]) * (l[2] - p[2]) > 200.0f * 200.0f || at - frames[kept - 1] > 30)
+                kept = 0;
+        }
+        if (kept == kKept) {
+            std::memmove(places, places + 1, sizeof(places[0]) * (kKept - 1));
+            std::memmove(frames, frames + 1, sizeof(frames[0]) * (kKept - 1));
+            --kept;
+        }
+        std::memcpy(places[kept], p, sizeof(p));
+        frames[kept] = at;
+        ++kept;
+        state = s;
+        frame = at;
+    }
+    // Its last state, its place where it was `behind` frames ago (between the two states around then; never past the
+    // last: nothing foreseen, nothing taken back as the next comes: no shake).
+    FighterState At(uint32_t now, uint32_t behind) const
+    {
+        FighterState s = state;
+        if (kept < 2)
+            return s;
+        const float at = float(now) - float(behind);
+        float place[3];
+        if (at <= float(frames[0])) {
+            std::memcpy(place, places[0], sizeof(place));
+        } else if (at >= float(frames[kept - 1])) {
+            return s;
+        } else {
+            int n = 0;
+            while (n + 2 < kept && at > float(frames[n + 1]))
+                ++n;
+            const float k = (at - float(frames[n])) / float(frames[n + 1] - frames[n]);
+            for (int c = 0; c < 3; ++c)
+                place[c] = places[n][c] + (places[n + 1][c] - places[n][c]) * k;
+        }
+        const float* last = places[kept - 1];
+        const float delta[3] = { place[0] - last[0], place[1] - last[1], place[2] - last[2] };
+        MoveState(s, delta, 0);
+        return s;
+    }
+};
+constexpr uint32_t kCharsBehind = 3;  // the characters shown this many frames behind the host's last (their states
+constexpr uint32_t kPlayerBehind = 2; // come every two or three frames), the other player this many
+std::unordered_map<uint32_t, CharFollow> g_CharFollow;
+
+// The guest: which of its characters each of the host's is. A level's own by its id; a spawned one by its class and
+// rank at first (the same spawns, in the same order), but a mission's waves are not always spawned alike on both games
+// (a death or a corpse gone a little later here): one of the host's whose rank here is another's, or missing, takes
+// this game's nearest of its class not taken (its spawn point: the same place). This game's spawned characters
+// that none of the host's takes for three seconds are put out of sight and dead (spawned here alone).
+std::unordered_map<uint32_t, uint32_t> g_BoundKey;  // the host's key: this game's key
+std::unordered_map<uint32_t, uint32_t> g_BoundBy;   // this game's key: the host's key
+std::unordered_map<uint32_t, uint32_t> g_Unbound;   // this game's spawned characters none takes: since (frame)
+uint32_t g_Rebound = 0, g_Parked = 0;
+// This game's spawned characters none takes yet: where they were when first seen (they are out of sight meanwhile: one
+// of the host's may still take it, by that place).
+std::unordered_map<uint32_t, std::array<float, 3>> g_UnboundPlace;
+
+// The host's spawned characters' classes and costumes (BornMsg). The host: those sent (each a few times as it
+// appears). The guest: those known, to make one the host has and this game has not spawned.
+std::unordered_set<uint32_t> g_BornNoted;
+struct BornOut {
+    Born born;
+    int sent = 0;
+};
+std::vector<BornOut> g_BornQueue;
+struct BornIn {
+    std::string cls, costume;
+};
+std::unordered_map<uint32_t, BornIn> g_Births;
+
+void NoteBorn(uint32_t key, uint8_t* character)
+{
+    if (!(key & 0x80000000u) || !g_BornNoted.insert(key).second)
+        return;
+    char cls[48];
+    if (!CharacterClassName(character, cls))
+        return;
+    BornOut b = {};
+    b.born.key = key;
+    strncpy_s(b.born.cls, cls, _TRUNCATE);
+    game::CostumeNameRaw(character, b.born.costume, sizeof(b.born.costume));
+    g_BornQueue.push_back(b);
+}
+
+bool TakeBorn(Born (&out)[kBornPerMsg], uint8_t& count)
+{
+    count = 0;
+    for (auto it = g_BornQueue.begin(); it != g_BornQueue.end() && count < kBornPerMsg;) {
+        out[count++] = it->born;
+        if (++it->sent >= 3) // (three times, a few frames apart: a lost message is not all)
+            it = g_BornQueue.erase(it);
+        else
+            ++it;
+    }
+    return count > 0;
+}
+
+// The guest: the host's characters this game has not spawned (its waves a little later, or not alike), made here by the
+// port (the class and costume the host's has, at its place) once one has been missing a third of a second; they
+// are the host's from then on (bound), and taken away once dead a while or no longer the host's.
+struct Made {
+    uint8_t* object = nullptr;
+    uint32_t id = 0;
+    uint32_t deadSince = 0;
+};
+std::unordered_map<uint32_t, Made> g_Made;           // the host's key: made here
+std::unordered_set<const uint8_t*> g_MadeObjects;
+std::unordered_map<uint32_t, uint32_t> g_MissingSince; // the host's key: missing here since (frame)
+std::unordered_set<uint32_t> g_MakeRefused;
+uint32_t g_MadeCount = 0, g_MadeRemoved = 0, g_NoBirth = 0;
+constexpr uint32_t kMakeAfter = 20;
+// This PC's own fighter brought nearer the host's: a fifth of a difference between these (units) at each of its states.
+constexpr float kOwnNudgeFrom = 3.0f, kOwnNudgeTo = 180.0f, kOwnNudge = 0.2f;       // frames missing before one is made
+constexpr uint32_t kMadeDeadFor = 900;    // a made one dead this long is taken away (its corpse, as the game's go)
+
+uint8_t* MadeOf(uint32_t hostKey)
+{
+    const auto m = g_Made.find(hostKey);
+    if (m == g_Made.end())
+        return nullptr;
+    if (ObjectStill(m->second.id, m->second.object))
+        return m->second.object;
+    g_MadeObjects.erase(m->second.object);
+    g_Made.erase(m);
+    return nullptr;
+}
+
+uint8_t* MakeCharacter(uint32_t hostKey, const FighterState& s, uint32_t frame)
+{
+    const auto b = g_Births.find(hostKey);
+    if (b == g_Births.end()) {
+        if (g_NoBirth++ < 20)
+            LOG_INFO("Online: the host's character %08X: its class is not known here yet", hostKey);
+        return nullptr;
+    }
+    float m[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+    if (!StatePosition(s, m + 12))
+        return nullptr;
+    std::string error;
+    uint8_t* o = game::SpawnCharacterAt(b->second.cls.c_str(), b->second.costume, "", "", game::SpawnSide::Default, m,
+        error);
+    if (!o) {
+        g_MakeRefused.insert(hostKey);
+        LOG_WARN("Online: the host's character %08X (%s) could not be made here: %s", hostKey, b->second.cls.c_str(),
+            error.c_str());
+        return nullptr;
+    }
+    PlaceCharacter(o, s); // (its whole place: its facing too)
+    Made made;
+    made.object = o;
+    made.id = *reinterpret_cast<const uint32_t*>(o + 4);
+    g_Made[hostKey] = made;
+    g_MadeObjects.insert(o);
+    if (g_MadeCount++ < 60)
+        LOG_INFO("Online: the host's character %08X (%s, %s) made here, missing for %u frame(s)", hostKey,
+            b->second.cls.c_str(), b->second.costume.empty() ? "its usual costume" : b->second.costume.c_str(),
+            frame - g_MissingSince[hostKey]);
+    return o;
+}
+
+// The made ones dead a while (or the host's no longer: gone there) taken away.
+void TidyMade(uint32_t frame, const std::unordered_map<uint32_t, uint32_t>& lastFromHost)
+{
+    for (auto it = g_Made.begin(); it != g_Made.end();) {
+        Made& m = it->second;
+        if (!ObjectStill(m.id, m.object)) {
+            g_MadeObjects.erase(m.object);
+            it = g_Made.erase(it);
+            continue;
+        }
+        if (CharacterAlive(m.object))
+            m.deadSince = 0;
+        else if (!m.deadSince)
+            m.deadSince = frame;
+        const auto last = lastFromHost.find(it->first);
+        const bool hostGone = last == lastFromHost.end() || frame - last->second > 300;
+        if ((m.deadSince && frame - m.deadSince > kMadeDeadFor) || hostGone) {
+            game::RemoveSpawnedCharacter(m.object);
+            ++g_MadeRemoved;
+            g_MadeObjects.erase(m.object);
+            it = g_Made.erase(it);
+            continue;
+        }
+        ++it;
+    }
+}
+
+// The guest: how alike its game is to the host's, from each of the host's characters' states as it comes (logged every
+// ten seconds): the host's characters there here, alive alike, playing the same sequence, and how far this game's is
+// from the host's latest place (a few frames of display behind it: some units for one running); and this game's
+// characters shown that are none of the host's.
+struct Identity {
+    uint32_t seen = 0, present = 0, compared = 0, livingAlike = 0, sequenceAlike = 0, placed = 0, off50 = 0, off150 = 0;
+    double distanceSum = 0;
+    float distanceMax = 0;
+    uint32_t playerSeen = 0, ownSeen = 0, ownNudged = 0;
+    double playerSum[2] = {};
+    float playerMax[2] = {};
+    void Note(uint8_t* o, const FighterState& s, bool followed)
+    {
+        const bool hostLiving = StateLiving(s);
+        seen += hostLiving; // (the living: a corpse of the host's need not be here)
+        if (!o)
+            return;
+        present += hostLiving;
+        ++compared;
+        if (CharacterAlive(o) == hostLiving)
+            ++livingAlike;
+        if (!hostLiving || !followed)
+            return; // (a corpse: where it lies, its sequence, are the game's; one just found: not placed yet)
+        if (CharacterSequence(o) == s.seq)
+            ++sequenceAlike;
+        FighterState here;
+        float a[3], b[3];
+        if (!CaptureFighter(o, here) || !StatePosition(here, a) || !StatePosition(s, b) || a[1] < -10000.0f)
+            return; // (one out of sight until now: taken by the host's this frame, placed as it is applied)
+        const float d = std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+        ++placed;
+        distanceSum += d;
+        distanceMax = std::max(distanceMax, d);
+        off50 += d > 50.0f;
+        off150 += d > 150.0f;
+    }
+    void NotePlayers(uint8_t* const fighters[2], const StateMsg& st)
+    {
+        ++playerSeen;
+        for (int i = 0; i < 1; ++i) { // (player 2, this PC's own: NoteOwn)
+            FighterState here;
+            float a[3], b[3];
+            if (!fighters[i] || !CaptureFighter(fighters[i], here) || !StatePosition(here, a) ||
+                !StatePosition(st.fighters[i], b))
+                continue;
+            const float d = std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[2] - b[2]) * (a[2] - b[2]));
+            playerSum[i] += d;
+            playerMax[i] = std::max(playerMax[i], d);
+        }
+    }
+    // This PC's own fighter's distance from the host's (its place here a round trip ago, as the host's state has it).
+    void NoteOwn(float d, bool nudged)
+    {
+        ++ownSeen;
+        ownNudged += nudged;
+        playerSum[1] += d;
+        playerMax[1] = std::max(playerMax[1], d);
+    }
+    std::string Take(size_t shownNotTheHosts)
+    {
+        auto pct = [](uint32_t a, uint32_t b) { return b ? 100.0 * a / b : 100.0; };
+        char line[480];
+        std::snprintf(line, sizeof(line),
+            "identity: %u of the host's living character state(s): %.1f%% there here, %.1f%% alive alike, %.1f%% the same "
+            "sequence; places %.1f units from the host's latest on average (%.0f at most, %.1f%% over 50, %.1f%% over "
+            "150); %zu of this game's shown that are none of the host's; player 1 %.1f units from the host's (%.0f at "
+            "most), player 2 %.1f (%.0f at most, brought nearer %u time(s)); %u made here so far, %u taken away",
+            seen, pct(present, seen), pct(livingAlike, compared), pct(sequenceAlike, placed),
+            placed ? distanceSum / placed : 0.0, distanceMax, pct(off50, placed) * (placed ? 1 : 0),
+            pct(off150, placed) * (placed ? 1 : 0), shownNotTheHosts, playerSeen ? playerSum[0] / playerSeen : 0.0,
+            playerMax[0], ownSeen ? playerSum[1] / ownSeen : 0.0, playerMax[1], ownNudged, g_MadeCount, g_MadeRemoved);
+        *this = Identity();
+        return line;
+    }
+};
+Identity g_Identity;
+
+uint8_t* BoundCharacter(uint32_t hostKey, const FighterState& s, uint32_t frame)
+{
+    if (!(hostKey & 0x80000000u))
+        return CharacterByKey(hostKey); // a level's own: its id
+    if (uint8_t* made = MadeOf(hostKey))
+        return made;
+    const auto b = g_BoundKey.find(hostKey);
+    if (b != g_BoundKey.end()) {
+        if (uint8_t* o = CharacterByKey(b->second))
+            return o;
+        g_BoundBy.erase(b->second); // gone here
+        g_BoundKey.erase(b);
+    }
+    float host[3];
+    if (!StatePosition(s, host))
+        return nullptr;
+    // the nearest of its class not taken (its own key first when it is not taken and near)
+    uint32_t best = 0;
+    uint8_t* bestObject = nullptr;
+    float bestDistance = 400.0f * 400.0f;
+    for (const auto& [key, o] : CharactersOfClass(hostKey & 0xFFFF0000u)) {
+        if (g_BoundBy.count(key) || g_MadeObjects.count(o) || !CharacterAlive(o))
+            continue; // (taken, made here for another, or a corpse here)
+        float p[3] = {};
+        const auto place = g_UnboundPlace.find(key); // (one out of sight meanwhile: where it was)
+        FighterState here;
+        if (place != g_UnboundPlace.end())
+            std::memcpy(p, place->second.data(), sizeof(p));
+        else if (!CaptureFighter(o, here) || !StatePosition(here, p))
+            continue;
+        const float d = (p[0] - host[0]) * (p[0] - host[0]) + (p[2] - host[2]) * (p[2] - host[2]) -
+            (key == hostKey ? 1.0f : 0.0f);
+        if (d < bestDistance) {
+            bestDistance = d;
+            best = key;
+            bestObject = o;
+        }
+    }
+    if (!bestObject)
+        return nullptr;
+    g_BoundKey[hostKey] = best;
+    g_BoundBy[best] = hostKey;
+    g_Unbound.erase(best);
+    g_UnboundPlace.erase(best);
+    if (best != hostKey && g_Rebound++ < 40)
+        LOG_INFO("Online: the host's character %08X is this game's %08X (the nearest of its class, %.0f away)", hostKey,
+            best, std::sqrt(std::max(bestDistance, 0.0f)));
+    (void)frame;
+    return bestObject;
+}
+
+// A host's character whose states no longer come (its corpse taken away there, or the character itself): this game's
+// is not left standing. A spawned one is let go (out of sight, then dead: ParkUnbound; one made here is taken away:
+// TidyMade); a level's own dies here (as it is gone there: its waves count the living).
+constexpr uint32_t kGoneOnHost = 180;
+uint32_t g_GoneLogged = 0;
+
+void GoneOnHost(uint32_t hostKey, uint8_t* o)
+{
+    const bool alive = CharacterAlive(o);
+    if (g_GoneLogged++ < 40)
+        LOG_INFO("Online: the host's character %08X is gone there (this game's %s): %s", hostKey,
+            alive ? "living" : "dead", hostKey & 0x80000000u ? "let go" : alive ? "dead here too" : "left");
+    g_GuestKeys.erase(hostKey);
+    if (hostKey & 0x80000000u) {
+        const auto b = g_BoundKey.find(hostKey);
+        if (b != g_BoundKey.end()) {
+            g_BoundBy.erase(b->second);
+            g_BoundKey.erase(b);
+        }
+        return;
+    }
+    if (alive)
+        game::ChangeHealthDirect(o, -1.0e6f);
+}
+
+// This game's character that is the host's of this key, or null.
+uint8_t* BoundOf(uint32_t hostKey)
+{
+    if (!(hostKey & 0x80000000u))
+        return CharacterByKey(hostKey);
+    if (uint8_t* made = MadeOf(hostKey))
+        return made;
+    const auto b = g_BoundKey.find(hostKey);
+    return b == g_BoundKey.end() ? nullptr : CharacterByKey(b->second);
+}
+
+// This game's spawned characters none of the host's has taken: out of sight at once (each frame: its AI is off, nothing
+// else moves it; where it was kept, for one of the host's to take it by), and dead after three seconds (the level's
+// waves count the living: a spawner waiting for fewer would wait here for ever). The ones made here are the host's.
+// The number shown that are none of the host's (none, but for those this frame's state has not reached).
+size_t ParkUnbound(uint32_t frame)
+{
+    size_t shown = 0;
+    for (const auto& [key, o] : SpawnedCharacters()) {
+        if (g_BoundBy.count(key) || g_MadeObjects.count(o)) {
+            g_Unbound.erase(key);
+            g_UnboundPlace.erase(key);
+            continue;
+        }
+        const auto u = g_Unbound.emplace(key, frame).first;
+        if (!g_UnboundPlace.count(key)) {
+            FighterState here;
+            float p[3];
+            if (CaptureFighter(o, here) && StatePosition(here, p) && p[1] > -10000.0f)
+                g_UnboundPlace[key] = { p[0], p[1], p[2] };
+            else
+                ++shown;
+        }
+        if (frame - u->second == 180) {
+            if (g_Parked++ < 40)
+                LOG_INFO("Online: this game's character %08X is none of the host's: out of sight, and dead", key);
+            if (CharacterAlive(o))
+                game::ChangeHealthDirect(o, -1.0e6f);
+        }
+        ParkCharacter(o);
+    }
+    return shown;
+}
+
+// The engine's settings ([[[0x645F7C]+0x38]+8], their console variables registered by 0x2409A0): +0xC4 is
+// `aiDisabled` ("Disables AI"). The guest's game in a Cooperative mission has it set: its characters do what the host's
+// do (ApplyCharacter), its own AI no longer choosing their sequences against them; given back after the mission.
+uint8_t* EngineAiDisabled()
+{
+    __try {
+        const uint8_t* root = *reinterpret_cast<uint8_t* const*>(uintptr_t(0x00645F7C));
+        const uint8_t* a = root ? *reinterpret_cast<uint8_t* const*>(root + 0x38) : nullptr;
+        uint8_t* settings = a ? *reinterpret_cast<uint8_t* const*>(a + 8) : nullptr;
+        return settings ? settings + 0xC4 : nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
+void GuestAiOff(bool off)
+{
+    static bool isOff = false;
+    static uint8_t before = 0;
+    static uint8_t* last = nullptr;
+    uint8_t* flag = EngineAiDisabled();
+    if (!flag)
+        return;
+    if (flag != last) { // a new start: the engine's settings made again (the game's own value)
+        last = flag;
+        isOff = false;
+    }
+    if (off) {
+        if (!isOff) {
+            before = *flag;
+            isOff = true;
+            LOG_INFO("Online: this game's AI off (the host's characters followed alone)");
+        }
+        *flag = 1; // (each frame: whatever set it back)
+    } else if (isOff) {
+        *flag = before;
+        isOff = false;
+        LOG_INFO("Online: this game's AI back");
+    }
+}
+
+float GuestDamage(uint8_t* character, float change)
+{
+    // its damage only: the game's own heals (a new round's full health) go through
+    const bool hosts = character && (character == g_GuestFighters[0] || character == g_GuestFighters[1] ||
+                                        g_GuestFollowed.count(character));
+    return change < 0.0f && hosts ? 0.0f : change;
+}
+
+// A launch's map (its "map:" argument): empty for the menus.
+std::string LaunchMap(const std::string& arguments)
+{
+    const size_t at = arguments.find("map:");
+    if (at == std::string::npos || (at > 0 && arguments[at - 1] != ' '))
+        return {};
+    const size_t end = arguments.find(' ', at + 4);
+    return arguments.substr(at + 4, (end == std::string::npos ? arguments.size() : end) - at - 4);
+}
+
+// The game starts a level (or the menus) on its own (XLaunchNewImage). The host's goes to the guest, whose game
+// follows it; the guest's own waits for the host's and takes it instead.
+void LaunchObserved(std::string& arguments)
+{
+    // Never with the session's lock held by this thread (the port's own starts are made outside it).
+    std::unique_lock<std::mutex> lock(g_S.lock);
+    if (!g_S.armed || !g_S.server)
+        return;
+    if (g_S.host) {
+        // the arena played (Public Rooms shows it): a duel's map
+        const size_t mapAt = arguments.find(" map:");
+        if (arguments.find("v_c1:") != std::string::npos && mapAt != std::string::npos) {
+            const size_t end = arguments.find(' ', mapAt + 5);
+            g_S.lastMap = arguments.substr(mapAt + 5, (end == std::string::npos ? arguments.size() : end) - mapAt - 5);
+        }
+        // the room's rounds to win
+        const size_t at = arguments.find("v_roundcount:");
+        if (at != std::string::npos) {
+            const size_t end = arguments.find(' ', at);
+            arguments.replace(at, (end == std::string::npos ? arguments.size() : end) - at,
+                "v_roundcount:" + std::to_string(g_S.room.rounds));
+        }
+        // back to the menus after a match: to the room, unless it plays again at once
+        if (arguments.find("v_roundsp1:") != std::string::npos && g_S.roundWinner >= 0) {
+            g_S.matchWinner = g_S.roundWinner; // the match's last round
+            g_S.roundWinner = -1;
+            LOG_INFO("Online: the match won by player %d", g_S.matchWinner + 1);
+        }
+        if (arguments.find("v_roundsp1:") != std::string::npos && !g_S.room.rematch) {
+            g_S.toRoom = true;
+            g_S.toRoomAt = g_S.frame;
+            CoverToRoomLocked();
+        }
+        // Cooperative: a mission over (won, lost or quit), the game back at its menus: to the room
+        if (g_S.room.mode == 1 && g_S.inLevel && LaunchMap(arguments).empty() &&
+            g_S.retryVoted) { // (the mission again: through the game's shell map, not the room)
+            g_S.retryVoted = false;
+            LOG_INFO("Online: the cooperative mission again (the players' vote)");
+        }
+        else if (g_S.room.mode == 1 && g_S.inLevel && LaunchMap(arguments).empty()) {
+            g_S.toRoom = true;
+            g_S.toRoomAt = g_S.frame;
+            CoverToRoomLocked();
+            LOG_INFO("Online: the cooperative mission is over: back to the room");
+        }
+        LaunchMsg m = {};
+        m.h = MakeHeader(Msg::Launch, g_S.token);
+        m.id = ++g_S.launchIdOut;
+        std::snprintf(m.args, sizeof(m.args), "%s", arguments.c_str());
+        for (int i = 0; i < 5; ++i)
+            SendLocked(m);
+        g_S.lastLaunch = m;
+        g_S.lastLaunchFrame = g_S.frame;
+        g_S.lastLaunchResends = 0;
+        g_S.haveState = false;
+        g_S.duelStartWaited = false; // the next duel starts when the guest's game is in it too
+        g_S.remoteInDuel = false;
+        LOG_INFO("Online: the host starts '%s' (launch %u)", arguments.c_str(), m.id);
+        return;
+    }
+    if (g_S.followingLaunch) { // the guest's start of the host's launch itself
+        g_S.followingLaunch = false;
+        return;
+    }
+    if (g_S.followStarted) { // the host's launch is being started already (this game's own comes too late)
+        LOG_INFO("Online: the guest's game would start '%s'; the host's start is on its way", arguments.c_str());
+        return;
+    }
+    // The guest: the host's launch (it may have come already).
+    const auto until = Clock::now() + std::chrono::seconds(20);
+    while (g_S.armed && !g_S.pendingLaunchSet && Clock::now() < until)
+        g_S.inputs.wait_for(lock, std::chrono::milliseconds(100));
+    if (g_S.pendingLaunchSet) {
+        LOG_INFO("Online: the guest's game would start '%s'; it starts the host's '%s'", arguments.c_str(),
+            g_S.pendingLaunch.c_str());
+        arguments = g_S.pendingLaunch;
+        g_S.pendingLaunchSet = false;
+    } else {
+        LOG_WARN("Online: no launch from the host; the guest's game starts its own '%s'", arguments.c_str());
+    }
+    g_S.haveState = false;
+}
+
+void OnServerMsgLocked(Msg type, const uint8_t* data, size_t size)
+{
+    switch (type) {
+    case Msg::Pad:
+        if (size >= sizeof(PadMsg)) {
+            PadMsg m;
+            std::memcpy(&m, data, sizeof(m));
+            if (m.seq <= g_S.padSeqIn)
+                return;
+            g_S.padSeqIn = m.seq;
+            g_S.remoteInDuel = m.inDuel != 0;
+            g_S.remoteScreen = m.screen;
+            if (g_S.remoteInDuel)
+                g_S.inputs.notify_all();
+            if (std::memcmp(&m.pad, &g_S.remotePad, sizeof(m.pad)) != 0) {
+                g_S.remotePad = m.pad;
+                ++g_S.remotePacket;
+                if (++g_S.remoteChanges == 1)
+                    LOG_INFO("Online: the other player's pad moved (buttons %04X)", m.pad.buttons);
+            }
+        }
+        break;
+    case Msg::Launch:
+        if (!g_S.host && size < sizeof(LaunchMsg))
+            LOG_WARN("Online: a launch of %zu bytes (%zu expected)", size, sizeof(LaunchMsg));
+        if (!g_S.host && size >= sizeof(LaunchMsg)) {
+            LaunchMsg m;
+            std::memcpy(&m, data, sizeof(m));
+            m.args[sizeof(m.args) - 1] = 0;
+            if (m.id <= g_S.launchIdIn)
+                return;
+            g_S.launchIdIn = m.id;
+            LOG_INFO("Online: the host's launch %u received", m.id);
+            g_S.pendingLaunch = m.args;
+            g_S.pendingLaunchSet = true;
+            g_S.haveState = false;
+            g_S.inputs.notify_all();
+        }
+        break;
+    case Msg::Room:
+        if (!g_S.host && size >= sizeof(RoomMsg)) {
+            RoomMsg m;
+            std::memcpy(&m, data, sizeof(m));
+            m.room.name[sizeof(m.room.name) - 1] = 0;
+            g_S.room = m.room;
+            if (m.starts != g_S.starts) { // a match started from the room: Ready is for the next one
+                g_S.starts = m.starts;
+                g_S.localReady = false;
+            }
+            g_S.remoteReady = m.hostReady != 0;
+        }
+        break;
+    case Msg::Seat:
+        if (g_S.host && size >= sizeof(SeatMsg)) {
+            SeatMsg m;
+            std::memcpy(&m, data, sizeof(m));
+            if (m.starts == g_S.starts && g_S.remoteReady != (m.ready != 0)) {
+                g_S.remoteReady = m.ready != 0;
+                LOG_INFO("Online: the guest is %s", g_S.remoteReady ? "ready" : "no longer ready");
+            }
+        }
+        break;
+    case Msg::Props:
+        if (!g_S.host && size >= sizeof(PropsMsg) && g_S.propsIn.size() < 64) {
+            PropsMsg m;
+            std::memcpy(&m, data, sizeof(m));
+            if (m.seq <= g_S.propsSeqIn)
+                return;
+            g_S.propsSeqIn = m.seq;
+            g_S.propsIn.push_back(m);
+        }
+        break;
+    case Msg::Chars:
+        if (!g_S.host && size >= sizeof(CharsMsg) && g_S.charsIn.size() < 64) {
+            CharsMsg m;
+            std::memcpy(&m, data, sizeof(m));
+            if (m.seq <= g_S.charsSeqIn)
+                return;
+            g_S.charsSeqIn = m.seq;
+            g_S.charsIn.push_back(m);
+        }
+        break;
+    case Msg::Born:
+        if (!g_S.host && size >= sizeof(BornMsg) && g_S.bornIn.size() < 64) {
+            BornMsg m;
+            std::memcpy(&m, data, sizeof(m));
+            if (m.seq <= g_S.bornSeqIn)
+                return;
+            g_S.bornSeqIn = m.seq;
+            g_S.bornIn.push_back(m);
+        }
+        break;
+    case Msg::Vote:
+        if (g_S.host && size >= sizeof(VoteMsg) && !g_S.decided) {
+            VoteMsg m;
+            std::memcpy(&m, data, sizeof(m));
+            if (m.choice == uint8_t(CoopVote::Retry) || m.choice == uint8_t(CoopVote::Quit)) {
+                if (g_S.votes[1] != m.choice)
+                    LOG_INFO("Online: player 2 votes %s", m.choice == uint8_t(CoopVote::Retry) ? "Retry" : "Quit");
+                g_S.votes[1] = m.choice;
+            }
+        }
+        break;
+    case Msg::State:
+        if (!g_S.host && size >= sizeof(StateMsg)) {
+            StateMsg m;
+            std::memcpy(&m, data, sizeof(m));
+            if (m.seq <= g_S.stateSeqIn)
+                return;
+            g_S.stateSeqIn = m.seq;
+            g_S.latestState = m;
+            g_S.haveState = true;
+            ++g_S.statesIn;
+            for (int i = 0; i < 2; ++i) { // a press in a state the game's frame does not take (two in one frame): kept
+                g_S.echoHeld[i].buttons |= m.pads[i].buttons;
+                for (int k = 0; k < 8; ++k)
+                    g_S.echoHeld[i].analog[k] = std::max(g_S.echoHeld[i].analog[k], m.pads[i].analog[k]);
+            }
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+// A frame of a client/server match (OnlineFrame, the lock held; it may unlock).
+void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
+{
+    ++g_S.frame;
+    PadMsg pm = {};
+    pm.h = MakeHeader(Msg::Pad, g_S.token);
+    pm.seq = ++g_S.padSeqOut;
+    input::ReadLivePad(0, pm.pad);
+    NoPauseLocked(pm.pad);
+    if (!g_S.host && g_S.frame >= g_S.joinAt && g_S.frame < g_S.joinAt + 9) {
+        pm.pad.buttons |= 0x0010; // player 2's join on the Versus select: a Start of the guest's, for both games
+        if (g_S.frame == g_S.joinAt)
+            LOG_INFO("Online: player 2 joins the select");
+    }
+    pm.inDuel = g_S.guestInDuel ? 1 : 0;
+    pm.screen = g_S.screen;
+    SendLocked(pm);
+    // The host's last launch again every half second for twenty seconds (the guest takes each launch once: by its id)
+    if (g_S.host && g_S.lastLaunch.id && g_S.lastLaunchResends < 40 && g_S.frame - g_S.lastLaunchFrame >= 30) {
+        g_S.lastLaunchFrame = g_S.frame;
+        ++g_S.lastLaunchResends;
+        SendLocked(g_S.lastLaunch);
+    }
+
+    // The front-end screen (none in a level), the port's presses, the room, the guest following the host's screens.
+    {
+        uint8_t* p1 = nullptr;
+        uint8_t* p2 = nullptr;
+        const bool level = DuelFighters(p1, p2) || game::PlayerObject();
+        const uint32_t screen = level ? 0 : game::LastShellScreen();
+        g_S.inLevel = level;
+        if (g_S.host && p1 && p2) { // a round's winner: the one living when the other is not
+            const bool live1 = Living(p1), live2 = Living(p2);
+            if (live1 != live2)
+                g_S.roundWinner = live1 ? 0 : 1;
+            static bool was[2] = { true, true };
+            static uint32_t logged = 0;
+            const bool now[2] = { live1, live2 };
+            for (int i = 0; i < 2; ++i)
+                if (now[i] != was[i] && logged < 80) {
+                    ++logged;
+                    uint8_t* f = i ? p2 : p1;
+                    LOG_INFO("Online: P%d living: %s (health %.1f, dead %d), frame %u", i + 1, now[i] ? "yes" : "no",
+                        *reinterpret_cast<const float*>(f + 0x130), f[0x12C], g_S.frame);
+                }
+            was[0] = live1;
+            was[1] = live2;
+        }
+        if (screen != g_S.screen) {
+            LOG_INFO("Online: screen 0x%08X (was 0x%08X)", screen, g_S.screen);
+            g_S.screen = screen;
+            g_S.screenSince = g_S.frame;
+            if (IsSelectScreen(screen) && !g_S.host)
+                g_S.joinAt = g_S.frame + 75; // player 2 joins (as its Start would), once the screen is in
+            if (screen == game::MenuKey("select_arena") && g_S.host && g_S.room.arena == 1)
+                g_S.arenaAt = g_S.frame + 75; // the arena: a random open row, taken once the screen is in
+            if (screen == game::MenuKey("select_arena") && g_S.host) { // who picks it (the guest learns it with the room)
+                const int w = g_S.matchWinner;
+                g_S.room.picker = uint8_t(g_S.room.arena == 2 && w >= 0 ? 1 - w : g_S.room.arena == 3 && w >= 0 ? w : 0);
+                LOG_INFO("Online: the arena is the %s's to pick", g_S.room.picker ? "guest" : "host");
+            }
+        }
+    }
+    const uint32_t screen = g_S.screen, since = g_S.frame - g_S.screenSince;
+    if (g_S.inLevel && g_S.frame % 10 == 0) { // diagnostics: the duel's staging (an outro's camera) on both games
+        static uint32_t described = 0;
+        if (described < 240 && DuelStaged()) {
+            ++described;
+            LOG_INFO("Online: staging, frame %u: %s", g_S.frame, DescribeDuel().c_str());
+        }
+    }
+    if (g_S.entering) { // the cover lifts once the room is in (or a level, or after 25 s in any case)
+        const bool room = screen == game::MenuKey("online_room");
+        if (room && !g_S.roomSince)
+            g_S.roomSince = g_S.frame;
+        if (!g_S.inLevel)
+            g_S.enteringSawShell = true;
+        const bool level = g_S.inLevel && (!g_S.enteringRoom || g_S.enteringSawShell);
+        if ((room && g_S.frame - g_S.roomSince > 12) || level || g_S.frame - g_S.enteringAt > 25 * 60) {
+            g_S.entering = g_S.enteringRoom = false;
+            LOG_INFO("Online: the room is in (frame %u)", g_S.frame);
+        }
+    }
+    uint8_t* q1 = nullptr;
+    uint8_t* q2 = nullptr;
+    const bool inShell = !DuelFighters(q1, q2) && !game::PlayerObject();
+    if (g_S.host && g_S.frame + 2 == g_S.arenaAt) {
+        const bool ok = game::ArenaCursorToRandom();
+        LOG_INFO("Online: a random arena %s", ok ? "picked, taken" : "could not be picked: the host picks");
+        if (!ok)
+            g_S.arenaAt = ~0u;
+    }
+    if (g_S.host && g_S.toRoom && inShell && g_S.frame - g_S.toRoomAt > 20 && (g_S.frame - g_S.toRoomAt) % 15 == 0) {
+        lock.unlock();
+        const bool ok = game::GoToShellScreen("online_room");
+        LOG_INFO("Online: to the room%s", ok ? "" : " (not yet)");
+        std::lock_guard<std::mutex> relock(g_S.lock);
+        if (ok)
+            g_S.toRoom = false;
+        return;
+    }
+    if (!g_S.host && inShell && g_S.remoteScreen && g_S.remoteScreen != screen && since > 20 &&
+        g_S.frame - g_S.followTried > 30 && game::OnlineFollowsScreen(g_S.remoteScreen)) {
+        g_S.followTried = g_S.frame;
+        const uint32_t to = g_S.remoteScreen;
+        lock.unlock();
+        game::OnlineGoToScreen(to);
+        return;
+    }
+    if (!g_S.host && g_S.pendingLaunchSet) { // the host's game went on to a level (or the menus): this one follows
+        const std::string args = g_S.pendingLaunch;
+        g_S.pendingLaunchSet = false;
+        g_S.haveState = false;
+        g_S.echoValid = g_S.playingValid = false;
+        g_S.guestInDuel = false;
+        g_S.followingLaunch = true;
+        g_S.followStarted = true;
+        if (g_S.inLevel && LaunchMap(args).empty() && g_S.decided != uint8_t(CoopVote::Retry))
+            CoverToRoomLocked(); // (the menus after a level: the room; not the mission again the players voted for)
+        lock.unlock();
+        LOG_INFO("Online: following the host's launch '%s'", args.c_str());
+        if (args.empty())
+            kernel::RestartFromDashboard();
+        else
+            kernel::LaunchGame(args);
+        return;
+    }
+    const bool host = g_S.host;
+    const int pingMs = g_S.pingMs;
+    const uint8_t timeLimit = g_S.room.mode == 0 ? g_S.room.time : 0; // Versus's alone
+    if (host && g_S.frame % 600 == 0)
+        LOG_INFO("Online: the guest's pad: %u change(s) received, read %u time(s) as player 2", g_S.remoteChanges,
+            g_S.remoteReads);
+    StateMsg state = g_S.latestState;
+    const bool haveState = g_S.haveState;
+    const uint32_t frame = g_S.frame;
+    // The guest on the host's time: the state whose pads the frame just played is applied now; the latest one's pads
+    // are the next frame's (its state applied after it).
+    const bool predict = PredictWanted();
+    StateMsg applyState = {};
+    bool applyNow = false;
+    if (!g_S.host && !predict) {
+        if (!haveState || !g_S.inLevel) {
+            g_S.echoValid = g_S.playingValid = false;
+        } else {
+            if (g_S.playingValid && !g_S.playingApplied) {
+                applyState = g_S.playing;
+                applyNow = true;
+                g_S.playingApplied = true;
+            }
+            if (!g_S.playingValid || g_S.latestState.seq != g_S.playing.seq) {
+                g_S.playing = g_S.latestState;
+                g_S.playingValid = true;
+                g_S.playingApplied = false;
+                g_S.echoAt = g_S.frame;
+                for (int i = 0; i < 2; ++i) {
+                    input::GamePad pad = g_S.playing.pads[i];
+                    pad.buttons |= g_S.echoHeld[i].buttons;
+                    for (int k = 0; k < 8; ++k)
+                        pad.analog[k] = std::max(pad.analog[k], g_S.echoHeld[i].analog[k]);
+                    g_S.echoHeld[i] = {};
+                    if (std::memcmp(&pad, &g_S.echoPads[i], sizeof(pad)) != 0 || !g_S.echoValid) {
+                        g_S.echoPads[i] = pad;
+                        ++g_S.echoPacket[i];
+                    }
+                }
+                g_S.echoValid = true;
+            }
+        }
+    }
+    std::vector<PropsMsg> propsIn;
+    propsIn.swap(g_S.propsIn);
+    std::vector<CharsMsg> charsIn;
+    charsIn.swap(g_S.charsIn);
+    std::vector<BornMsg> bornIn;
+    bornIn.swap(g_S.bornIn);
+    const bool coopMission = g_S.room.mode == 1;
+    lock.unlock();
+
+    uint8_t* fighters[2] = {};
+    const bool duel = DuelFighters(fighters[0], fighters[1]);
+    { // the arena's props: found again at each duel's start
+        static bool wasDuel = false;
+        if (duel && !wasDuel) {
+            PropsReset();
+            CharactersReset();
+            ApplyCharactersReset();
+            g_GuestFollowed.clear();
+            g_GuestKeys.clear();
+            g_CharFollow.clear();
+            g_BoundKey.clear();
+            g_BoundBy.clear();
+            g_Unbound.clear();
+            g_UnboundPlace.clear();
+            g_BornNoted.clear();
+            g_BornQueue.clear();
+            g_Births.clear();
+            g_Made.clear();
+            g_MadeObjects.clear();
+            g_MissingSince.clear();
+            g_MakeRefused.clear();
+            g_Identity = Identity();
+            std::lock_guard<std::mutex> relock(g_S.lock);
+            g_S.matchDraws = 0;
+            g_S.drawEndAt = {};
+        }
+        wasDuel = duel;
+    }
+    GuestAiOff(duel && coopMission && !host); // (the guest's: the host's characters alone decide)
+    SetCoopApply(coopMission);
+    SetPredictApply(predict);
+    {
+        static bool holding = false; // the guest's followed characters' sequences: the host's alone
+        if (duel && coopMission && !host && frame % 10 == 0) {
+            HoldSequences(g_GuestFollowed);
+            holding = true;
+        } else if (holding && !(duel && coopMission && !host)) {
+            HoldSequences({});
+            holding = false;
+        }
+    }
+    if (duel && coopMission) { // a Cooperative mission's other characters: known on both games (props.h)
+        CharactersUpdate(fighters[0], fighters[1]);
+        if (frame % 120 == 0)
+            LOG_INFO("Online: characters, frame %u: %s", frame, DescribeCharacters(4).c_str());
+    }
+    if (duel && !coopMission && host) { // diagnostics: the fighters' steps back (shakes) and jumps, as the guest's
+        SetOwnMotion(fighters[0]);
+        NoteMotion(fighters[0]);
+        NoteMotion(fighters[1]);
+        if (frame % 600 == 300)
+            LOG_INFO("Online: motion here: %s", MotionStats().c_str());
+    }
+    if (duel && frame % 120 == 0) { // diagnostics: both fighters' places on both games (a small one's, Yoda's)
+        static uint32_t described = 0;
+        if (described++ < 300)
+            LOG_INFO("Online: duel, frame %u: %s", frame, DescribeDuel().c_str());
+    }
+    if (!host && duel) {
+        for (const PropsMsg& m : propsIn)
+            PropsReceive(frame, m.props, std::min<int>(m.count, kPropsPerMsg), m.gone, std::min<int>(m.goneCount, kGonePerMsg));
+        PropsApply(frame);
+        if (frame % 600 == 0)
+            LOG_INFO("Online: %s", PropsStats().c_str());
+    }
+    if (host) {
+        {
+            std::lock_guard<std::mutex> relock(g_S.lock);
+            g_S.guestInDuel = duel; // (this game's duel: its player 2 is the guest's pad)
+        }
+        if (!duel)
+            return;
+        { // a duel's start: the host's game waits for the guest's to be in it too (its intro at the same time)
+            std::unique_lock<std::mutex> relock(g_S.lock);
+            if (!g_S.duelStartWaited) {
+                g_S.duelStartWaited = true;
+                const auto start = Clock::now();
+                while (g_S.armed && !g_S.remoteInDuel && Clock::now() - start < std::chrono::seconds(20))
+                    g_S.inputs.wait_for(relock, std::chrono::milliseconds(20));
+                LOG_INFO("Online: the duel starts (waited %d ms for the guest's game)",
+                    int(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count()));
+            }
+        }
+        int tenths = -1;
+        uint32_t draws = 0;
+        std::string endArgs;
+        {
+            std::lock_guard<std::mutex> relock(g_S.lock);
+            tenths = g_S.clockTenths;
+            draws = g_S.draws;
+            if (g_S.drawEndAt != Clock::time_point{} && Clock::now() >= g_S.drawEndAt) {
+                g_S.drawEndAt = {};
+                g_S.drawEnded = true;
+                g_S.toRoom = true; // the front end up: the room (as after a match)
+                g_S.toRoomAt = g_S.frame;
+                CoverToRoomLocked();
+                endArgs = g_S.menuArgs;
+                if (endArgs.empty())
+                    LOG_WARN("Online: three draws, but no start at the main menu to end the match with");
+            }
+        }
+        if (!endArgs.empty()) { // three draws: the match over, both games back to the room
+            LOG_INFO("Online: three draws: the match ends, back to the room");
+            kernel::LaunchGame(endArgs);
+            return;
+        }
+        HostDuelClock(fighters, timeLimit, tenths, draws);
+        StateMsg m = {};
+        bool ok = true;
+        for (int i = 0; i < 2; ++i)
+            ok = CaptureFighter(fighters[i], m.fighters[i]) && ok;
+        std::lock_guard<std::mutex> relock(g_S.lock);
+        g_S.clockTenths = tenths;
+        g_S.draws = draws;
+        if (!ok)
+            return;
+        m.clockTenths = int16_t(tenths);
+        m.draws = uint16_t(draws);
+        if (g_S.voteMenuAt != Clock::time_point{} && Clock::now() - g_S.voteMenuAt > std::chrono::milliseconds(600)) {
+            g_S.votes[0] = g_S.votes[1] = 0; // the vote's menu gone (a mission started again, a pause over)
+            g_S.voteSeconds = -1;
+            g_S.decided = 0;
+            g_S.voteMenuAt = g_S.voteDeadline = {};
+        }
+        m.votes[0] = g_S.votes[0];
+        m.votes[1] = g_S.votes[1];
+        m.voteSeconds = int8_t(g_S.voteSeconds);
+        m.decided = g_S.decided;
+        m.pads[0] = g_S.played[0];
+        m.pads[1] = g_S.played[1];
+        m.h = MakeHeader(Msg::State, g_S.token);
+        m.seq = ++g_S.stateSeqOut;
+        m.hostFrame = frame;
+        SendLocked(m);
+        if (m.seq % 600 == 1)
+            LOG_INFO("Online: host frame %u, state %u sent (%u bytes), ping %d ms", frame, m.seq, unsigned(sizeof(m)),
+                pingMs);
+        PropsMsg pm = {};
+        int count = 0, goneCount = 0;
+        if (m.seq > 30 && PropsCapture(frame, pm.props, count, pm.gone, goneCount)) { // (after the intro's first frames)
+            pm.h = MakeHeader(Msg::Props, g_S.token);
+            pm.seq = ++g_S.propsSeqOut;
+            pm.count = uint8_t(count);
+            pm.goneCount = uint8_t(goneCount);
+            SendLocked(pm);
+        }
+        if (m.seq % 600 == 1)
+            LOG_INFO("Online: %s", PropsStats().c_str());
+        if (coopMission && m.seq > 30) { // the mission's other characters: a few a frame, in turn
+            CharsMsg cm = {};
+            uint32_t keys[kCharsPerMsg] = {};
+            uint8_t* objects[kCharsPerMsg] = {};
+            const int n = CharactersCapture(keys, objects, kCharsPerMsg);
+            int count = 0;
+            for (int i = 0; i < n; ++i) {
+                cm.chars[count].key = keys[i];
+                if (CaptureFighter(objects[i], cm.chars[count].state)) {
+                    NoteBorn(keys[i], objects[i]); // a spawned one's class and costume, the first time it is sent
+                    ++count;
+                }
+            }
+            if (count) {
+                cm.h = MakeHeader(Msg::Chars, g_S.token);
+                cm.seq = ++g_S.charsSeqOut;
+                cm.hostFrame = frame;
+                cm.count = uint8_t(count);
+                SendLocked(cm);
+            }
+            BornMsg bm = {};
+            if (frame % 3 == 0 && TakeBorn(bm.born, bm.count)) {
+                bm.h = MakeHeader(Msg::Born, g_S.token);
+                bm.seq = ++g_S.bornSeqOut;
+                SendLocked(bm);
+            }
+            if (m.seq % 600 == 1)
+                LOG_INFO("Online: %zu character(s) followed, %u message(s) sent", CharactersKnown(), g_S.charsSeqOut);
+            SetOwnMotion(fighters[0]);
+            for (uint8_t* o : CharacterObjects()) // (diagnostics: their steps, to compare with the guest's)
+                NoteMotion(o);
+            NoteMotion(fighters[0]);
+            NoteMotion(fighters[1]);
+            if (frame % 600 == 300)
+                LOG_INFO("Online: motion here: %s", MotionStats().c_str());
+        }
+        return;
+    }
+    bool followDraw = false;
+    {
+        std::lock_guard<std::mutex> relock(g_S.lock);
+        g_S.guestInDuel = duel;
+        if (!duel)
+            g_S.clockTenths = -1;
+        else if (haveState) {
+            g_S.clockTenths = state.clockTenths;
+            g_S.votes[0] = state.votes[0];
+            g_S.votes[1] = state.votes[1];
+            g_S.voteSeconds = state.voteSeconds;
+            g_S.decided = state.decided;
+            followDraw = state.draws != g_S.draws && g_S.drawsKnown;
+            g_S.draws = state.draws;
+            g_S.drawsKnown = true;
+        }
+    }
+    if (followDraw) { // the host's round ended as a draw (its time out): this game's too
+        LOG_INFO("Online: the host's round is a draw: %s", game::VersusRoundDraw() ? "this game's too" : "not here");
+        std::lock_guard<std::mutex> relock(g_S.lock);
+        if (++g_S.matchDraws >= kDrawsToEnd)
+            g_S.drawEnded = true; // the host's game ends the match (this one follows it to the room)
+    }
+    g_GuestFighters[0] = duel ? fighters[0] : nullptr;
+    g_GuestFighters[1] = duel ? fighters[1] : nullptr;
+    game::SetDamageFilter(duel ? &GuestDamage : nullptr);
+    if (!duel || !haveState)
+        return;
+    const uint32_t lead = pingMs > 0 ? uint32_t(pingMs * 60 / 2000) : 0; // half the round trip, in game ticks
+    // The players: each new state of the host's applied. In a Cooperative mission (the host's game a little slower
+    // than this one, a state every frame or two) a frame without one leaves this PC's own fighter to its own play, and
+    // the other player's place goes between the host's last two states (its animation runs on; writing the last
+    // state's action frame and timers again would set its pose back each frame).
+    static uint32_t lastStateSeq = 0;
+    static CharFollow playerFollow[2];
+    const bool freshState = state.seq != lastStateSeq;
+    lastStateSeq = state.seq;
+    if (!predict) {
+        // On the host's time: this frame played the pads of `applyState` for both fighters; its state now (what the
+        // host's game made of them), each fighter corrected where this game's parted.
+        if (applyNow)
+            for (int i = 0; i < 2; ++i)
+                ApplyFighter(i, fighters[i], applyState.fighters[i], 0, false);
+        if (frame % 600 == 0)
+            LOG_INFO("Online: %s", FollowStats().c_str());
+    } else {
+        for (int i = 0; i < 2; ++i) {
+            CharFollow& f = playerFollow[i];
+            if (freshState) { // (a state applied again would set the fighter's action back each frame)
+                f.Push(state.fighters[i], frame);
+                ApplyFighter(i, fighters[i], state.fighters[i], lead, i == 1);
+            }
+            if (coopMission && i == 0 && fighters[i] && f.state.valid) // the other player's place: between its last two
+                PlaceCharacter(fighters[i], f.At(frame, kPlayerBehind));
+        }
+    }
+    // This PC's own fighter in a Cooperative mission plays at once from this PC's pad; the host's game plays it from the
+    // same pad a little later and may take it elsewhere (an enemy in its way there, a step's rounding). Its place here
+    // a round trip ago (kept a frame at a time) against the host's for it: the difference, when small, is closed a
+    // little at each of the host's states (its past places moved too, so that it is not counted twice); a large one is
+    // the host's whole (ApplyFighter).
+    if (coopMission && predict && fighters[1]) {
+        static std::array<float, 3> ownPast[64] = {};
+        static uint32_t ownPastFrame[64] = {};
+        FighterState here;
+        float p[3];
+        if (CaptureFighter(fighters[1], here) && StatePosition(here, p)) {
+            ownPast[frame % 64] = { p[0], p[1], p[2] };
+            ownPastFrame[frame % 64] = frame;
+        }
+        float host[3];
+        const uint32_t back = std::min<uint32_t>(pingMs > 0 ? uint32_t(pingMs * 60 / 1000) + 1 : 1, 60);
+        const uint32_t then = frame - back;
+        if (freshState && state.fighters[1].valid && ownPastFrame[then % 64] == then &&
+            StatePosition(state.fighters[1], host)) {
+            const std::array<float, 3>& was = ownPast[then % 64];
+            const float dx = host[0] - was[0], dz = host[2] - was[2];
+            const float d = std::sqrt(dx * dx + dz * dz);
+            const bool nudge = d > kOwnNudgeFrom && d < kOwnNudgeTo && CharacterAlive(fighters[1]) &&
+                StateLiving(state.fighters[1]) && !OwnTakesHostWhole(); // (in a grab: the pair's places are the game's)
+            if (nudge) {
+                const float delta[3] = { dx * kOwnNudge, 0, dz * kOwnNudge };
+                NudgeCharacter(fighters[1], delta);
+                for (auto& q : ownPast) {
+                    q[0] += delta[0];
+                    q[2] += delta[2];
+                }
+            }
+            g_Identity.NoteOwn(d, nudge);
+        }
+    }
+    // a Cooperative mission's other characters: the host's (the latest of each)
+    static uint32_t missing = 0;
+    { // the followed ones still there (gone ones' memory is not theirs any more)
+        g_GuestFollowed.clear();
+        for (uint32_t key : g_GuestKeys)
+            if (uint8_t* o = BoundOf(key))
+                g_GuestFollowed.insert(o);
+    }
+    for (const BornMsg& bm : bornIn)
+        for (int i = 0; i < std::min<int>(bm.count, kBornPerMsg); ++i) {
+            const Born& b = bm.born[i];
+            BornIn& in = g_Births[b.key];
+            in.cls.assign(b.cls, strnlen(b.cls, sizeof(b.cls)));
+            in.costume.assign(b.costume, strnlen(b.costume, sizeof(b.costume)));
+        }
+    if (coopMission && !charsIn.empty())
+        g_Identity.NotePlayers(fighters, state);
+    for (const CharsMsg& cm : charsIn)
+        for (int i = 0; i < std::min<int>(cm.count, kCharsPerMsg); ++i) {
+            const CharState& c = cm.chars[i];
+            uint8_t* o = BoundCharacter(c.key, c.state, frame);
+            if (!o && (c.key & 0x80000000u) && StateLiving(c.state) && !g_MakeRefused.count(c.key)) {
+                const uint32_t since = g_MissingSince.emplace(c.key, frame).first->second;
+                if (frame - since >= kMakeAfter)
+                    o = MakeCharacter(c.key, c.state, frame);
+            }
+            g_Identity.Note(o, c.state, g_CharFollow.count(c.key) != 0);
+            if (!o) {
+                if (missing++ < 40 || missing % 500 == 0)
+                    LOG_INFO("Online: the host's character %08X is not in this game yet (%u so far)", c.key, missing);
+                continue;
+            }
+            g_MissingSince.erase(c.key);
+            g_GuestFollowed.insert(o);
+            g_GuestKeys.insert(c.key);
+            g_CharFollow[c.key].Push(c.state, frame);
+        }
+    for (auto it = g_CharFollow.begin(); it != g_CharFollow.end();) { // every frame: each one's latest, carried on
+        uint8_t* o = BoundOf(it->first);
+        const uint32_t since = frame - it->second.frame;
+        if (o && since > kGoneOnHost) { // none of its states for three seconds: gone on the host's game
+            GoneOnHost(it->first, o);
+            o = nullptr;
+        }
+        if (!o) {
+            it = g_CharFollow.erase(it);
+            continue;
+        }
+        if (since == 0) // a new state from the host: all of it (its sequence, its health)
+            ApplyCharacter(it->first, o, it->second.state, lead);
+        PlaceCharacter(o, it->second.At(frame, kCharsBehind)); // its place: between its last two, a little behind
+        ++it;
+    }
+    static size_t shownNotTheHosts = 0;
+    if (coopMission) {
+        shownNotTheHosts = std::max(shownNotTheHosts, ParkUnbound(frame));
+        if (frame % 60 == 0) {
+            std::unordered_map<uint32_t, uint32_t> lastFromHost;
+            for (const auto& [key, f] : g_CharFollow)
+                lastFromHost[key] = f.frame;
+            TidyMade(frame, lastFromHost);
+        }
+    }
+    SetOwnMotion(fighters[1]);
+    for (uint8_t* o : g_GuestFollowed) // (diagnostics: their steps)
+        NoteMotion(o);
+    if (fighters[0])
+        NoteMotion(fighters[0]);
+    if (fighters[1])
+        NoteMotion(fighters[1]);
+    if (frame % 600 == 300)
+        LOG_INFO("Online: motion here: %s", MotionStats().c_str());
+    if (frame % 600 == 300 && coopMission) {
+        LOG_INFO("Online: %s", g_Identity.Take(shownNotTheHosts).c_str());
+        shownNotTheHosts = 0;
+    }
+    if (frame % 600 == 0 && coopMission)
+        LOG_INFO("Online: %u character state(s) applied, %zu character(s) followed, %u missing here, %u of this game's "
+                 "sequence starts held", CharactersApplied(), g_GuestFollowed.size(), missing, HeldStartsRefused());
+    if (frame % 600 == 0)
+        LOG_INFO("Online: guest frame %u, host state %u applied (%s), ping %d ms", frame, state.seq,
+            ApplyStats().c_str(), pingMs);
+}
+
+// --- The package (host -> guest) ---------------------------------------------------------------------------------------
+
+void PutU32(std::vector<uint8_t>& v, uint32_t x)
+{
+    for (int i = 0; i < 4; ++i)
+        v.push_back(uint8_t(x >> (8 * i)));
+}
+
+uint32_t GetU32(const uint8_t*& p) { const uint32_t x = p[0] | p[1] << 8 | p[2] << 16 | uint32_t(p[3]) << 24; p += 4; return x; }
+
+// On a game thread (the profile is saved by the game's own code).
+void BuildPackageLocked()
+{
+    // With the host's profile: the main menu, as the game's own return from a level. Without (the host at the
+    // title): a start as from the dashboard (empty arguments), its intro and title.
+    std::string args;
+    std::vector<std::pair<std::wstring, std::vector<uint8_t>>> files;
+    int controller = 0, memoryUnit = 0;
+    if (game::SaveProfileForStart(controller, memoryUnit)) {
+        std::vector<uint8_t> persist;
+        if (ReadWholeFile(kernel::UtilityDrivePath() + L"\\persist.tmp", persist)) {
+            files.push_back({ L"utility\\persist.tmp", std::move(persist) });
+            args = "map: v_shellBetweenLevels:0 v_versusMode:0 v_bonusMissionMode:0 v_challengeMissionMode:0 "
+                   "v_checkpointIndex:-1 playlicensemovie:0 v_sessionCreated:1 title:0 controller:0 memoryunit:" +
+                std::to_string(memoryUnit);
+        }
+    }
+    if (args.empty())
+        LOG_WARN("Online: no profile to bring along (the match starts as the game does, at its title)");
+    g_S.menuArgs = args;
+    const std::wstring saves = kernel::SaveDrivePath();
+    std::vector<std::wstring> list;
+    ListFiles(saves, L"", list);
+    size_t total = 0;
+    for (const std::wstring& f : list) {
+        std::vector<uint8_t> data;
+        if (!ReadWholeFile(saves + f, data, 8u << 20))
+            continue;
+        total += data.size();
+        if (total > (32u << 20)) {
+            LOG_WARN("Online: the saves are too large to bring along whole");
+            break;
+        }
+        files.push_back({ L"saves" + f, std::move(data) });
+    }
+    std::vector<uint8_t>& p = g_S.package;
+    p.clear();
+    GameplaySettings g = CurrentGameplay();
+    // The match's pace: [Online] Fps (30 by default, the console's own: both PCs must keep it, the slower sets it)
+    const std::wstring ini = ExeDirectory() + L"\\settings.ini";
+    const int onlineFps = std::clamp(int(GetPrivateProfileIntW(L"Online", L"Fps", 30, ini.c_str())), 20, 60);
+    if (!g_S.server) // lockstep: the pace both PCs keep
+        g.fpsLimit = std::min(g.fpsLimit > 0 ? g.fpsLimit : 60, onlineFps);
+    g_S.inputDelay = g.fpsLimit >= 50 ? 3 : 2; // about 60 ms either way
+    PutU32(p, 1); // the package's format
+    p.insert(p.end(), reinterpret_cast<const uint8_t*>(&g), reinterpret_cast<const uint8_t*>(&g) + sizeof(g));
+    PutU32(p, uint32_t(args.size()));
+    p.insert(p.end(), args.begin(), args.end());
+    PutU32(p, uint32_t(files.size()));
+    for (const auto& [name, data] : files) {
+        const std::string narrow(name.begin(), name.end());
+        PutU32(p, uint32_t(narrow.size()));
+        p.insert(p.end(), narrow.begin(), narrow.end());
+        PutU32(p, uint32_t(data.size()));
+        p.insert(p.end(), data.begin(), data.end());
+    }
+    g_S.packageHash = Fnv(p.data(), p.size());
+    g_S.chunksDone.assign((p.size() + kChunk - 1) / kChunk, false);
+    LOG_INFO("Online: the match's package: %zu files, %zu bytes; start with '%s'", files.size(), p.size(), args.c_str());
+}
+
+// Writes the package's files into the match's own drives; its settings and arguments out.
+bool UnpackLocked(GameplaySettings& g, std::string& args, const std::wstring& root)
+{
+    const std::vector<uint8_t>& v = g_S.package;
+    const uint8_t* p = v.data();
+    const uint8_t* end = p + v.size();
+    if (v.size() < 4 + sizeof(g) + 8 || GetU32(p) != 1)
+        return false;
+    std::memcpy(&g, p, sizeof(g));
+    p += sizeof(g);
+    const uint32_t argsSize = GetU32(p);
+    if (p + argsSize > end)
+        return false;
+    args.assign(reinterpret_cast<const char*>(p), argsSize);
+    p += argsSize;
+    const uint32_t count = GetU32(p);
+    for (uint32_t i = 0; i < count; ++i) {
+        if (p + 4 > end)
+            return false;
+        const uint32_t nameSize = GetU32(p);
+        if (p + nameSize + 4 > end)
+            return false;
+        std::string name(reinterpret_cast<const char*>(p), nameSize);
+        p += nameSize;
+        const uint32_t size = GetU32(p);
+        if (p + size > end || name.find("..") != std::string::npos)
+            return false;
+        if (!WriteWholeFile(root + L"\\" + std::wstring(name.begin(), name.end()), p, size))
+            return false;
+        p += size;
+    }
+    return true;
+}
+
+// --- The start of the match (both PCs, on a game thread) -------------------------------------------------------------
+
+void BeginBootLocked()
+{
+    wchar_t instance[64] = {}; // SWROTS_INSTANCE: a second copy of the game on this PC (a test) has its own folder
+    GetEnvironmentVariableW(L"SWROTS_INSTANCE", instance, 64);
+    const std::wstring root = ExeDirectory() + L"\\netplay\\online" + (instance[0] ? std::wstring(L".") + instance : L"");
+    CreateDirectoryW((ExeDirectory() + L"\\netplay").c_str(), nullptr);
+    DeleteTree(root);
+    CreateDirectoryW(root.c_str(), nullptr);
+    GameplaySettings g = {};
+    std::string args;
+    if (!UnpackLocked(g, args, root)) {
+        EndLocked("the match's package could not be unpacked", true);
+        return;
+    }
+    g_S.saved = GetSettings(); // both PCs play with the host's gameplay settings and the match's pace
+    g_S.settingsSaved = true;
+    SetOwnGameplaySettings(&g_S.saved);
+    ApplyGameplay(g);
+    g_S.fps = uint32_t(std::clamp(g.fpsLimit, 10, 120));
+    kernel::SetSessionDrives(root + L"\\saves", root + L"\\utility");
+    kernel::SetSessionFolders(root + L"\\nomods", root + L"\\cache"); // no mods in a match: the same game on both PCs
+    input::SetOnlinePorts(true);
+    if (g_S.server) { // client/server: each game at its own pace; the host's is the match
+        input::SetPadSource(&PadFromServer);
+        game::SetStripLocalPlayer(g_S.host ? 0 : 1); // the select strip follows this PC's player
+        g_S.bootPending = true;
+        g_S.entering = true; // its restart (to its main menu, then the room) under a cover
+        g_S.roomSince = 0;
+        g_S.phase = OnlinePhase::Starting;
+        SetMessage("starting the match");
+        LOG_INFO("Online: client/server match (%s)", g_S.host ? "the host's game is the match" : "following the host");
+        if (args.empty())
+            kernel::RestartFromDashboard();
+        else
+            kernel::LaunchGame(args);
+        // Only now: the observer takes the session's lock, which this start holds (a std::mutex taken twice throws).
+        kernel::SetLaunchObserver(&LaunchObserved);
+        return;
+    }
+    input::SetPadSource(&PadFromSession);
+    if (!kernel::SetDeterministicAddresses(true)) {
+        EndLocked("this PC's memory has no room at the match's fixed addresses", true);
+        return;
+    }
+    kernel::SetDeterministicBoot(true);
+    g_S.bootPending = true;
+    g_S.phase = OnlinePhase::Starting;
+    SetMessage("starting the match");
+    if (args.empty())
+        kernel::RestartFromDashboard();
+    else
+        kernel::LaunchGame(args);
+}
+
+// --- The network thread -------------------------------------------------------------------------------------------------
+
+void HandleLocked(const uint8_t* data, size_t size, const Endpoint& from)
+{
+    if (size < sizeof(Header))
+        return;
+    Header h;
+    std::memcpy(&h, data, sizeof(h));
+    if (h.magic != kMagic)
+        return;
+    const Msg type = Msg(h.type);
+    if (h.protocol != kProtocol) {
+        if (g_S.host && type == Msg::Hello) {
+            RejectMsg r = {};
+            r.h = MakeHeader(Msg::Reject, 0);
+            std::snprintf(r.text, sizeof(r.text), "the host runs another version of the port (%s)", SWROTS_VERSION);
+            g_S.socket.SendTo(from, &r, sizeof(r));
+        }
+        return;
+    }
+    if (g_S.host) {
+        if (type == Msg::Hello && size >= sizeof(HelloMsg)) {
+            HelloMsg m;
+            std::memcpy(&m, data, sizeof(m));
+            if (g_S.peer.Valid() && from != g_S.peer)
+                return; // a second guest: the room is full (it hears nothing and gives up)
+            auto reject = [&](const std::string& text) {
+                RejectMsg r = {};
+                r.h = MakeHeader(Msg::Reject, 0);
+                std::snprintf(r.text, sizeof(r.text), "%s", text.c_str());
+                g_S.socket.SendTo(from, &r, sizeof(r));
+            };
+            if (m.build != g_S.build) {
+                reject(std::string("the host runs another build of the port (") + SWROTS_VERSION + ")");
+                return;
+            }
+            if (m.content != g_S.content) {
+                reject("the host's game files differ from yours (compare netplay\\content.txt on both PCs)");
+                return;
+            }
+            if (!g_S.peer.Valid()) {
+                g_S.peer = from;
+                g_S.nonce = m.nonce;
+                g_S.remoteName = PlayerName(m.name, sizeof(m.name), "PLAYER 2");
+                g_S.lastHeard = Clock::now();
+                g_S.phase = OnlinePhase::Preparing;
+                g_S.packageWanted = true;
+                SetMessage("a player joined from " + from.ToString() + "; preparing the match");
+            }
+            if (g_S.welcomed) {
+                WelcomeMsg w = {};
+                w.h = MakeHeader(Msg::Welcome, g_S.token);
+                w.nonce = g_S.nonce;
+                w.inputDelay = uint8_t(g_S.inputDelay);
+                w.fps = uint8_t(g_S.fps);
+                w.reserved = g_S.server ? 1 : 0;
+                w.packageSize = uint32_t(g_S.package.size());
+                w.packageHash = g_S.packageHash;
+                std::snprintf(w.name, sizeof(w.name), "%s", g_S.localName.c_str());
+                SendLocked(w);
+            }
+            return;
+        }
+        if (from != g_S.peer || h.token != g_S.token)
+            return;
+        g_S.lastHeard = Clock::now();
+        switch (type) {
+        case Msg::ChunkAck:
+            if (size >= sizeof(ChunkAckMsg)) {
+                ChunkAckMsg a;
+                std::memcpy(&a, data, sizeof(a));
+                const size_t i = a.offset / kChunk;
+                if (i < g_S.chunksDone.size())
+                    g_S.chunksDone[i] = true;
+            }
+            break;
+        case Msg::Ready:
+            if (!g_S.ready) {
+                g_S.ready = true;
+                g_S.bootRequested = true; // at the next frame, on the game thread
+                SetMessage("the guest is ready");
+            }
+            break;
+        case Msg::Started:
+            g_S.startSeen = true;
+            break;
+        default:
+            break;
+        }
+    } else {
+        bool fromHost = g_S.peer.Valid() ? from == g_S.peer
+                                         : std::find(g_S.candidates.begin(), g_S.candidates.end(), from) != g_S.candidates.end();
+        if (!fromHost)
+            return;
+        if (type == Msg::Reject && size >= sizeof(RejectMsg)) {
+            RejectMsg r;
+            std::memcpy(&r, data, sizeof(r));
+            r.text[sizeof(r.text) - 1] = 0;
+            EndLocked(std::string("the host refused: ") + r.text, false);
+            return;
+        }
+        if (type == Msg::Welcome && size >= sizeof(WelcomeMsg)) {
+            WelcomeMsg w;
+            std::memcpy(&w, data, sizeof(w));
+            if (w.nonce != g_S.nonce || g_S.welcomed)
+                return;
+            g_S.peer = from;
+            g_S.token = w.h.token;
+            g_S.inputDelay = std::clamp<uint32_t>(w.inputDelay, 1, 10);
+            g_S.fps = w.fps ? w.fps : 30;
+            g_S.server = (w.reserved & 1) != 0;
+            g_S.package.assign(w.packageSize, 0);
+            g_S.packageHash = w.packageHash;
+            g_S.remoteName = PlayerName(w.name, sizeof(w.name), "PLAYER 1");
+            g_S.chunksDone.assign((w.packageSize + kChunk - 1) / kChunk, false);
+            g_S.welcomed = true;
+            g_S.lastHeard = Clock::now();
+            g_S.phase = OnlinePhase::Preparing;
+            SetMessage("connected to " + from.ToString() + "; receiving the host's profile");
+            return;
+        }
+        if (!g_S.welcomed || h.token != g_S.token)
+            return;
+        g_S.lastHeard = Clock::now();
+        switch (type) {
+        case Msg::Chunk:
+            if (size >= offsetof(ChunkMsg, data)) {
+                ChunkMsg c;
+                std::memcpy(&c, data, std::min(size, sizeof(c)));
+                const size_t i = c.offset / kChunk;
+                if (i < g_S.chunksDone.size() && c.offset + c.size <= g_S.package.size() &&
+                    offsetof(ChunkMsg, data) + c.size <= size) {
+                    std::memcpy(g_S.package.data() + c.offset, c.data, c.size);
+                    g_S.chunksDone[i] = true;
+                }
+                ChunkAckMsg a = {};
+                a.h = MakeHeader(Msg::ChunkAck, g_S.token);
+                a.offset = c.offset;
+                SendLocked(a);
+                if (!g_S.ready && std::all_of(g_S.chunksDone.begin(), g_S.chunksDone.end(), [](bool b) { return b; })) {
+                    if (Fnv(g_S.package.data(), g_S.package.size()) != g_S.packageHash) {
+                        EndLocked("the host's profile came damaged", true);
+                        return;
+                    }
+                    g_S.ready = true;
+                    SetMessage("the host's profile is here; waiting for the start");
+                }
+            }
+            break;
+        case Msg::Start:
+            if (g_S.ready && !g_S.startSeen) {
+                g_S.startSeen = true;
+                g_S.bootRequested = true;
+            }
+            if (g_S.startSeen) {
+                Header s = MakeHeader(Msg::Started, g_S.token);
+                SendLocked(s);
+            }
+            break;
+        default:
+            break;
+        }
+    }
+    // Both ways.
+    if (type == Msg::Pad || type == Msg::Launch || type == Msg::State || type == Msg::Room || type == Msg::Props ||
+        type == Msg::Seat || type == Msg::Chars ||
+        type == Msg::Vote || type == Msg::Born) {
+        if (g_S.server && (g_S.armed || g_S.bootPending || type == Msg::Room || type == Msg::Seat))
+            OnServerMsgLocked(type, data, size);
+        else if (type == Msg::Launch) // (diagnostics: a launch this game does not take now)
+            LOG_WARN("Online: the host's launch came before this game takes it (server %d, armed %d, boot %d)",
+                int(g_S.server), int(g_S.armed), int(g_S.bootPending));
+        return;
+    }
+    switch (type) {
+    case Msg::Input:
+        if (size >= offsetof(InputMsg, pads))
+            OnInputLocked(*reinterpret_cast<const InputMsg*>(data), size);
+        break;
+    case Msg::Ping:
+        if (size >= sizeof(PingMsg)) {
+            PingMsg p;
+            std::memcpy(&p, data, sizeof(p));
+            p.h.type = uint8_t(Msg::Pong);
+            SendLocked(p);
+        }
+        break;
+    case Msg::Pong:
+        if (size >= sizeof(PingMsg)) {
+            PingMsg p;
+            std::memcpy(&p, data, sizeof(p));
+            const int rtt = int(NowMs() - p.time);
+            g_S.pingMs = g_S.pingMs < 0 ? rtt : (g_S.pingMs * 7 + rtt) / 8;
+        }
+        break;
+    case Msg::Pages:
+        if (size >= offsetof(PagesMsg, hashes))
+            OnPagesLocked(*reinterpret_cast<const PagesMsg*>(data));
+        break;
+    case Msg::Bye:
+        if (size >= sizeof(RejectMsg)) {
+            RejectMsg r;
+            std::memcpy(&r, data, sizeof(r));
+            r.text[sizeof(r.text) - 1] = 0;
+            EndLocked(std::strstr(r.text, "inactivity") ? "the other player was removed for inactivity"
+                                                       : "the other player left", false);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+// What the network thread sends on its own, a few times a second.
+void TickLocked()
+{
+    const auto now = Clock::now();
+    if (g_S.endAt != Clock::time_point{} && now >= g_S.endAt) {
+        g_S.endAt = {};
+        EndLocked(g_S.endWhy, true);
+        return;
+    }
+    const auto since = [&](Clock::time_point t) { return std::chrono::duration_cast<std::chrono::milliseconds>(now - t).count(); };
+    if (g_S.phase == OnlinePhase::Opening || g_S.phase == OnlinePhase::Waiting || g_S.phase == OnlinePhase::Off ||
+        g_S.phase == OnlinePhase::Ended)
+        return;
+    if (!g_S.host && !g_S.welcomed) { // the guest calls the host on each of its addresses
+        if (since(g_S.started) > kConnectMs) {
+            EndLocked("no answer from the host (a wrong code, or its router lets nothing in: see the port's online "
+                      "help about the port to open)", false);
+            return;
+        }
+        HelloMsg m = {};
+        m.h = MakeHeader(Msg::Hello, 0);
+        m.build = g_S.build;
+        m.content = g_S.content;
+        m.nonce = g_S.nonce;
+        std::snprintf(m.version, sizeof(m.version), "%s", SWROTS_VERSION);
+        std::snprintf(m.name, sizeof(m.name), "%s", g_S.localName.c_str());
+        for (const Endpoint& e : g_S.candidates)
+            g_S.socket.SendTo(e, &m, sizeof(m));
+        return;
+    }
+    if (since(g_S.lastHeard) > kSilenceMs) {
+        EndLocked("connection lost", false);
+        return;
+    }
+    if (g_S.host && g_S.welcomed && !g_S.ready) { // the package, the chunks not acknowledged yet
+        int sent = 0;
+        for (size_t i = 0; i < g_S.chunksDone.size() && sent < 64; ++i) {
+            if (g_S.chunksDone[i])
+                continue;
+            ChunkMsg c = {};
+            c.h = MakeHeader(Msg::Chunk, g_S.token);
+            c.offset = uint32_t(i * kChunk);
+            c.size = uint16_t(std::min<size_t>(kChunk, g_S.package.size() - c.offset));
+            std::memcpy(c.data, g_S.package.data() + c.offset, c.size);
+            SendLocked(c, offsetof(ChunkMsg, data) + c.size);
+            ++sent;
+        }
+    }
+    if (!g_S.host && g_S.ready && !g_S.startSeen) {
+        Header r = MakeHeader(Msg::Ready, g_S.token);
+        SendLocked(r);
+    }
+    if (g_S.host && g_S.ready && !g_S.startSeen) {
+        Header s = MakeHeader(Msg::Start, g_S.token);
+        SendLocked(s);
+    }
+    if (g_S.host && g_S.server && g_S.peer.Valid()) {
+        RoomMsg r = {};
+        r.h = MakeHeader(Msg::Room, g_S.token);
+        r.room = g_S.room;
+        r.hostReady = g_S.localReady ? 1 : 0;
+        r.guestReady = g_S.remoteReady ? 1 : 0;
+        r.starts = g_S.starts;
+        SendLocked(r);
+    }
+    if (!g_S.host && g_S.server && g_S.peer.Valid() && g_S.welcomed) {
+        SeatMsg m = {};
+        m.h = MakeHeader(Msg::Seat, g_S.token);
+        m.ready = g_S.localReady ? 1 : 0;
+        m.starts = g_S.starts;
+        SendLocked(m);
+    }
+    if (g_S.peer.Valid()) {
+        PingMsg p = {};
+        p.h = MakeHeader(Msg::Ping, g_S.token);
+        p.time = NowMs();
+        SendLocked(p);
+    }
+    if ((g_S.armed || g_S.bootPending) && !g_S.server)
+        SendInputsLocked(); // the inputs again (one could have been lost), and the check
+}
+
+void NetThread(bool host, uint16_t port)
+{
+    UpnpMapping mapping; // the host's port on its router, taken back as the thread ends
+    uint8_t buffer[2048];
+    const auto hashStart = Clock::now();
+    const uint64_t build = BuildHash(), content = ContentHash();
+    {
+        std::lock_guard<std::mutex> lock(g_S.lock);
+        g_S.build = build;
+        g_S.content = content;
+        g_S.started = g_S.lastHeard = Clock::now();
+        LOG_INFO("Online: build %016llX, game files %016llX (%lld ms)", build, content,
+            (long long)std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - hashStart).count());
+    }
+    if (host) {
+        // The public address: STUN (on by default: [Online] Stun=0 in settings.ini, or SWROTS_ONLINE_STUN=0, off).
+        Endpoint publicAddress, localAddress{ LocalAddress(), port };
+        wchar_t ini[MAX_PATH];
+        std::wstring iniPath = ExeDirectory() + L"\\settings.ini";
+        bool stun = GetPrivateProfileIntW(L"Online", L"Stun", 1, iniPath.c_str()) != 0;
+        char env[16] = "";
+        if (GetEnvironmentVariableA("SWROTS_ONLINE_STUN", env, sizeof(env)) && env[0] == '0')
+            stun = false;
+        GetPrivateProfileStringW(L"Online", L"StunServer", L"stun.l.google.com:19302", ini, MAX_PATH, iniPath.c_str());
+        Endpoint server;
+        const std::wstring serverName = ini;
+        // UPnP first (on by default: [Online] Upnp=0 off): the port opened on the router, the same port outside
+        bool upnp = GetPrivateProfileIntW(L"Online", L"Upnp", 1, iniPath.c_str()) != 0;
+        if (GetEnvironmentVariableA("SWROTS_ONLINE_UPNP", env, sizeof(env)) && env[0] == '0')
+            upnp = false;
+        if (upnp)
+            UpnpMapPort(port, localAddress.ip, 2500, mapping);
+        if (stun && Resolve(std::string(serverName.begin(), serverName.end()), 3478, server)) {
+            if (!StunPublicAddress(g_S.socket, server, publicAddress, 3000))
+                LOG_WARN("Online: the STUN server did not answer");
+        }
+        if (mapping.Active()) { // the mapped port, at the address STUN saw (or the router's own)
+            if (!publicAddress.Valid())
+                publicAddress.ip = mapping.externalIp;
+            publicAddress.port = mapping.port;
+        }
+        std::lock_guard<std::mutex> lock(g_S.lock);
+        if (g_S.phase != OnlinePhase::Opening) {
+            UpnpUnmap(mapping);
+            return;
+        }
+        if (!publicAddress.Valid()) {
+            LOG_WARN("Online: no public address (STUN and UPnP off or not answering); the room code holds this PC's "
+                     "local address only");
+            publicAddress = localAddress;
+        }
+        g_S.roomCode = MakeRoomCode(publicAddress, localAddress);
+        g_S.phase = OnlinePhase::Waiting;
+        SetMessage("room open: code " + g_S.roomCode + " (public " + publicAddress.ToString() + ", local " +
+            localAddress.ToString() + ")");
+    }
+    auto lastTick = Clock::now() - std::chrono::seconds(1);
+    while (!g_ThreadStop) {
+        Endpoint from;
+        const size_t n = g_S.socket.Receive(buffer, sizeof(buffer), from, 20);
+        std::lock_guard<std::mutex> lock(g_S.lock);
+        if (g_ThreadStop)
+            break;
+        if (n)
+            HandleLocked(buffer, n, from);
+        const auto now = Clock::now();
+        if (now - lastTick >= std::chrono::milliseconds(g_S.armed ? 100 : 250)) {
+            lastTick = now;
+            TickLocked();
+        }
+    }
+    UpnpUnmap(mapping);
+}
+
+void StopThread()
+{
+    g_ThreadStop = true;
+    if (g_Thread.joinable() && g_Thread.get_id() != std::this_thread::get_id())
+        g_Thread.join();
+    else if (g_Thread.joinable())
+        g_Thread.detach();
+    g_ThreadStop = false;
+}
+
+void ResetSessionLocked(bool host)
+{
+    g_S.host = host;
+    g_S.roomCode.clear();
+    g_S.message.clear();
+    g_S.peer = {};
+    g_S.candidates.clear();
+    g_S.package.clear();
+    g_S.chunksDone.clear();
+    g_S.packageWanted = g_S.welcomed = g_S.ready = g_S.startSeen = g_S.bootRequested = false;
+    g_S.bootPending = g_S.armed = false;
+    g_S.local = host ? 0 : 1;
+    std::memset(g_S.padFrame, 0, sizeof(g_S.padFrame));
+    g_S.localLatest = g_S.remoteContiguous = g_S.remoteAck = g_S.remoteLatest = 0;
+    g_S.frame = 0;
+    g_S.packets[0] = g_S.packets[1] = 0;
+    g_S.stalls = 0;
+    g_S.pingMs = -1;
+    std::memset(g_S.checks, 0, sizeof(g_S.checks));
+    g_S.lastLocal = g_S.lastRemote = {};
+    g_S.desync = false;
+    g_S.endAt = {};
+    g_S.pageLogged.clear();
+    g_S.padSeqOut = g_S.padSeqIn = 0;
+    g_S.remotePad = {};
+    g_S.remotePacket = 0;
+    g_S.launchIdOut = g_S.launchIdIn = 0;
+    g_S.pendingLaunch.clear();
+    g_S.pendingLaunchSet = g_S.followingLaunch = g_S.followStarted = false;
+    g_S.lastLaunch = {};
+    g_S.lastLaunchFrame = g_S.lastLaunchResends = 0;
+    g_S.stateSeqOut = g_S.stateSeqIn = g_S.statesIn = 0;
+    g_S.propsSeqOut = g_S.propsSeqIn = 0;
+    g_S.charsSeqOut = g_S.charsSeqIn = 0;
+    g_S.bornSeqOut = g_S.bornSeqIn = 0;
+    g_S.bornIn.clear();
+    g_S.clockTenths = -1;
+    g_S.draws = 0;
+    g_S.drawsKnown = false;
+    g_S.votes[0] = g_S.votes[1] = g_S.decided = 0;
+    g_S.voteSeconds = -1;
+    g_S.voteMenuAt = g_S.voteDeadline = {};
+    g_S.retryVoted = false;
+    g_S.propsIn.clear();
+    g_S.charsIn.clear();
+    g_S.haveState = false;
+    g_S.guestInDuel = false;
+    g_S.ownPad = g_S.hostLive = {};
+    g_S.played[0] = g_S.played[1] = {};
+    g_S.echoPads[0] = g_S.echoPads[1] = g_S.echoHeld[0] = g_S.echoHeld[1] = {};
+    g_S.echoPacket[0] = g_S.echoPacket[1] = g_S.echoAt = 0;
+    g_S.echoValid = g_S.playingValid = g_S.playingApplied = false;
+    g_S.inLevel = g_S.entering = g_S.enteringRoom = false;
+    g_S.roundWinner = g_S.matchWinner = -1;
+    g_S.roomSince = 0;
+    g_S.ownPacket = g_S.remoteReads = g_S.remoteChanges = 0;
+    g_S.remoteInDuel = g_S.duelStartWaited = false;
+    g_S.remoteScreen = g_S.screen = g_S.screenSince = g_S.followTried = 0;
+    g_S.toRoom = g_S.lost = false;
+    g_S.localReady = g_S.remoteReady = false;
+    g_S.starts = 0;
+    g_S.joinAt = g_S.arenaAt = ~0u;
+    g_S.started = g_S.lastHeard = Clock::now();
+    LARGE_INTEGER counter;
+    QueryPerformanceCounter(&counter);
+    g_S.nonce = uint32_t(counter.QuadPart) ^ GetCurrentProcessId() * 2654435761u;
+    g_S.token = host ? (g_S.nonce * 2246822519u) | 1 : 0;
+}
+
+bool Prepare(bool host, std::string& error)
+{
+    StopThread();
+    // This PC's own main menu (its profile), for the session's end; made first (it saves the profile).
+    const std::string session = game::ProfileSessionArguments();
+    const std::string ownMenu = session.empty() ? std::string() :
+        "map: v_shellBetweenLevels:0 v_versusMode:0 v_bonusMissionMode:0 v_challengeMissionMode:0 v_checkpointIndex:-1" +
+        session;
+    {
+        std::lock_guard<std::mutex> lock(g_S.lock);
+        if (g_S.phase != OnlinePhase::Off && g_S.phase != OnlinePhase::Ended) {
+            error = "a session is already on";
+            return false;
+        }
+    }
+    if (!NetworkInit()) {
+        error = "the network could not start";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    ResetSessionLocked(host);
+    g_S.ownMenuArgs = ownMenu;
+    g_S.localName = LocalPlayerName();
+    g_S.remoteName.clear();
+    g_S.inputDelay = 3;
+    g_S.fps = uint32_t(std::clamp(GetSettings().fpsLimit, 10, 120));
+    g_S.server = host ? ServerModeWanted() : true; // the guest takes the host's (its Welcome)
+    return true;
+}
+
+} // namespace
+
+bool OnlineHost()
+{
+    std::string error;
+    if (!Prepare(true, error)) {
+        LOG_WARN("Online: %s", error.c_str());
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    const std::wstring ini = ExeDirectory() + L"\\settings.ini";
+    const uint16_t wanted = uint16_t(GetPrivateProfileIntW(L"Online", L"Port", kDefaultPort, ini.c_str()));
+    bool open = false;
+    for (uint16_t p = wanted; p < wanted + 10 && !open; ++p)
+        open = g_S.socket.Open(p);
+    if (!open) {
+        g_S.phase = OnlinePhase::Ended;
+        SetMessage("no UDP port free to host on");
+        return false;
+    }
+    g_S.phase = OnlinePhase::Opening;
+    SetMessage("opening a room on UDP port " + std::to_string(g_S.socket.LocalPort()));
+    g_Thread = std::thread(NetThread, true, g_S.socket.LocalPort());
+    return true;
+}
+
+bool OnlineJoin(const std::string& codeOrAddress)
+{
+    std::string error;
+    if (!Prepare(false, error)) {
+        LOG_WARN("Online: %s", error.c_str());
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    Endpoint publicAddress, localAddress, direct;
+    const std::wstring ini = ExeDirectory() + L"\\settings.ini";
+    const uint16_t port = uint16_t(GetPrivateProfileIntW(L"Online", L"Port", kDefaultPort, ini.c_str()));
+    if (ReadRoomCode(codeOrAddress, port, publicAddress, localAddress)) {
+        if (localAddress.Valid())
+            g_S.candidates.push_back(localAddress);
+        if (publicAddress.Valid() && publicAddress != localAddress)
+            g_S.candidates.push_back(publicAddress);
+    } else if (Resolve(codeOrAddress, kDefaultPort, direct)) {
+        g_S.candidates.push_back(direct);
+    } else {
+        g_S.phase = OnlinePhase::Ended;
+        SetMessage("that room code is not right (mistyped?)");
+        return false;
+    }
+    if (!g_S.socket.Open(0)) {
+        g_S.phase = OnlinePhase::Ended;
+        SetMessage("no UDP port free");
+        return false;
+    }
+    g_S.phase = OnlinePhase::Connecting;
+    std::string list;
+    for (const Endpoint& e : g_S.candidates)
+        list += " " + e.ToString();
+    SetMessage("calling the host at" + list);
+    g_Thread = std::thread(NetThread, false, uint16_t(0));
+    return true;
+}
+
+void OnlineLeave()
+{
+    {
+        std::lock_guard<std::mutex> lock(g_S.lock);
+        EndLocked("left", true);
+        g_S.phase = OnlinePhase::Off;
+    }
+    StopThread();
+    g_S.socket.Close();
+}
+
+void OnlineCoopVote(int player, CoopVote choice)
+{
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    if (!g_S.server || player < 0 || player > 1 || g_S.decided)
+        return;
+    if (!g_S.host) { // the guest: its choice to the host (a few times: the host keeps the latest)
+        static uint32_t seq = 0;
+        VoteMsg m = {};
+        m.h = MakeHeader(Msg::Vote, g_S.token);
+        m.choice = uint8_t(choice);
+        for (int i = 0; i < 3; ++i) {
+            m.seq = ++seq;
+            SendLocked(m);
+        }
+        LOG_INFO("Online: this player votes %s (to the host)", choice == CoopVote::Retry ? "Retry" : "Quit");
+        return;
+    }
+    if (g_S.votes[player] != uint8_t(choice))
+        LOG_INFO("Online: player %d votes %s", player + 1, choice == CoopVote::Retry ? "Retry" : "Quit");
+    g_S.votes[player] = uint8_t(choice);
+}
+
+CoopVote OnlineCoopVoteFrame(bool gameOver)
+{
+    constexpr int kVoteSeconds = 30;
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    if (!g_S.server || !g_S.armed)
+        return CoopVote::None;
+    if (!g_S.host) // the guest: the host's outcome, as it came
+        return CoopVote(g_S.decided);
+    const auto now = Clock::now();
+    g_S.voteMenuAt = now;
+    if (g_S.decided)
+        return CoopVote::None; // made once (the host's game is on its way)
+    if (gameOver && g_S.voteDeadline == Clock::time_point{}) {
+        g_S.voteDeadline = now + std::chrono::seconds(kVoteSeconds);
+        LOG_INFO("Online: game over: the players vote (%d s)", kVoteSeconds);
+    }
+    if (g_S.voteDeadline != Clock::time_point{})
+        g_S.voteSeconds = std::max(0, int(std::chrono::duration_cast<std::chrono::milliseconds>(g_S.voteDeadline - now).count() + 999) / 1000);
+    const uint8_t retry = uint8_t(CoopVote::Retry), quit = uint8_t(CoopVote::Quit);
+    CoopVote outcome = CoopVote::None;
+    if (g_S.votes[0] == quit || g_S.votes[1] == quit)
+        outcome = CoopVote::Quit; // one wants out: back to the room
+    else if (g_S.votes[0] == retry && g_S.votes[1] == retry)
+        outcome = CoopVote::Retry;
+    else if (g_S.voteDeadline != Clock::time_point{} && now >= g_S.voteDeadline)
+        outcome = CoopVote::Quit; // the time out: a missing vote counts as Quit
+    if (outcome != CoopVote::None) {
+        g_S.decided = uint8_t(outcome);
+        g_S.retryVoted = outcome == CoopVote::Retry;
+        LOG_INFO("Online: the vote: %s (player 1 %u, player 2 %u)", outcome == CoopVote::Retry ? "the mission again" :
+            "back to the room", g_S.votes[0], g_S.votes[1]);
+    }
+    return outcome;
+}
+
+bool OnlineTakeRehost(bool& notice, std::string& why)
+{
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    if (!g_S.rehost || g_S.leaving || g_S.phase != OnlinePhase::Ended)
+        return false;
+    g_S.rehost = false;
+    notice = g_S.rehostNotice;
+    why = g_S.message;
+    return true;
+}
+
+OnlineStatusInfo OnlineStatus()
+{
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    OnlineStatusInfo i;
+    i.phase = g_S.phase;
+    i.host = g_S.host;
+    i.roomCode = g_S.roomCode;
+    i.message = g_S.message;
+    i.frame = g_S.frame;
+    i.inputDelay = g_S.inputDelay;
+    i.pingMs = g_S.pingMs;
+    i.stalls = g_S.stalls;
+    i.desync = g_S.desync;
+    i.localName = g_S.localName;
+    i.remoteName = g_S.remoteName;
+    i.matchOn = g_S.armed || g_S.bootPending;
+    i.guestHere = g_S.host && g_S.peer.Valid();
+    i.lost = g_S.lost;
+    i.room = g_S.room;
+    i.localReady = g_S.localReady;
+    i.remoteReady = g_S.remoteReady;
+    i.clockTenths = g_S.inLevel ? g_S.clockTenths : -1;
+    i.draws = g_S.draws;
+    i.coopVotes[0] = g_S.votes[0];
+    i.coopVotes[1] = g_S.votes[1];
+    i.coopVoteSeconds = g_S.voteSeconds;
+    i.coopVoteDecided = g_S.decided;
+    i.entering = g_S.entering && (g_S.phase == OnlinePhase::Starting || g_S.phase == OnlinePhase::Playing);
+    i.enteringRoom = i.entering && g_S.enteringRoom;
+    i.leaving = g_S.leaving && g_S.phase == OnlinePhase::Ended;
+    if (g_S.inLevel && !g_S.lastMap.empty()) { // U170_EP4_Deathstar_02: EP4 DEATHSTAR 02
+        std::string map = g_S.lastMap;
+        if (map.size() > 1 && map[0] == 'U' && map.find('_') != std::string::npos && isdigit(uint8_t(map[1])))
+            map = map.substr(map.find('_') + 1);
+        for (char& c : map)
+            c = c == '_' ? ' ' : char(toupper(uint8_t(c)));
+        i.arenaPlayed = map;
+    }
+    return i;
+}
+
+std::string OnlineStatusLine()
+{
+    const OnlineStatusInfo i = OnlineStatus();
+    static const char* const names[] = { "off", "opening", "waiting", "connecting", "preparing", "starting", "playing", "ended" };
+    char line[512];
+    std::snprintf(line, sizeof(line), "online: %s (%s)%s%s, frame %u, delay %u, ping %d ms, %u stall(s)%s: %s",
+        names[int(i.phase)], i.host ? "host" : "guest", i.roomCode.empty() ? "" : ", code ", i.roomCode.c_str(),
+        i.frame, i.inputDelay, i.pingMs, i.stalls, i.desync ? ", DESYNC" : "", i.message.c_str());
+    return line;
+}
+
+uint16_t OnlineProtocol()
+{
+    return kProtocol;
+}
+
+std::string OnlinePlayerName()
+{
+    return LocalPlayerName();
+}
+
+void SetOnlinePlayerName(const std::string& name)
+{
+    const std::string clean = CleanName(std::wstring(name.begin(), name.end()));
+    const std::wstring ini = ExeDirectory() + L"\\settings.ini";
+    WritePrivateProfileStringW(L"Online", L"Name", std::wstring(clean.begin(), clean.end()).c_str(), ini.c_str());
+    LOG_INFO("Online: the player's name is now '%s'", LocalPlayerName().c_str());
+}
+
+void SetOnlineRoom(const OnlineRoomSettings& room)
+{
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    if (!g_S.host && g_S.phase != OnlinePhase::Off && g_S.phase != OnlinePhase::Ended)
+        return; // the host's to set
+    OnlineRoomSettings r = room;
+    r.name[sizeof(r.name) - 1] = 0;
+    if (r.time != 0 && r.time != 30 && r.time != 60 && r.time != 99)
+        r.time = 0;
+    if (r.rounds != g_S.room.rounds || r.arena != g_S.room.arena || r.rematch != g_S.room.rematch ||
+        r.open != g_S.room.open || r.time != g_S.room.time || std::strcmp(r.name, g_S.room.name) != 0)
+        LOG_INFO("Online: room settings: '%s', %d rounds, arena %d, rematch %s, %s, time %s", r.name, r.rounds, r.arena,
+            r.rematch ? "on" : "off", r.open ? "public" : "private", r.time ? (std::to_string(r.time) + " s").c_str() : "none");
+    g_S.room = r;
+}
+
+void SetOnlineReady(bool ready)
+{
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    if (g_S.localReady != ready)
+        LOG_INFO("Online: %s", ready ? "ready" : "no longer ready");
+    g_S.localReady = ready;
+}
+
+bool OnlineTakeStart()
+{
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    if (!g_S.host || !g_S.localReady || !g_S.remoteReady || !g_S.peer.Valid())
+        return false;
+    g_S.localReady = g_S.remoteReady = false;
+    ++g_S.starts;
+    LOG_INFO("Online: both players ready: the match starts (%u)", unsigned(g_S.starts));
+    return true;
+}
+
+bool OnlineTakeDrawEnd()
+{
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    const bool ended = g_S.drawEnded;
+    g_S.drawEnded = false;
+    return ended;
+}
+
+void OnlineGoodbye()
+{
+    // the message loop's thread: the lock tried a little (the game's thread may hold it), then the other PC told
+    for (int i = 0; i < 20; ++i) {
+        if (g_S.lock.try_lock()) {
+            std::lock_guard<std::mutex> lock(g_S.lock, std::adopt_lock);
+            if (g_S.phase != OnlinePhase::Off && g_S.phase != OnlinePhase::Ended && g_S.peer.Valid()) {
+                RejectMsg bye = {};
+                bye.h = MakeHeader(Msg::Bye, g_S.token);
+                std::snprintf(bye.text, sizeof(bye.text), "%s", "left");
+                for (int k = 0; k < 3; ++k)
+                    SendLocked(bye);
+                LOG_INFO("Online: the game is closing: the other player told");
+            }
+            return;
+        }
+        Sleep(10);
+    }
+}
+
+bool OnlineActive()
+{
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    return g_S.armed;
+}
+
+void OnlineReboot()
+{
+    std::lock_guard<std::mutex> lock(g_S.lock);
+    g_S.followStarted = false; // the host's launch is in
+    if (g_S.leaving)
+        g_S.leaveBooted = true; // the restart after the match's end: its main menu comes next
+    if (!g_S.bootPending)
+        return; // a level change in a match: the frames go on
+    g_S.bootPending = false;
+    g_S.armed = true;
+    g_S.frame = 0;
+    g_S.enteringAt = 0;
+    g_S.localLatest = g_S.inputDelay; // frames up to the delay are neutral on both PCs
+    g_S.remoteContiguous = std::max(g_S.remoteContiguous, g_S.inputDelay); // the other may have started first
+    g_S.paceFrame = 0;
+    g_S.paceStart = Clock::now();
+    g_S.paceClock = 0; // set at the first frame
+    g_S.phase = OnlinePhase::Playing;
+    g_S.lastHeard = Clock::now();
+    g_S.toRoom = g_S.server && g_S.host; // the match's first screen: the room (the guest's follows)
+    g_S.toRoomAt = g_S.frame;
+    SetMessage(std::string("the match starts: player ") + (g_S.host ? "1 (host)" : "2 (guest)") + ", input delay " +
+        std::to_string(g_S.inputDelay) + " frames");
+}
+
+// A player who does nothing for five minutes while the other is in the room with them (the room, the select screens,
+// a duel) is taken out of it, so that a room is never held by someone away: this PC's own devices watched (a button,
+// a trigger, a stick or the keyboard), the session ended as a Leave would (the other PC told why), this player's game
+// back at its main menu with the game's popup saying why. SWROTS_TEST_IDLE_SECONDS: another time (tests).
+bool IdleKickLocked()
+{
+    static Clock::time_point lastActive = Clock::now();
+    static uint32_t lastState = 0;
+    static int limitSeconds = -1;
+    if (limitSeconds < 0) {
+        char value[16] = "";
+        limitSeconds = GetEnvironmentVariableA("SWROTS_TEST_IDLE_SECONDS", value, sizeof(value)) ? std::max(10, atoi(value))
+                                                                                               : 300;
+    }
+    const auto now = Clock::now();
+    const bool live = g_S.phase != OnlinePhase::Off && g_S.phase != OnlinePhase::Ended;
+    const bool together = live && (g_S.host ? g_S.peer.Valid() : g_S.phase == OnlinePhase::Playing);
+    if (!together) {
+        lastActive = now;
+        return false;
+    }
+    input::GamePad pad = {};
+    input::ReadLivePad(0, pad);
+    uint32_t state = pad.buttons; // what the player holds, without the sticks' and triggers' small drift
+    for (int i = 0; i < 8; ++i)
+        state = state * 3 + (pad.analog[i] > 0x40 ? 1 : 0);
+    for (int i = 0; i < 4; ++i)
+        state = state * 3 + (pad.thumbs[i] > 12000 ? 1 : pad.thumbs[i] < -12000 ? 2 : 0);
+    if (state != lastState) {
+        lastState = state;
+        lastActive = now;
+        return false;
+    }
+    if (now - lastActive < std::chrono::seconds(limitSeconds))
+        return false;
+    lastActive = now;
+    const bool matchOn = g_S.armed || g_S.bootPending;
+    LOG_INFO("Online: no action for %d s: this player leaves the room", limitSeconds);
+    EndLocked("removed for inactivity", true);
+    g_S.lostPopup = matchOn; // its popup at the main menu (the other PC's says why too)
+    return true;
+}
+
+void OnlineFrame()
+{
+    { // tests on one PC: SWROTS_TEST_FRAME_SLEEP=<ms> makes this game's frames that much longer (a slower PC)
+        static const int ms = [] {
+            char v[16] = "";
+            return GetEnvironmentVariableA("SWROTS_TEST_FRAME_SLEEP", v, sizeof(v)) ? std::clamp(atoi(v), 0, 100) : 0;
+        }();
+        if (ms > 0) { // (a busy wait: Sleep's own step is too coarse)
+            const auto until = Clock::now() + std::chrono::milliseconds(ms);
+            while (Clock::now() < until)
+                YieldProcessor();
+        }
+    }
+    std::unique_lock<std::mutex> lock(g_S.lock);
+    if (g_S.leaving) { // the game back at its main menu after the match: on to the Online screen (the popup over it)
+        const auto now = Clock::now();
+        if (g_S.phase != OnlinePhase::Ended || now - g_S.endedAt > std::chrono::seconds(15)) {
+            g_S.leaving = false;
+        } else if (g_S.leaveBooted && now - g_S.leaveTried > std::chrono::milliseconds(400)) {
+            uint8_t* f1 = nullptr;
+            uint8_t* f2 = nullptr;
+            const bool inShell = !DuelFighters(f1, f2) && !game::PlayerObject();
+            if (inShell && g_S.leaveSent && game::LastShellScreen() == game::MenuKey("main_menu")) {
+                if (g_S.leaveSeen == Clock::time_point{})
+                    g_S.leaveSeen = now;
+                else if (now - g_S.leaveSeen > std::chrono::milliseconds(300)) {
+                    g_S.leaving = false;
+                    LOG_INFO("Online: back at the main menu");
+                }
+            } else if (g_S.leaveSent && now - g_S.leaveTried > std::chrono::seconds(3)) {
+                g_S.leaveSent = false; // the move did not hold (the front end was still coming up): again
+            } else if (inShell && !g_S.leaveSent) {
+                g_S.leaveTried = now;
+                const bool popup = g_S.lostPopup;
+                const std::string why = g_S.message;
+                const bool rehost = g_S.rehost, notice = g_S.rehostNotice;
+                g_S.lostPopup = g_S.rehost = false;
+                lock.unlock();
+                const bool ok = rehost ? game::OnlineRehost(notice, why) // the host: its room again, at once
+                    : popup ? game::OnlineShowLost(why) // the main menu, the game's popup over it
+                            : game::LastShellScreen() == game::MenuKey("main_menu") ||
+                                game::GoToShellScreen("main_menu");
+                lock.lock();
+                if (ok)
+                    g_S.leaveSent = true;
+                return;
+            }
+        }
+    }
+    if (IdleKickLocked())
+        return;
+    if (g_S.packageWanted && g_S.host) { // the host's profile, saved by the game's code
+        g_S.packageWanted = false;
+        BuildPackageLocked();
+        g_S.welcomed = true; // the next Hello is answered with the Welcome
+        WelcomeMsg w = {};
+        w.h = MakeHeader(Msg::Welcome, g_S.token);
+        w.nonce = g_S.nonce;
+        w.inputDelay = uint8_t(g_S.inputDelay);
+        w.fps = uint8_t(g_S.fps);
+        w.reserved = g_S.server ? 1 : 0;
+        w.packageSize = uint32_t(g_S.package.size());
+        w.packageHash = g_S.packageHash;
+        std::snprintf(w.name, sizeof(w.name), "%s", g_S.localName.c_str());
+        SendLocked(w);
+        SetMessage("sending the profile to the guest");
+    }
+    if (g_S.bootRequested) {
+        g_S.bootRequested = false;
+        BeginBootLocked();
+        return;
+    }
+    if (!g_S.armed)
+        return;
+    if (g_S.server) {
+        ServerFrameLocked(lock);
+        return;
+    }
+
+    // The frame that ends here was g_S.frame; the next one is played with both players' inputs for it.
+    const uint32_t next = g_S.frame + 1;
+    // This PC's input, `inputDelay` frames ahead.
+    const uint32_t ahead = next + g_S.inputDelay;
+    if (ahead > g_S.localLatest) {
+        input::GamePad pad;
+        input::ReadLivePad(0, pad);
+        for (uint32_t f = g_S.localLatest + 1; f <= ahead; ++f)
+            StoreInput(g_S.local, f, pad);
+        g_S.localLatest = ahead;
+    }
+    // A check of the game's course at the start of every kHashEvery-th frame (the same point on both PCs).
+    if (next % HashEvery() == 0) {
+        const auto* data = reinterpret_cast<const uint8_t*>(uintptr_t(0x00612BE0));
+        const size_t dataSize = 0x00962BF8 - 0x00612BE0;
+        uint64_t h = kernel::SchedTraceHash();
+        if (!g_S.desync) { // kept until the other's check for this frame came (a desync's report)
+            Session::Checked& k = g_S.checked[(next / HashEvery()) % std::size(g_S.checked)];
+            k.data.assign(data, data + dataSize);
+            k.frame = next;
+            k.trace = h;
+        }
+        h = HashGameData(data, dataSize, h);
+        g_S.checks[(next / HashEvery()) % std::size(g_S.checks)] = { next, h };
+        g_S.lastLocal = { next, h };
+        if (next % 600 == 0)
+            LOG_INFO("Online: frame %u, check %016llX, %u stall(s), ping %d ms", next, h, g_S.stalls, g_S.pingMs);
+        CompareChecksLocked();
+    }
+    SendInputsLocked();
+
+    // The other's input for the next frame.
+    const int remote = 1 - g_S.local;
+    if (!HaveInput(remote, next)) {
+        ++g_S.stalls;
+        const auto waitStart = Clock::now();
+        bool told = false;
+        while (g_S.armed && !HaveInput(remote, next)) {
+            g_S.inputs.wait_for(lock, std::chrono::milliseconds(50));
+            if (!told && Clock::now() - waitStart > std::chrono::seconds(1)) {
+                told = true;
+                SetMessage("waiting for the other player");
+            }
+            if (g_S.armed && !HaveInput(remote, next) && Clock::now() - waitStart > std::chrono::milliseconds(100))
+                SendInputsLocked();
+        }
+        if (!g_S.armed)
+            return; // the session ended meanwhile
+        if (told)
+            SetMessage("playing");
+        g_S.paceStart = Clock::now(); // the wait shifted the pace
+        g_S.paceFrame = next;
+        g_S.paceClock = kernel::FixedClockPeek();
+    }
+    // The packet numbers (they move on when a pad changes), then the frame.
+    for (int p = 0; p < 2; ++p)
+        if (std::memcmp(&InputOf(p, next), &InputOf(p, next - 1), sizeof(input::GamePad)) != 0)
+            ++g_S.packets[p];
+    g_S.frame = next;
+
+    // The pace: the game's own time (the fixed clock, which its vertical blanks and frame limiter move on) shown at
+    // the PC's; a little slower while this PC is ahead of the other.
+    const auto period = std::chrono::microseconds(1000000 / g_S.fps);
+    const uint64_t gameNow = kernel::FixedClockPeek();
+    if (!g_S.paceClock)
+        g_S.paceClock = gameNow;
+    const uint32_t remoteFrame = g_S.remoteLatest > g_S.inputDelay ? g_S.remoteLatest - g_S.inputDelay : 0;
+    if (next > remoteFrame + 1)
+        g_S.paceStart += period / 4; // this PC is ahead: it slows down until the other catches up
+    const auto target = g_S.paceStart + std::chrono::microseconds((gameNow - g_S.paceClock) / 10);
+    lock.unlock();
+    const auto now = Clock::now();
+    if (target > now + std::chrono::milliseconds(150) || now > target + std::chrono::milliseconds(150)) {
+        std::lock_guard<std::mutex> relock(g_S.lock); // far off (a load): the pace starts again here
+        g_S.paceStart = now;
+        g_S.paceFrame = next;
+        g_S.paceClock = gameNow;
+        return;
+    }
+    while (Clock::now() < target) {
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(target - Clock::now()).count();
+        if (left > 2)
+            Sleep(DWORD(left - 1));
+        else
+            SwitchToThread();
+    }
+}
+
+} // namespace swrots::net
