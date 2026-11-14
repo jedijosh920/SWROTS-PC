@@ -482,10 +482,39 @@ constexpr uint32_t kCharacterForce = 0xA40, kCharacterMaxForce = 0xA44, kObjectS
 using JediSetupFn = bool(__fastcall*)(uint8_t*, void*);
 JediSetupFn g_OriginalJediSetup = nullptr;
 
+// A Jedi class's script instance (its Force enable bytes at +0x2D9..0x2DF), noted as its Init runs the set-up: the
+// script running is then the character's ([0x6943CC] +0x68), its instance [0x6964C0]. (A character's +0x434 is its
+// behaviour, CharState, 0x140 bytes: not the instance.) A mission's choice of powers (SetForcePowers) is written there.
+struct JediInstance {
+    const uint8_t* character;
+    uint32_t id;
+    uint8_t* instance;
+};
+std::vector<JediInstance> g_JediInstances;
+
+void NoteJediInstance(const uint8_t* character)
+{
+    __try {
+        uint8_t* scripts = *reinterpret_cast<uint8_t**>(uintptr_t(0x006943CC));
+        if (!scripts || *reinterpret_cast<uint8_t**>(scripts + 0x68) != character)
+            return;
+        uint8_t* instance = *reinterpret_cast<uint8_t**>(uintptr_t(0x006964C0));
+        if (!instance)
+            return;
+        const uint32_t id = *reinterpret_cast<const uint32_t*>(character + 4);
+        g_JediInstances.erase(std::remove_if(g_JediInstances.begin(), g_JediInstances.end(),
+                                  [&](const JediInstance& j) { return j.character == character; }),
+            g_JediInstances.end());
+        g_JediInstances.push_back({ character, id, instance });
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
 bool __fastcall JediSetupHook(uint8_t* character, void*)
 {
     const bool result = g_OriginalJediSetup(character, nullptr);
     if (const CustomCharacter* custom = CustomCharacterOf(character)) {
+        NoteJediInstance(character);
         if (custom->force >= 0) {
             *reinterpret_cast<float*>(character + kCharacterForce) = custom->force;
             *reinterpret_cast<float*>(character + kCharacterMaxForce) = custom->force;
@@ -1664,9 +1693,30 @@ bool SetForcePowers(const uint8_t* character, const std::string& powers)
     return true;
 }
 
+static std::vector<uint32_t> g_ForcePowersLogged; // (each character's first write logged)
+
+// Its enable bytes (push, grip, throw, lightning, heal) as they were into `was`; true when they changed.
+static bool WriteForcePowers(uint8_t* inst, int powers, uint8_t (&was)[5])
+{
+    __try {
+        was[0] = inst[0x2DC];
+        was[1] = inst[0x2DB];
+        was[2] = inst[0x2DF];
+        was[3] = inst[0x2DD];
+        was[4] = inst[0x2D9];
+        const bool same = was[0] == (powers & 1 ? 1 : 0) && was[1] == (powers & 2 ? 1 : 0) &&
+            was[2] == (powers & 4 ? 1 : 0) && was[3] == (powers & 8 ? 1 : 0) && was[4] == (powers & 16 ? 1 : 0);
+        if (!same)
+            SetPowerFlags(inst, powers);
+        return !same;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 // A custom character on a Jedi class whose powers a mission chose: its class's own rules (and the computer's, which
-// run them) offer only the powers whose enable bytes are on, so they are written into its script instance (+0x434)
-// every frame (its class's Init and set-ups write them too).
+// run them) offer only the powers whose enable bytes are on, so they are written into its script instance (noted as its
+// Init ran the Jedi set-up: NoteJediInstance) every frame (its class's Init and set-ups write them too).
 void ApplyChosenForcePowers()
 {
     if (std::none_of(g_ForcePowersChosen.begin(), g_ForcePowersChosen.end(),
@@ -1677,9 +1727,18 @@ void ApplyChosenForcePowers()
         if (!chosen.ownRules || std::find(level.begin(), level.end(), chosen.character) == level.end() ||
             *reinterpret_cast<const uint32_t*>(chosen.character + 4) != chosen.id)
             continue;
-        uint8_t* inst = *reinterpret_cast<uint8_t* const*>(chosen.character + 0x434);
-        if (inst)
-            SetPowerFlags(inst, chosen.powers);
+        const auto known = std::find_if(g_JediInstances.begin(), g_JediInstances.end(), [&](const JediInstance& j) {
+            return j.character == chosen.character && j.id == chosen.id;
+        });
+        if (known == g_JediInstances.end())
+            continue; // its instance not seen: its class's own powers stay
+        uint8_t was[5] = {};
+        if (WriteForcePowers(known->instance, chosen.powers, was) &&
+            std::find(g_ForcePowersLogged.begin(), g_ForcePowersLogged.end(), chosen.id) == g_ForcePowersLogged.end()) {
+            g_ForcePowersLogged.push_back(chosen.id);
+            LOG_INFO("Custom characters: #%u's Force powers %d (its class's: push %d grip %d throw %d lightning %d heal %d)",
+                chosen.id, chosen.powers, was[0], was[1], was[2], was[3], was[4]);
+        }
     }
 }
 
@@ -1691,6 +1750,8 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
     g_SpeakerTexts.clear();
     g_LoggedLines.clear();
     g_ForcePowersChosen.clear();
+    g_JediInstances.clear();
+    g_ForcePowersLogged.clear();
     g_QuietCharacters.clear();
     g_DialogueEngine = nullptr;
     g_Forced = {}; // (a line the last start forced: its entry went with that start's memory, nothing to give back)
