@@ -48,10 +48,11 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr uint32_t kMagic = 0x4E525753; // 'SWRN'
-constexpr uint16_t kProtocol = 12; // 2: the players' names; 3: client/server matches; 4: the arena's picker; 5: props; 6: a public room;
+constexpr uint16_t kProtocol = 13; // 2: the players' names; 3: client/server matches; 4: the arena's picker; 5: props; 6: a public room;
                                   // 7: the room's name, the players' Ready; 8: Versus's time limit (the room, the duel's clock); 9: Cooperative's characters;
                                   // 10: Cooperative's Restart/Quit vote; 11: the guest's vote its own;
-                                  // 12: the host's spawned characters' classes (the guest makes those it lacks)
+                                  // 12: the host's spawned characters' classes (the guest makes those it lacks);
+                                  // 13: the pads the host's game played, in each state (the guest plays them)
 constexpr uint16_t kDefaultPort = 27960;
 constexpr uint32_t kHistory = 512;      // frames of inputs kept (a power of two)
 constexpr uint32_t kMaxSend = 48;       // inputs in one packet at most
@@ -75,6 +76,28 @@ bool ServerModeWanted()
             v[i] = char(w[i]);
     }
     return _stricmp(v, "lockstep") != 0;
+}
+
+// [Online] Predict (SWROTS_ONLINE_PREDICT): how the guest's game plays a level.
+// 0 (the default): on the host's time. Both fighters are played from the pads the host's game played (they come
+//   with each of its states), each state applied once its pads have been played: the guest's game computes what the
+//   host's did, the state only correcting what parted. The guest's own presses show a round trip (and some three
+//   frames) later, and nothing is taken back.
+// 1: the guest's own fighter at once from its own pad, ahead of the host's by a round trip, corrected when it parts
+//   (hits and grabs decided by the host land on it late: it is then put back).
+bool PredictWanted()
+{
+    static const bool wanted = [] {
+        char v[16] = "";
+        if (GetEnvironmentVariableA("SWROTS_ONLINE_PREDICT", v, sizeof(v)))
+            return v[0] == '1';
+        wchar_t path[MAX_PATH];
+        GetModuleFileNameW(nullptr, path, MAX_PATH);
+        std::wstring ini = path;
+        ini = ini.substr(0, ini.find_last_of(L"\\/")) + L"\\settings.ini";
+        return GetPrivateProfileIntW(L"Online", L"Predict", 0, ini.c_str()) == 1;
+    }();
+    return wanted;
 }
 
 uint32_t HashEvery()
@@ -203,6 +226,7 @@ struct StateMsg {
     uint8_t votes[2];    // Cooperative's game over: each player's vote (CoopVote)
     int8_t voteSeconds;  // its time left (-1: none, a pause's Restart/Quit has none)
     uint8_t decided;     // the votes' outcome (CoopVote: none, Retry, Quit), each game making it once
+    input::GamePad pads[2]; // the pads the host's game played that frame (player 1's, player 2's as it had it)
 };
 // The arena's props that moved or are gone on the host's game (props.h).
 struct PropsMsg {
@@ -585,6 +609,15 @@ struct Session {
     uint32_t enteringAt = 0;            // the frame the cover came (25 s at most)
     uint32_t roomSince = 0;             // the frame the room's screen came (the cover lifted a little after)
     input::GamePad hostLive = {};       // the host's own pad in the level, as its game gets it
+    input::GamePad played[2] = {};      // the host: the pads its game read this frame (sent with its state)
+    // The guest, on the host's time (PredictWanted off): the pads of the host's latest state are played for a frame,
+    // then that state is applied (`playing`); presses of states in between kept (`echoHeld`).
+    input::GamePad echoPads[2] = {}, echoHeld[2] = {};
+    uint32_t echoPacket[2] = {};
+    uint32_t echoAt = 0;                // the frame its last new state was taken at
+    bool echoValid = false;
+    StateMsg playing = {};
+    bool playingValid = false, playingApplied = false;
     uint32_t remoteReads = 0, remoteChanges = 0;
     bool remoteInDuel = false, duelStartWaited = false;
     OnlineRoomSettings room;            // the host's (the guest: as it last came)
@@ -1153,6 +1186,7 @@ bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
                 g_S.hostLive = pad;
                 ++g_S.ownPacket;
             }
+            g_S.played[0] = pad;
             packet = g_S.ownPacket;
             return true;
         }
@@ -1161,10 +1195,16 @@ bool PadFromServer(int port, input::GamePad& pad, uint32_t& packet)
             NoPauseLocked(pad);                              // the guest's own)
             if (g_S.screen == game::MenuKey("select_arena") && g_S.room.picker != 1)
                 pad = {}; // the arena: the host's to pick
+            g_S.played[1] = pad;
             packet = g_S.remotePacket;
             ++g_S.remoteReads;
             return true;
         }
+    } else if (both && (port == 0 || port == 1) && g_S.inLevel && g_S.echoValid && g_S.frame - g_S.echoAt < 30) {
+        pad = g_S.echoPads[port]; // on the host's time: the pads its game played (ServerFrameLocked)
+        NoPauseLocked(pad);
+        packet = g_S.echoPacket[port];
+        return true;
     } else if (both) {
         if (port == 0) {
             pad = g_S.remotePad;
@@ -1875,6 +1915,11 @@ void OnServerMsgLocked(Msg type, const uint8_t* data, size_t size)
             g_S.latestState = m;
             g_S.haveState = true;
             ++g_S.statesIn;
+            for (int i = 0; i < 2; ++i) { // a press in a state the game's frame does not take (two in one frame): kept
+                g_S.echoHeld[i].buttons |= m.pads[i].buttons;
+                for (int k = 0; k < 8; ++k)
+                    g_S.echoHeld[i].analog[k] = std::max(g_S.echoHeld[i].analog[k], m.pads[i].analog[k]);
+            }
         }
         break;
     default:
@@ -1995,6 +2040,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         const std::string args = g_S.pendingLaunch;
         g_S.pendingLaunchSet = false;
         g_S.haveState = false;
+        g_S.echoValid = g_S.playingValid = false;
         g_S.guestInDuel = false;
         g_S.followingLaunch = true;
         g_S.followStarted = true;
@@ -2017,6 +2063,40 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     StateMsg state = g_S.latestState;
     const bool haveState = g_S.haveState;
     const uint32_t frame = g_S.frame;
+    // The guest on the host's time: the state whose pads the frame just played is applied now; the latest one's pads
+    // are the next frame's (its state applied after it).
+    const bool predict = PredictWanted();
+    StateMsg applyState = {};
+    bool applyNow = false;
+    if (!g_S.host && !predict) {
+        if (!haveState || !g_S.inLevel) {
+            g_S.echoValid = g_S.playingValid = false;
+        } else {
+            if (g_S.playingValid && !g_S.playingApplied) {
+                applyState = g_S.playing;
+                applyNow = true;
+                g_S.playingApplied = true;
+            }
+            if (!g_S.playingValid || g_S.latestState.seq != g_S.playing.seq) {
+                g_S.playing = g_S.latestState;
+                g_S.playingValid = true;
+                g_S.playingApplied = false;
+                g_S.echoAt = g_S.frame;
+                for (int i = 0; i < 2; ++i) {
+                    input::GamePad pad = g_S.playing.pads[i];
+                    pad.buttons |= g_S.echoHeld[i].buttons;
+                    for (int k = 0; k < 8; ++k)
+                        pad.analog[k] = std::max(pad.analog[k], g_S.echoHeld[i].analog[k]);
+                    g_S.echoHeld[i] = {};
+                    if (std::memcmp(&pad, &g_S.echoPads[i], sizeof(pad)) != 0 || !g_S.echoValid) {
+                        g_S.echoPads[i] = pad;
+                        ++g_S.echoPacket[i];
+                    }
+                }
+                g_S.echoValid = true;
+            }
+        }
+    }
     std::vector<PropsMsg> propsIn;
     propsIn.swap(g_S.propsIn);
     std::vector<CharsMsg> charsIn;
@@ -2057,6 +2137,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     }
     GuestAiOff(duel && coopMission && !host); // (the guest's: the host's characters alone decide)
     SetCoopApply(coopMission);
+    SetPredictApply(predict);
     {
         static bool holding = false; // the guest's followed characters' sequences: the host's alone
         if (duel && coopMission && !host && frame % 10 == 0) {
@@ -2071,6 +2152,13 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         CharactersUpdate(fighters[0], fighters[1]);
         if (frame % 120 == 0)
             LOG_INFO("Online: characters, frame %u: %s", frame, DescribeCharacters(4).c_str());
+    }
+    if (duel && !coopMission && host) { // diagnostics: the fighters' steps back (shakes) and jumps, as the guest's
+        SetOwnMotion(fighters[0]);
+        NoteMotion(fighters[0]);
+        NoteMotion(fighters[1]);
+        if (frame % 600 == 300)
+            LOG_INFO("Online: motion here: %s", MotionStats().c_str());
     }
     if (duel && frame % 120 == 0) { // diagnostics: both fighters' places on both games (a small one's, Yoda's)
         static uint32_t described = 0;
@@ -2147,6 +2235,8 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         m.votes[1] = g_S.votes[1];
         m.voteSeconds = int8_t(g_S.voteSeconds);
         m.decided = g_S.decided;
+        m.pads[0] = g_S.played[0];
+        m.pads[1] = g_S.played[1];
         m.h = MakeHeader(Msg::State, g_S.token);
         m.seq = ++g_S.stateSeqOut;
         m.hostFrame = frame;
@@ -2240,21 +2330,31 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     static CharFollow playerFollow[2];
     const bool freshState = state.seq != lastStateSeq;
     lastStateSeq = state.seq;
-    for (int i = 0; i < 2; ++i) {
-        CharFollow& f = playerFollow[i];
-        if (freshState || !coopMission) {
-            f.Push(state.fighters[i], frame);
-            ApplyFighter(i, fighters[i], state.fighters[i], lead, i == 1);
+    if (!predict) {
+        // On the host's time: this frame played the pads of `applyState` for both fighters; its state now (what the
+        // host's game made of them), each fighter corrected where this game's parted.
+        if (applyNow)
+            for (int i = 0; i < 2; ++i)
+                ApplyFighter(i, fighters[i], applyState.fighters[i], 0, false);
+        if (frame % 600 == 0)
+            LOG_INFO("Online: %s", FollowStats().c_str());
+    } else {
+        for (int i = 0; i < 2; ++i) {
+            CharFollow& f = playerFollow[i];
+            if (freshState) { // (a state applied again would set the fighter's action back each frame)
+                f.Push(state.fighters[i], frame);
+                ApplyFighter(i, fighters[i], state.fighters[i], lead, i == 1);
+            }
+            if (coopMission && i == 0 && fighters[i] && f.state.valid) // the other player's place: between its last two
+                PlaceCharacter(fighters[i], f.At(frame, kPlayerBehind));
         }
-        if (coopMission && i == 0 && fighters[i] && f.state.valid) // the other player's place: between its last two
-            PlaceCharacter(fighters[i], f.At(frame, kPlayerBehind));
     }
     // This PC's own fighter in a Cooperative mission plays at once from this PC's pad; the host's game plays it from the
     // same pad a little later and may take it elsewhere (an enemy in its way there, a step's rounding). Its place here
     // a round trip ago (kept a frame at a time) against the host's for it: the difference, when small, is closed a
     // little at each of the host's states (its past places moved too, so that it is not counted twice); a large one is
     // the host's whole (ApplyFighter).
-    if (coopMission && fighters[1]) {
+    if (coopMission && predict && fighters[1]) {
         static std::array<float, 3> ownPast[64] = {};
         static uint32_t ownPastFrame[64] = {};
         FighterState here;
@@ -2354,8 +2454,9 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         NoteMotion(fighters[0]);
     if (fighters[1])
         NoteMotion(fighters[1]);
-    if (frame % 600 == 300 && coopMission) {
+    if (frame % 600 == 300)
         LOG_INFO("Online: motion here: %s", MotionStats().c_str());
+    if (frame % 600 == 300 && coopMission) {
         LOG_INFO("Online: %s", g_Identity.Take(shownNotTheHosts).c_str());
         shownNotTheHosts = 0;
     }
@@ -2955,6 +3056,10 @@ void ResetSessionLocked(bool host)
     g_S.haveState = false;
     g_S.guestInDuel = false;
     g_S.ownPad = g_S.hostLive = {};
+    g_S.played[0] = g_S.played[1] = {};
+    g_S.echoPads[0] = g_S.echoPads[1] = g_S.echoHeld[0] = g_S.echoHeld[1] = {};
+    g_S.echoPacket[0] = g_S.echoPacket[1] = g_S.echoAt = 0;
+    g_S.echoValid = g_S.playingValid = g_S.playingApplied = false;
     g_S.inLevel = g_S.entering = g_S.enteringRoom = false;
     g_S.roundWinner = g_S.matchWinner = -1;
     g_S.roomSince = 0;
@@ -3353,6 +3458,17 @@ bool IdleKickLocked()
 
 void OnlineFrame()
 {
+    { // tests on one PC: SWROTS_TEST_FRAME_SLEEP=<ms> makes this game's frames that much longer (a slower PC)
+        static const int ms = [] {
+            char v[16] = "";
+            return GetEnvironmentVariableA("SWROTS_TEST_FRAME_SLEEP", v, sizeof(v)) ? std::clamp(atoi(v), 0, 100) : 0;
+        }();
+        if (ms > 0) { // (a busy wait: Sleep's own step is too coarse)
+            const auto until = Clock::now() + std::chrono::milliseconds(ms);
+            while (Clock::now() < until)
+                YieldProcessor();
+        }
+    }
     std::unique_lock<std::mutex> lock(g_S.lock);
     if (g_S.leaving) { // the game back at its main menu after the match: on to the Online screen (the popup over it)
         const auto now = Clock::now();

@@ -691,6 +691,7 @@ Applied g_Applied[2];
 uint32_t g_ApplyFrame = 0;
 uint32_t g_ApplyStarts = 0, g_ApplyRefused = 0, g_ApplyPlaced = 0, g_ApplyStaged = 0, g_ApplyHeld = 0;
 bool g_CoopApply = false; // a Cooperative mission (SetCoopApply)
+bool g_PredictApply = false; // the guest's own fighter played ahead of the host's (SetPredictApply)
 bool g_OwnHostWhole = false; // this PC's own fighter in a grab, or taking the host's whole (OwnTakesHostWhole)
 uint32_t g_OwnFollowed = 0, g_OwnStarts = 0, g_CharStarts = 0; // (diagnostics: the own fighter's host frames)
 uint32_t g_NamesLogged = 0, g_LivingLogged = 0;
@@ -699,6 +700,17 @@ uint32_t g_NamesLogged = 0, g_LivingLogged = 0;
 // beyond kOwnPlaceFar (game units).
 constexpr float kOwnPlaceError = 70.0f, kOwnPlaceFar = 180.0f;
 constexpr uint32_t kOwnPlaceFrames = 20;
+// A player's fighter played here from the host's pads, then given the host's state: a place this game computed a
+// little off the host's (the two games' frames are not the same length: the slower one steps further) closes by this
+// share at each state instead of jumping there; further off than kEaseWithin, the host's at once.
+constexpr float kEaseWithin = 45.0f, kEaseShare = 0.5f;
+// (diagnostics, FollowStats) how far this game's own play of the host's pads was from the host's states
+struct FollowStat {
+    uint32_t states = 0, parted = 0, starts = 0, jumps = 0;
+    double offSum = 0;
+    float offMax = 0;
+};
+FollowStat g_Follow[2];
 
 } // namespace
 
@@ -736,6 +748,18 @@ bool WriteLivingRaw(uint8_t* fighter, float health, bool revive)
         *reinterpret_cast<float*>(fighter + 0x130) = health;
         if (revive)
             fighter[0x12C] = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// A fighter's position (and its copies) written.
+bool EaseRaw(uint8_t* fighter, const float at[3])
+{
+    __try {
+        for (uint16_t off : { 0x180, 0x630, 0x750 })
+            std::memcpy(fighter + off, at, 12);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -874,7 +898,26 @@ void ApplyInto(const char* who, Applied& a, const Applied& other, uint8_t* fight
             }
         }
     }
+    const bool player = who[0] == 'P';
+    float was[3] = {};
+    const bool eased = player && into == Into::Remote && !own && !g_PredictApply && ReadFloat(fighter, 0x180, was[0]) &&
+        ReadFloat(fighter, 0x184, was[1]) && ReadFloat(fighter, 0x188, was[2]);
     CopyFields(fighter, s.fields, into);
+    if (eased) {
+        const float to[3] = { Packed<float>(s, 0x180), Packed<float>(s, 0x184), Packed<float>(s, 0x188) };
+        const float d[3] = { to[0] - was[0], to[1] - was[1], to[2] - was[2] };
+        const float off = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        FollowStat& st = g_Follow[who[1] == '2' ? 1 : 0];
+        ++st.states;
+        st.offSum += off;
+        st.offMax = std::max(st.offMax, off);
+        if (off > 0.01f && off < kEaseWithin) {
+            const float at[3] = { was[0] + d[0] * kEaseShare, was[1] + d[1] * kEaseShare, was[2] + d[2] * kEaseShare };
+            EaseRaw(fighter, at);
+        } else if (off >= kEaseWithin) {
+            ++st.jumps;
+        }
+    }
     ApplyHealth(who, a, fighter, s); // the host's (its hits, its death, the round's end)
     if (s.seq < 0)
         return;
@@ -883,14 +926,21 @@ void ApplyInto(const char* who, Applied& a, const Applied& other, uint8_t* fight
     a.parted = live.index != s.seq ? a.parted + 1 : 0;
     // The other player's fighter plays here from the host's pad too: started again only where it went its own way.
     // This PC's own fighter plays at once from this PC's pad: only when it stays parted from the host's.
+    // (On the host's time, a player's fighter is played here from the same pads: one this game took another way is the
+    // host's after three states; a frame early or late of its own is left to come.)
     const bool start = follow || reacting ? ((started && a.parted) || a.parted > 2)
                        : own    ? a.parted > 20
+                       : player && !g_PredictApply ? ((started && a.parted > 1) || a.parted > 3)
                                 : ((started && a.parted) || a.parted > 6);
+    if (player && !g_PredictApply && a.parted)
+        ++g_Follow[who[1] == '2' ? 1 : 0].parted;
     if (!start || g_ApplyFrame < a.refusedUntil)
         return;
     const float at = float(s.ticks + leadTicks) / 60.0f; // the game's 60 ticks a second ([0x645EA0])
     if (StartSeqRaw(fighter, s.seq, at)) {
         ++g_ApplyStarts;
+        if (player && !g_PredictApply)
+            ++g_Follow[who[1] == '2' ? 1 : 0].starts;
         if (own)
             ++g_OwnStarts;
         else if (who[0] == 'c')
@@ -908,6 +958,26 @@ std::unordered_map<uint32_t, Applied> g_CharApplied; // the other characters fol
 uint32_t g_CharsApplied = 0;
 
 } // namespace
+
+void SetPredictApply(bool predict)
+{
+    g_PredictApply = predict;
+}
+
+std::string FollowStats()
+{
+    char line[400];
+    int n = std::snprintf(line, sizeof(line), "following the host's play:");
+    for (int i = 0; i < 2; ++i) {
+        FollowStat& st = g_Follow[i];
+        n += std::snprintf(line + n, sizeof(line) - size_t(n),
+            " P%d %u state(s), %.2f units off on average (%.0f at most, %u beyond %.0f), another sequence in %u, %u started "
+            "again;", i + 1, st.states, st.states ? st.offSum / st.states : 0.0, st.offMax, st.jumps, kEaseWithin, st.parted,
+            st.starts);
+        st = FollowStat();
+    }
+    return line;
+}
 
 bool OwnTakesHostWhole()
 {

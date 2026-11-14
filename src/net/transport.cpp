@@ -7,9 +7,15 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 #include "core/log.h"
 
@@ -199,11 +205,74 @@ void UdpSocket::Close()
     m_port = 0;
 }
 
+namespace {
+// Tests on one PC: SWROTS_TEST_LAG_MS=<ms> holds each packet that long before it leaves (a connection's delay one
+// way; both games set it for a round trip of twice that), SWROTS_TEST_LAG_JITTER_MS=<ms> adds up to that at random.
+struct Held {
+    std::chrono::steady_clock::time_point due;
+    SOCKET socket;
+    sockaddr_in to;
+    std::vector<char> data;
+};
+std::mutex g_HeldLock;
+std::deque<Held> g_HeldPackets;
+int TestLagMs()
+{
+    static const int ms = [] {
+        char v[16] = "";
+        return GetEnvironmentVariableA("SWROTS_TEST_LAG_MS", v, sizeof(v)) ? std::clamp(atoi(v), 0, 1000) : 0;
+    }();
+    return ms;
+}
+int TestJitterMs()
+{
+    static const int ms = [] {
+        char v[16] = "";
+        return GetEnvironmentVariableA("SWROTS_TEST_LAG_JITTER_MS", v, sizeof(v)) ? std::clamp(atoi(v), 0, 1000) : 0;
+    }();
+    return ms;
+}
+void HoldPacket(SOCKET socket, const sockaddr_in& to, const void* data, size_t size)
+{
+    static const bool started = [] {
+        std::thread([] {
+            for (;;) {
+                Sleep(1);
+                std::lock_guard<std::mutex> lock(g_HeldLock);
+                const auto now = std::chrono::steady_clock::now();
+                while (!g_HeldPackets.empty() && g_HeldPackets.front().due <= now) {
+                    const Held& h = g_HeldPackets.front();
+                    sendto(h.socket, h.data.data(), int(h.data.size()), 0, reinterpret_cast<const sockaddr*>(&h.to),
+                        sizeof(h.to));
+                    g_HeldPackets.pop_front();
+                }
+            }
+        }).detach();
+        return true;
+    }();
+    (void)started;
+    Held h;
+    const int jitter = TestJitterMs() > 0 ? rand() % (TestJitterMs() + 1) : 0;
+    h.due = std::chrono::steady_clock::now() + std::chrono::milliseconds(TestLagMs() + jitter);
+    h.socket = socket;
+    h.to = to;
+    h.data.assign(static_cast<const char*>(data), static_cast<const char*>(data) + size);
+    std::lock_guard<std::mutex> lock(g_HeldLock);
+    if (!g_HeldPackets.empty() && g_HeldPackets.back().due > h.due)
+        h.due = g_HeldPackets.back().due; // (in order)
+    g_HeldPackets.push_back(std::move(h));
+}
+} // namespace
+
 bool UdpSocket::SendTo(const Endpoint& to, const void* data, size_t size)
 {
     if (!IsOpen() || !to.Valid())
         return false;
     const sockaddr_in a = ToSockaddr(to);
+    if (TestLagMs() > 0 || TestJitterMs() > 0) {
+        HoldPacket(Sock(m_socket), a, data, size);
+        return true;
+    }
     return sendto(Sock(m_socket), static_cast<const char*>(data), int(size), 0, reinterpret_cast<const sockaddr*>(&a),
                sizeof(a)) == int(size);
 }

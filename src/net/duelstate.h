@@ -62,6 +62,10 @@ void ApplyCharacter(uint32_t id, uint8_t* character, const FighterState& s, uint
 void ApplyCharactersReset();
 // A Cooperative mission (the own fighter's reactions: the host's sequence, its own place) or a duel (taken whole).
 void SetCoopApply(bool coop);
+// The guest's own fighter is played ahead of the host's ([Online] Predict=1), not on the host's time.
+void SetPredictApply(bool predict);
+// How far this game's play of the host's pads was from the host's states since the last call (a log line).
+std::string FollowStats();
 // This PC's own fighter, at its last state: in a grab (either game's), or taking the host's whole (its place too).
 bool OwnTakesHostWhole();
 // Diagnostics: a character's place this frame (its steps back and jumps counted), and the counts since the last call.
