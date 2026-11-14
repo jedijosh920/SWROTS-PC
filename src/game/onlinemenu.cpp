@@ -2577,6 +2577,10 @@ char __fastcall ChallengeEvent(uint8_t* handler, void*, int event, int pad)
 constexpr uint32_t kArenaListVtable = 0x005D63D8, kArenaListEvent = 0x002D1EC0;
 constexpr uint32_t kListFrameChallenge = 0x002C68F0, kListFrameArena = 0x002D26C0, kListFrameJedi = 0x002D56F0;
 constexpr int kRoundsPopup = 0x2B;
+// What each slot held when hooked (the game's, or another of the port's hooks: the Versus select's slot 3 is
+// hvvmenu.cpp's), called on.
+uint32_t g_NextChallengeFrame = kListFrameChallenge, g_NextJediFrame = kListFrameJedi, g_NextArenaFrame = kListFrameArena,
+         g_NextArenaEvent = kArenaListEvent;
 
 bool OnlineMatchScreens()
 {
@@ -2592,19 +2596,40 @@ char __fastcall ArenaListEvent(uint8_t* list, void*, int event, int pad)
             LOG_INFO("Online menu: the arena select's %s refused (online)", event == kB ? "Back" : "Rounds");
         return 1;
     }
-    return reinterpret_cast<ItemEventFn>(uintptr_t(kArenaListEvent))(list, nullptr, event, pad);
+    return reinterpret_cast<ItemEventFn>(uintptr_t(g_NextArenaEvent))(list, nullptr, event, pad);
 }
 
+// (a prompt's text also emptied while it is put away: the arena select's Rounds is laid out again by its list each
+// frame, as the round count moves, and showed through)
 void SelectPrompts(uint8_t* handler, int firstSlot, const char* const* names, int count)
 {
+    static const wchar_t kNothing[] = L"";
+    static const void* ownText[16] = {};
     const bool shown = !OnlineMatchScreens();
-    for (int i = 0; i < count; ++i)
-        ShowItem(handler, firstSlot + i, names[i], shown);
+    for (int i = 0; i < count; ++i) {
+        const int slot = firstSlot + i;
+        ShowItem(handler, slot, names[i], shown);
+        uint8_t* item = g_HiddenItems[slot].item;
+        if (!item || std::strstr(names[i], "button"))
+            continue;
+        __try {
+            const void** text = reinterpret_cast<const void**>(item + 0x44);
+            if (!shown && *text != kNothing) {
+                ownText[slot] = *text;
+                *text = kNothing;
+            } else if (shown && *text == kNothing && ownText[slot]) {
+                *text = ownText[slot];
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+        }
+    }
 }
 
 uint32_t __fastcall ChallengeListFrame(uint8_t* list, void*, uint32_t value)
 {
-    const uint32_t r = reinterpret_cast<uint32_t(__fastcall*)(uint8_t*, void*, uint32_t)>(uintptr_t(kListFrameChallenge))(
+    static const char* const kBefore[] = { "backbutton", "back" };
+    SelectPrompts(list, 6, kBefore, 2); // (before its frame too: what it draws)
+    const uint32_t r = reinterpret_cast<uint32_t(__fastcall*)(uint8_t*, void*, uint32_t)>(uintptr_t(g_NextChallengeFrame))(
         list, nullptr, value);
     static const char* const kNames[] = { "backbutton", "back" };
     SelectPrompts(list, 6, kNames, 2);
@@ -2613,7 +2638,9 @@ uint32_t __fastcall ChallengeListFrame(uint8_t* list, void*, uint32_t value)
 
 uint32_t __fastcall JediListFrame(uint8_t* list, void*, uint32_t value)
 {
-    const uint32_t r = reinterpret_cast<uint32_t(__fastcall*)(uint8_t*, void*, uint32_t)>(uintptr_t(kListFrameJedi))(
+    static const char* const kBefore[] = { "backbutton", "back" };
+    SelectPrompts(list, 8, kBefore, 2);
+    const uint32_t r = reinterpret_cast<uint32_t(__fastcall*)(uint8_t*, void*, uint32_t)>(uintptr_t(g_NextJediFrame))(
         list, nullptr, value);
     static const char* const kNames[] = { "backbutton", "back" };
     SelectPrompts(list, 8, kNames, 2);
@@ -2622,7 +2649,9 @@ uint32_t __fastcall JediListFrame(uint8_t* list, void*, uint32_t value)
 
 uint32_t __fastcall ArenaListFrame(uint8_t* list, void*, uint32_t value)
 {
-    const uint32_t r = reinterpret_cast<uint32_t(__fastcall*)(uint8_t*, void*, uint32_t)>(uintptr_t(kListFrameArena))(
+    static const char* const kBefore[] = { "backbutton", "back", "roundsbutton", "rounds" };
+    SelectPrompts(list, 10, kBefore, 4);
+    const uint32_t r = reinterpret_cast<uint32_t(__fastcall*)(uint8_t*, void*, uint32_t)>(uintptr_t(g_NextArenaFrame))(
         list, nullptr, value);
     static const char* const kNames[] = { "backbutton", "back", "roundsbutton", "rounds" };
     SelectPrompts(list, 10, kNames, 4);
@@ -2637,18 +2666,26 @@ void InstallVoteRows()
     } else {
         LOG_WARN("Online menu: the missions' select is not as expected; the guest's choice not refused");
     }
-    const struct { uint32_t vtable; int slot; uint32_t original; void* hook; } selects[] = {
-        { kChallengeVtable, 3, kListFrameChallenge, reinterpret_cast<void*>(&ChallengeListFrame) },
-        { kJediListVtable, 3, kListFrameJedi, reinterpret_cast<void*>(&JediListFrame) },
-        { kArenaListVtable, 3, kListFrameArena, reinterpret_cast<void*>(&ArenaListFrame) },
-        { kArenaListVtable, 4, kArenaListEvent, reinterpret_cast<void*>(&ArenaListEvent) },
+    // (each slot's own function, or a hook of the port's already there: called on; hooked once a start)
+    const struct { uint32_t vtable; int slot; uint32_t original; void* hook; uint32_t* next; } selects[] = {
+        { kChallengeVtable, 3, kListFrameChallenge, reinterpret_cast<void*>(&ChallengeListFrame), &g_NextChallengeFrame },
+        { kJediListVtable, 3, kListFrameJedi, reinterpret_cast<void*>(&JediListFrame), &g_NextJediFrame },
+        { kArenaListVtable, 3, kListFrameArena, reinterpret_cast<void*>(&ArenaListFrame), &g_NextArenaFrame },
+        { kArenaListVtable, 4, kArenaListEvent, reinterpret_cast<void*>(&ArenaListEvent), &g_NextArenaEvent },
     };
     for (const auto& h : selects) {
-        if (!SlotIs(h.vtable, h.slot, h.original)) {
+        const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(h.hook));
+        const uint32_t now = *reinterpret_cast<const uint32_t*>(uintptr_t(h.vtable + 4 * h.slot));
+        if (now == hook)
+            continue;
+        MEMORY_BASIC_INFORMATION where = {};
+        const bool ours = VirtualQuery(reinterpret_cast<const void*>(uintptr_t(now)), &where, sizeof(where)) &&
+            where.AllocationBase == GetModuleHandleW(L"core.dll");
+        if (now != h.original && !ours) { // (not the game's, nor a function of the port's)
             LOG_WARN("Online menu: a select's slot %d (vtable 0x%08X) is not as expected; left as it is", h.slot, h.vtable);
             continue;
         }
-        const uint32_t hook = uint32_t(reinterpret_cast<uintptr_t>(h.hook));
+        *h.next = now;
         PatchBytes(h.vtable + 4 * h.slot, &hook, 4);
     }
     if (!SlotIs(kRestartVtable, 4, kRestartEvent) || !SlotIs(kQuitVtable, 4, kQuitEvent) ||

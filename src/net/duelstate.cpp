@@ -773,7 +773,13 @@ void ApplyHealth(const char* who, Applied& a, uint8_t* fighter, const FighterSta
         a.leftLiving = living;
         return;
     }
-    const float change = hostHealth - health;
+    // The game's change scales a loss by this game's defence and runs its death at no health: a loss that leaves the
+    // host's fighter living never takes more than a quarter of what is left here through it (a hard hit, the guest's game a
+    // little behind, put a duel's fighter down on the guest alone: its round ended there, the host's went on). Its
+    // health is the host's exactly just after.
+    float change = hostHealth - health;
+    if (hostLiving && change < 0.0f)
+        change = std::max(change, -0.25f * health);
     if (change > 0.5f || change < -0.5f)
         game::ChangeHealthDirect(fighter, change);
     // A character dead on the host's game: dead here by the game's own death (its change, scaled by this game's
