@@ -16,6 +16,7 @@
 #include "core/settings.h"
 #include "debug/menu.h"
 #include "input/controls.h"
+#include "net/session.h"
 
 namespace swrots {
 
@@ -158,6 +159,7 @@ LRESULT CALLBACK FrameProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             return 0;
         break;
     case WM_CLOSE:
+        net::OnlineGoodbye(); // online: the other player told at once (Alt+F4, the window's close)
         LogFlush();
         ExitProcess(0);
     case WM_ERASEBKGND: {
@@ -373,6 +375,7 @@ void RunMessageLoop()
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    net::OnlineGoodbye();
     ExitProcess(0);
 }
 

@@ -7,10 +7,12 @@
 
 #include <cstring>
 
+#include "core/gates.h"
 #include "core/log.h"
 #include "core/patch.h"
 #include "kernel/exports.h"
 #include "kernel/kernel.h"
+#include "kernel/sched.h"
 
 namespace swrots::kernel {
 
@@ -46,7 +48,9 @@ extern "C" void __stdcall UnimplementedKernelCall(uint32_t ordinal, uint32_t ret
 static void* MakeUnimplementedStub(uint32_t ordinal)
 {
     static uint8_t* s_trampoline = nullptr;
-    if (!s_trampoline) {
+    static uint32_t s_generation = 0;
+    if (!s_trampoline || s_generation != StubGeneration()) { // made again at every start (ResetStubsForBoot)
+        s_generation = StubGeneration();
         // [esp] = ordinal, [esp+4] = caller's return address
         s_trampoline = AllocStub(16);
         uint8_t* p = s_trampoline;
@@ -71,12 +75,23 @@ void InstallThunks(uint32_t thunkTableAddress)
     (void)once;
 
     auto* thunk = reinterpret_cast<uint32_t*>(uintptr_t(thunkTableAddress));
-    uint32_t resolved = 0, missing = 0;
+    uint32_t resolved = 0, missing = 0, gated = 0;
+    // Netplay: the functions behind gates that clean the stack after them (core/gates.h), but those that leave
+    // by unwinding frames.
+    const bool gates = SchedActive();
     for (; *thunk; ++thunk) {
         uint32_t ordinal = *thunk & 0x7FFFFFFF;
         void* target = ordinal < 400 ? g_Exports[ordinal] : nullptr;
         if (target) {
             ++resolved;
+            const char* name = ordinal < 400 ? kKernelNames[ordinal] : nullptr;
+            if (gates && IsCodeAddress(target) && !(name && (!std::strcmp(name, "RtlUnwind") ||
+                                                             !std::strcmp(name, "RtlRaiseException")))) {
+                if (const void* gate = HostCallGate(ordinal, target)) {
+                    target = const_cast<void*>(gate);
+                    ++gated;
+                }
+            }
         } else {
             ++missing;
             target = MakeUnimplementedStub(ordinal);
@@ -85,7 +100,8 @@ void InstallThunks(uint32_t thunkTableAddress)
         }
         *thunk = uint32_t(uintptr_t(target));
     }
-    LOG_INFO("Kernel imports: %u native, %u unimplemented (trap if called)", resolved, missing);
+    LOG_INFO("Kernel imports: %u native, %u unimplemented (trap if called)%s", resolved, missing,
+        gated ? " (behind netplay's gates)" : "");
 }
 
 } // namespace swrots::kernel

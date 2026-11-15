@@ -14,6 +14,7 @@
 #include "core/crash.h"
 #include "core/log.h"
 #include "core/xbe.h"
+#include "kernel/clock.h"
 #include "kernel/exports.h"
 #include "kernel/host_nt.h"
 #include "kernel/kernel.h"
@@ -22,6 +23,7 @@
 #include "core/window.h"
 #include "kernel/mm.h"
 #include "kernel/reboot.h"
+#include "kernel/sched.h"
 #include "kernel/sha1.h"
 
 namespace swrots::kernel {
@@ -66,12 +68,18 @@ static void TickThreadMain()
     ULONGLONG start = GetTickCount64();
     for (;;) {
         Sleep(1);
-        KeTickCount = ULONG(GetTickCount64() - start);
+        // Under the fixed clock (netplay) the clock keeps it in step itself (kernel/clock.cpp).
+        if (!FixedClockOn())
+            KeTickCount = ULONG(GetTickCount64() - start);
     }
 }
 
 void XBAPI KeQuerySystemTime(LARGE_INTEGER* CurrentTime)
 {
+    if (FixedClockOn()) {
+        CurrentTime->QuadPart = LONGLONG(FixedClockSystemTime());
+        return;
+    }
     FILETIME ft;
     GetSystemTimeAsFileTime(&ft);
     CurrentTime->LowPart = ft.dwLowDateTime;
@@ -80,6 +88,8 @@ void XBAPI KeQuerySystemTime(LARGE_INTEGER* CurrentTime)
 
 ULONGLONG XBAPI KeQueryInterruptTime()
 {
+    if (FixedClockOn())
+        return FixedClockNow();
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
     return ULONGLONG((now.QuadPart - g_BootQpc.QuadPart) * 10000000.0 / double(g_QpcFreq.QuadPart));
@@ -345,11 +355,13 @@ void RelaunchProcess(const void* launchData)
 
 // Reboots with `launchData` (null: the current page) from a thread of its own: the reboot stops every game
 // thread, the caller's too.
+static const uint8_t kNoLaunchData = 0; // RebootWith: a start as from the dashboard (no launch data at all)
+
 static void RebootWith(const void* launchData)
 {
     LogFlush();
     HANDLE worker = CreateThread(nullptr, 0, [](void* data) -> DWORD {
-        const void* launchData = data ? data : LaunchDataPage;
+        const void* launchData = data == &kNoLaunchData ? nullptr : data ? data : LaunchDataPage;
         if (g_InProcessReboot)
             RebootInProcess(launchData); // ends this thread; the reboot worker takes over
         RelaunchProcess(launchData);
@@ -371,8 +383,12 @@ void RestartMission()
 static std::vector<uint8_t> g_LaunchRequest;
 static std::string g_BootArguments;
 
-void LaunchGame(const std::string& arguments)
+static LaunchFilter g_LaunchObserverEarly = nullptr; // set with the observer below (it is declared after)
+void LaunchGame(const std::string& launchArguments)
 {
+    std::string arguments = launchArguments;
+    if (g_LaunchObserverEarly) // online play: the host's own starts go to the guest too
+        g_LaunchObserverEarly(arguments);
     g_LaunchRequest.assign(4096, 0);
     const uint32_t certificate = *reinterpret_cast<const uint32_t*>(uintptr_t(0x10118));
     const uint32_t title = *reinterpret_cast<const uint32_t*>(uintptr_t(certificate + 8));
@@ -385,6 +401,13 @@ void LaunchGame(const std::string& arguments)
 }
 
 const std::string& LaunchArguments() { return g_BootArguments; }
+
+void RestartFromDashboard()
+{
+    g_MissionLaunchData.clear();
+    LOG_INFO("Starting the game again as from the dashboard");
+    RebootWith(&kNoLaunchData);
+}
 
 void StartRebootTest(unsigned seconds)
 {
@@ -409,15 +432,23 @@ void SetLaunchFilter(LaunchFilter filter)
     if (filter && std::find(g_LaunchFilters.begin(), g_LaunchFilters.end(), filter) == g_LaunchFilters.end())
         g_LaunchFilters.push_back(filter);
 }
+static LaunchFilter g_LaunchObserver = nullptr;
+void SetLaunchObserver(LaunchFilter observer)
+{
+    g_LaunchObserver = observer;
+    g_LaunchObserverEarly = observer;
+}
 
 void XBAPI HalReturnToFirmware(ULONG Routine)
 {
-    if (Routine == 2 && LaunchDataPage && !g_LaunchFilters.empty()) {
+    if (Routine == 2 && LaunchDataPage && (!g_LaunchFilters.empty() || g_LaunchObserver)) {
         char* text = static_cast<char*>(LaunchDataPage) + 0x400;
         std::string arguments(text, strnlen(text, 3072));
         const std::string before = arguments;
         for (LaunchFilter filter : g_LaunchFilters)
             filter(arguments);
+        if (g_LaunchObserver)
+            g_LaunchObserver(arguments);
         if (arguments != before) {
             std::memset(text, 0, 3072);
             std::memcpy(text, arguments.data(), std::min<size_t>(arguments.size(), 3071));
@@ -530,8 +561,26 @@ void Init(const XbeFile& xbe, const Paths& paths)
 // reboot, in contiguous memory as there.
 void BootInit(const void* launchData)
 {
+    SchedBoot(); // the deterministic scheduler, when a netplay match asked for it
     if (!launchData && !g_PendingLaunchData.empty())
         launchData = g_PendingLaunchData.data();
+    // Unattended tests (SWROTS_TEST_NOMOVIES): the first start as with the boot switches that leave out the licence
+    // movies and let the others be skipped, instead of a start as from the dashboard.
+    static bool firstBoot = true;
+    static std::vector<uint8_t> testLaunch;
+    if (!launchData && firstBoot && GetEnvironmentVariableA("SWROTS_TEST_NOMOVIES", nullptr, 0)) {
+        testLaunch.assign(4096, 0);
+        const uint32_t certificate = *reinterpret_cast<const uint32_t*>(uintptr_t(0x10118));
+        const uint32_t title = *reinterpret_cast<const uint32_t*>(uintptr_t(certificate + 8));
+        std::memcpy(testLaunch.data() + 4, &title, 4);
+        const char path[] = "d:\\default.xbe";
+        std::memcpy(testLaunch.data() + 8, path, sizeof path);
+        const char args[] = "playlicensemovie:0 allowskipmovie:1 allowgameskipmovie:1";
+        std::memcpy(testLaunch.data() + 0x400, args, sizeof args);
+        launchData = testLaunch.data();
+        LOG_INFO("Tests: the first start without the licence movies");
+    }
+    firstBoot = false;
     LaunchDataPage = nullptr;
     g_BootArguments.clear();
     if (launchData) {

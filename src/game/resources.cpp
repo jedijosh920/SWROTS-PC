@@ -26,6 +26,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -36,11 +37,13 @@
 #include <unordered_set>
 #include <vector>
 
+#include "core/gates.h"
 #include "core/log.h"
 #include "core/patch.h"
 #include "debug/console.h"
 #include "game/game.h"
 #include "game/pak.h"
+#include "kernel/kernel.h"
 
 namespace swrots::game {
 
@@ -139,18 +142,24 @@ AllocFn EngineAlloc() { return *reinterpret_cast<AllocFn*>(Services() + 0x50); }
 
 // Mirrors the engine's direct I/O branch: wraps an opened engine file in a
 // PackFile reader, decodes it as a non-PAK read of `size` bytes, then closes and
+void* g_DecodingFile = nullptr; // the file object being decoded (its read position among its words: the watch)
+void* g_DecodingReader = nullptr; // and its reader
+
 // deletes both.
 int DecodeFromFile(EngineObject* file, uint32_t size, int scene, ReadSource* pakSource, int typeId, int extra)
 {
     PendingRead* pending = t_Top;
     pending->used = true;
     EngineObject* reader = PackReaderCtor(EngineAlloc()(0x24), nullptr, file, 0);
+    g_DecodingFile = file; // the watch's report: where in the data the decoding is
+    g_DecodingReader = reader;
     if (pakSource->record) // the decoder's size
         *reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(pakSource->record) + 0x10) = size;
 
     ReadSource source = *pakSource;
     source.reader = reader;
     source.fromPak = 0;
+    ScrubStack(); // the game's decoder below what the port's code left (netplay)
     int result = pending->decode(scene, &source, typeId, extra);
 
     VirtualAt<void(__fastcall*)(EngineObject*, void*)>(file, 0x10)(file, nullptr);
@@ -425,6 +434,122 @@ void* RegisterLevelImage(uint8_t* packer, const PakIndex* level, const PakIndex:
 }
 
 // Resource patches (RegisterResourcePatch), by relative lower-case name.
+// A watch on the patched resources' decoding (a patched menu the game cannot finish reading loops forever on the
+// loading screen): one decoding for more than 8 s has its thread's place logged (where the game's code is, its
+// stack's game-code words), a few times, to find which part of the patch the game cannot read.
+std::atomic<DWORD> g_DecodingThread{ 0 };
+std::atomic<ULONGLONG> g_DecodingSince{ 0 };
+char g_DecodingName[128] = "";
+std::atomic<bool> g_WatchStarted{ false };
+
+void WatchDecoding()
+{
+    int reports = 0;
+    DWORD reportedThread = 0;
+    for (;;) {
+        Sleep(1000);
+        const DWORD thread = g_DecodingThread.load();
+        const ULONGLONG since = g_DecodingSince.load();
+        if (!thread || GetTickCount64() - since < 8000) {
+            reports = thread == reportedThread ? reports : 0;
+            continue;
+        }
+        if (thread != reportedThread) {
+            reportedThread = thread;
+            reports = 0;
+        }
+        if (reports >= 6)
+            continue;
+        ++reports;
+        HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, thread);
+        if (!h)
+            continue;
+        CONTEXT context = {};
+        context.ContextFlags = CONTEXT_FULL;
+        uint32_t stack[256] = {}, file[48] = {}, reader[9] = {}, object[16] = {}, inner[16][16] = {};
+        SIZE_T read = 0, fileRead = 0, readerRead = 0, objectRead = 0;
+        bool got = false;
+        if (SuspendThread(h) != DWORD(-1)) { // no allocation, no lock while it is held
+            got = GetThreadContext(h, &context) != 0;
+            if (got) {
+                ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(uintptr_t(context.Esp)), stack,
+                    sizeof(stack), &read);
+                if (g_DecodingFile)
+                    ReadProcessMemory(GetCurrentProcess(), g_DecodingFile, file, sizeof(file), &fileRead);
+                if (g_DecodingReader)
+                    ReadProcessMemory(GetCurrentProcess(), g_DecodingReader, reader, sizeof(reader), &readerRead);
+                // the object the game's code works on (its stream: ESI in the string reader), one level deep
+                ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(uintptr_t(context.Esi)), object,
+                    sizeof(object), &objectRead);
+                for (size_t i = 0; i < objectRead / 4; ++i) {
+                    SIZE_T n = 0;
+                    if (object[i] >= 0x01000000 && object[i] < 0x7FFF0000)
+                        ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(uintptr_t(object[i])), inner[i],
+                            sizeof(inner[i]), &n);
+                }
+            }
+            ResumeThread(h);
+        }
+        CloseHandle(h);
+        if (!got)
+            continue;
+        std::string words;
+        for (size_t i = 0; i < read / 4 && words.size() < 400; ++i)
+            if (stack[i] >= 0x00011000 && stack[i] < 0x005D0000) {
+                char w[16];
+                std::snprintf(w, sizeof(w), " %X@%zX", stack[i], i * 4);
+                words += w;
+            }
+        std::string fileWords;
+        for (size_t i = 0; i < fileRead / 4; ++i) {
+            char w[12];
+            std::snprintf(w, sizeof(w), " %X", file[i]);
+            fileWords += w;
+        }
+        fileWords += " | reader:";
+        for (size_t i = 0; i < readerRead / 4; ++i) {
+            char w[12];
+            std::snprintf(w, sizeof(w), " %X", reader[i]);
+            fileWords += w;
+        }
+        LOG_WARN("PAK: %s: its file object's words:%s", g_DecodingName, fileWords.c_str());
+        for (size_t i = 0; i < objectRead / 4; ++i) {
+            std::string line;
+            for (uint32_t w : inner[i]) {
+                char t[12];
+                std::snprintf(t, sizeof(t), " %X", w);
+                line += t;
+            }
+            LOG_WARN("PAK: esi[%zu] = %X:%s", i, object[i], line.c_str());
+        }
+        LOG_WARN("PAK: %s still decoding after %llu s: eip %08lX esp %08lX ebp %08lX eax %08lX ebx %08lX ecx %08lX "
+                 "edx %08lX esi %08lX edi %08lX; stack:%s",
+            g_DecodingName, (GetTickCount64() - since) / 1000, context.Eip, context.Esp, context.Ebp, context.Eax,
+            context.Ebx, context.Ecx, context.Edx, context.Esi, context.Edi, words.c_str());
+    }
+}
+DWORD WINAPI WatchDecodingThread(void*)
+{
+    WatchDecoding();
+    return 0;
+}
+
+// A patched or generated resource's decoding, watched while it lasts.
+struct DecodeWatch {
+    explicit DecodeWatch(const std::string& name)
+    {
+        bool expected = false;
+        if (g_WatchStarted.compare_exchange_strong(expected, true))
+            CloseHandle(CreateThread(nullptr, 0, &WatchDecodingThread, nullptr, 0, nullptr));
+        strncpy_s(g_DecodingName, name.c_str(), _TRUNCATE);
+        g_DecodingSince = GetTickCount64();
+        g_DecodingThread = GetCurrentThreadId();
+    }
+    ~DecodeWatch() { g_DecodingThread = 0; }
+    DecodeWatch(const DecodeWatch&) = delete;
+    DecodeWatch& operator=(const DecodeWatch&) = delete;
+};
+
 std::mutex g_PatchLock;
 std::unordered_map<std::string, ResourcePatch> g_Patches;
 
@@ -485,12 +610,28 @@ const std::vector<uint8_t>* Generated(const std::string& lowerName)
     return nullptr;
 }
 
+// A memory file's data for the time of a decode, in the game's memory (kernel::GameAlloc): the file object keeps
+// its address, which is then the same on every PC (netplay), not a host heap's.
+struct GameBuffer {
+    uint8_t* data;
+    explicit GameBuffer(const std::vector<uint8_t>& from)
+        : data(static_cast<uint8_t*>(kernel::GameAlloc(uint32_t(from.size()))))
+    {
+        std::memcpy(data, from.data(), from.size());
+    }
+    ~GameBuffer() { kernel::GameFree(data); }
+    GameBuffer(const GameBuffer&) = delete;
+    GameBuffer& operator=(const GameBuffer&) = delete;
+};
+
 // Decodes a generated resource as a non-PAK read (t_Top set by the caller).
-int DecodeGenerated(uint8_t* packer, const std::vector<uint8_t>& data, EnginePath* path, int typeId, void* record,
-    int extra, int context)
+int DecodeGenerated(const std::string& name, uint8_t* packer, const std::vector<uint8_t>& data, EnginePath* path,
+    int typeId, void* record, int extra, int context)
 {
+    DecodeWatch watch(name);
     EngineObject* file = FileMemoryCtor(EngineAlloc()(kFileMemorySize), nullptr);
-    VirtualAt<FileMemoryOpenFn>(file, kFileMemoryOpenSlot)(file, nullptr, const_cast<uint8_t*>(data.data()), uint32_t(data.size()));
+    GameBuffer buffer(data);
+    VirtualAt<FileMemoryOpenFn>(file, kFileMemoryOpenSlot)(file, nullptr, buffer.data, uint32_t(data.size()));
     packer[kPackerLastWasImage] = 0;
     ReadSource source = { nullptr, path, 0, {}, record };
     return DecodeFromFile(file, uint32_t(data.size()), context, &source, typeId, extra);
@@ -535,10 +676,16 @@ bool ReadElsewhere(uint8_t* packer, const PakIndex* owner, const PakIndex::Entry
         result = int(reinterpret_cast<uintptr_t>(image));
     } else {
         EngineObject* file = FileMemoryCtor(EngineAlloc()(kFileMemorySize), nullptr);
-        VirtualAt<FileMemoryOpenFn>(file, kFileMemoryOpenSlot)(file, nullptr, data.data(), uint32_t(data.size()));
+        GameBuffer buffer(data);
+        VirtualAt<FileMemoryOpenFn>(file, kFileMemoryOpenSlot)(file, nullptr, buffer.data, uint32_t(data.size()));
         packer[kPackerLastWasImage] = 0;
         ReadSource source = { nullptr, path, 0, {}, record };
-        result = DecodeFromFile(file, uint32_t(data.size()), context, &source, typeId, extra);
+        if (PatchFor(entry.name)) {
+            DecodeWatch watch(entry.name);
+            result = DecodeFromFile(file, uint32_t(data.size()), context, &source, typeId, extra);
+        } else {
+            result = DecodeFromFile(file, uint32_t(data.size()), context, &source, typeId, extra);
+        }
     }
     LOG_INFO("PAK: %s loaded from %ls", entry.name.c_str(), owner->Path().c_str());
     return true;
@@ -569,7 +716,7 @@ int __fastcall ReadHook(void* packer, void* edx, DecodeFn decode, EnginePath* pa
     int extra, int context)
 {
     if (!path)
-        return g_OriginalRead(packer, edx, decode, path, typeId, record, a5, extra, context);
+        return ScrubStack(), g_OriginalRead(packer, edx, decode, path, typeId, record, a5, extra, context);
 
     InstallEngineMessageHook();
     char full[512] = {};
@@ -622,7 +769,7 @@ int __fastcall ReadHook(void* packer, void* edx, DecodeFn decode, EnginePath* pa
                     return result;
             } else if (const std::vector<uint8_t>* generated = Generated(wanted)) {
                 t_Top = &pending;
-                int result = DecodeGenerated(p, *generated, path, typeId, record, extra, context);
+                int result = DecodeGenerated(wanted, p, *generated, path, typeId, record, extra, context);
                 t_Top = pending.outer;
                 return result;
             }
@@ -671,7 +818,7 @@ int __fastcall ReadHook(void* packer, void* edx, DecodeFn decode, EnginePath* pa
                             return result;
                     } else if (const std::vector<uint8_t>* generated = Generated(wanted)) {
                         t_Top = &pending;
-                        int result = DecodeGenerated(p, *generated, path, typeId, record, extra, context);
+                        int result = DecodeGenerated(wanted, p, *generated, path, typeId, record, extra, context);
                         t_Top = pending.outer;
                         return result;
                     } else {
@@ -683,8 +830,9 @@ int __fastcall ReadHook(void* packer, void* edx, DecodeFn decode, EnginePath* pa
     }
 
     if (g_DumpDir.empty() || _strnicmp(full, "d:\\", 3) != 0)
-        return g_OriginalRead(packer, edx, decode, path, typeId, record, a5, extra, context);
+        return ScrubStack(), g_OriginalRead(packer, edx, decode, path, typeId, record, a5, extra, context);
     t_Top = &pending;
+    ScrubStack();
     int result = g_OriginalRead(packer, edx, &DecodeDumped, path, typeId, record, a5, extra, context);
     t_Top = pending.outer;
     return result;
@@ -733,8 +881,11 @@ EngineObject* OpenManualCopy(const char* full, const std::string& wanted, const 
             return nullptr;
         from = owner->Path();
     }
+    // The reader is kept, and reads its file later: the data in the engine's memory, not this vector's.
+    auto* kept = static_cast<uint8_t*>(EngineAlloc()(uint32_t(data.size())));
+    std::memcpy(kept, data.data(), data.size());
     EngineObject* file = FileMemoryCtor(EngineAlloc()(kFileMemorySize), nullptr);
-    VirtualAt<FileMemoryOpenFn>(file, kFileMemoryOpenSlot)(file, nullptr, data.data(), uint32_t(data.size()));
+    VirtualAt<FileMemoryOpenFn>(file, kFileMemoryOpenSlot)(file, nullptr, kept, uint32_t(data.size()));
     LOG_INFO("PAK: %s (manual) loaded from %ls", wanted.c_str(), from.c_str());
     return PackReaderCtor(EngineAlloc()(0x24), nullptr, file, 0); // kept: the caller does not free it
 }
@@ -1584,7 +1735,7 @@ void InstallResourceHooks(const std::wstring& gameData, const std::wstring& mods
     int32_t rel = int32_t(kSceneResRead + 6) - int32_t(uintptr_t(stub) + 11);
     std::memcpy(stub + 7, &rel, 4);
     g_OriginalRead = reinterpret_cast<ReadFn>(stub);
-    PatchJump(kSceneResRead, reinterpret_cast<const void*>(&ReadHook));
+    PatchHook(kSceneResRead, reinterpret_cast<const void*>(&ReadHook));
 
     // Trampoline: the displaced "sub esp, 0x10C" (6 bytes), then jump back.
     g_FolderCapacity.clear(); // a rebooted game's scenes and image blocks are new
@@ -1599,7 +1750,7 @@ void InstallResourceHooks(const std::wstring& gameData, const std::wstring& mods
     rel = int32_t(kSceneLoadResource + 6) - int32_t(uintptr_t(loadStub) + 11);
     std::memcpy(loadStub + 7, &rel, 4);
     g_OriginalSceneLoad = reinterpret_cast<SceneLoadFn>(loadStub);
-    PatchJump(kSceneLoadResource, reinterpret_cast<const void*>(&SceneLoadHook));
+    PatchHook(kSceneLoadResource, reinterpret_cast<const void*>(&SceneLoadHook));
 
     // Trampoline: the displaced "sub esp, 0x74 / push ebx / xor ebx, ebx" (6 bytes), then jump back.
     uint8_t* manualStub = AllocStub(16);
@@ -1618,7 +1769,7 @@ void InstallResourceHooks(const std::wstring& gameData, const std::wstring& mods
     rel = int32_t(kAnimationLookup + 5) - int32_t(uintptr_t(lookupStub) + 10);
     std::memcpy(lookupStub + 6, &rel, 4);
     g_OriginalAnimationLookup = reinterpret_cast<AnimationLookupFn>(lookupStub);
-    PatchJump(kAnimationLookup, reinterpret_cast<const void*>(&AnimationLookupHook));
+    PatchHook(kAnimationLookup, reinterpret_cast<const void*>(&AnimationLookupHook));
 
     // Trampoline: the displaced "sub esp, 0x158" (6 bytes), then jump back.
     uint8_t* tableStub = AllocStub(16);
@@ -1628,7 +1779,7 @@ void InstallResourceHooks(const std::wstring& gameData, const std::wstring& mods
     rel = int32_t(kOpenCharacterTable + 6) - int32_t(uintptr_t(tableStub) + 11);
     std::memcpy(tableStub + 7, &rel, 4);
     g_OriginalOpenCharacterTable = reinterpret_cast<OpenCharacterTableFn>(tableStub);
-    PatchJump(kOpenCharacterTable, reinterpret_cast<const void*>(&OpenCharacterTableHook));
+    PatchHook(kOpenCharacterTable, reinterpret_cast<const void*>(&OpenCharacterTableHook));
 
     // Trampoline: the displaced "push ecx / mov eax, [esp + 8]" (5 bytes), then jump back.
     uint8_t* eventStub = AllocStub(16);
@@ -1638,8 +1789,8 @@ void InstallResourceHooks(const std::wstring& gameData, const std::wstring& mods
     rel = int32_t(kLoadEventTable + 5) - int32_t(uintptr_t(eventStub) + 10);
     std::memcpy(eventStub + 6, &rel, 4);
     g_OriginalLoadEventTable = reinterpret_cast<LoadEventTableFn>(eventStub);
-    PatchJump(kLoadEventTable, reinterpret_cast<const void*>(&LoadEventTableHook));
-    PatchJump(kPackerOpenManual, reinterpret_cast<const void*>(&OpenManualHook));
+    PatchHook(kLoadEventTable, reinterpret_cast<const void*>(&LoadEventTableHook));
+    PatchHook(kPackerOpenManual, reinterpret_cast<const void*>(&OpenManualHook));
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kPackerEndManual)), kPackerEndManualBytes,
             sizeof(kPackerEndManualBytes)) == 0) {
         PatchJump(kPackerEndManual, reinterpret_cast<const void*>(&PackerEndManualGuard));

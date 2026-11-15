@@ -29,6 +29,7 @@
 #include "game/menus.h"
 #include "kernel/kernel.h"
 #include "game/resources.h"
+#include "kernel/clock.h"
 
 namespace swrots::game {
 
@@ -294,12 +295,12 @@ int __fastcall StartEntryHook(uint8_t* engine, void*, uint8_t* speaker, int entr
     // A forced line is said once: the speaker's next start (its own taunt a moment later) and any start after its
     // time get the entry's own line back (else a player's custom character repeated a mission's line with its next
     // taunt, and an entry kept the mission's line after its time)
-    if (g_Forced.swapped && ((g_Forced.said && speaker == g_Forced.speaker) || GetTickCount64() >= g_Forced.until))
+    if (g_Forced.swapped && ((g_Forced.said && speaker == g_Forced.speaker) || kernel::GameTickCount64() >= g_Forced.until))
         EndForcedLine();
-    const bool forced = speaker && speaker == g_Forced.speaker && g_Forced.id && GetTickCount64() < g_Forced.until;
+    const bool forced = speaker && speaker == g_Forced.speaker && g_Forced.id && kernel::GameTickCount64() < g_Forced.until;
     if ((g_OnlyForced || (speaker && !g_QuietCharacters.empty() && IsQuietCharacter(speaker))) && !forced)
         return 0;
-    if (speaker && speaker == g_Forced.speaker && entry >= 0 && g_Forced.id && GetTickCount64() < g_Forced.until) {
+    if (speaker && speaker == g_Forced.speaker && entry >= 0 && g_Forced.id && kernel::GameTickCount64() < g_Forced.until) {
         uint8_t* e = *reinterpret_cast<uint8_t**>(engine + kDialogueEntries) + size_t(entry) * kDialogueEntrySize;
         const char* name = *reinterpret_cast<const char**>(e + 0x14);
         if (name && _strnicmp(name, g_Forced.event, 3) == 0) {
@@ -334,7 +335,7 @@ int __fastcall StartEntryHook(uint8_t* engine, void*, uint8_t* speaker, int entr
     uint8_t* e = *reinterpret_cast<uint8_t**>(engine + kDialogueEntries) + size_t(entry) * kDialogueEntrySize;
     const char* name = *reinterpret_cast<const char**>(e + 0x14);
     const char* duel = nullptr; // this entry answers the duel's line: its INT / WIN lines first
-    if (g_DuelLine.speaker == speaker && name && GetTickCount64() < g_DuelLine.until &&
+    if (g_DuelLine.speaker == speaker && name && kernel::GameTickCount64() < g_DuelLine.until &&
         _strnicmp(name, g_DuelLine.event, 3) == 0)
         duel = g_DuelLine.own;
     // the events whose lines it says: the duel's (INT / WIN), the entry's own, else a related one it has lines for (a
@@ -404,7 +405,7 @@ int __cdecl SayEventHook(const char* event, const char* context, int a, int b, i
     if (!custom)
         return g_SayEvent(event, context, a, b, c);
     const bool intro = _strnicmp(event, "TNT", 3) == 0;
-    g_DuelLine = { character, intro ? "TNT" : "KIL", intro ? "INT" : "WIN", GetTickCount64() + 4000 };
+    g_DuelLine = { character, intro ? "TNT" : "KIL", intro ? "INT" : "WIN", kernel::GameTickCount64() + 4000 };
     // a borrowed or own intro (Intro=, IntroAnimation=): its speaker has no Versus lines of its own (the base never
     // dueled), so the line is asked without the context
     const bool ownIntro = custom->intro >= 0 || !custom->introAnimation.empty() || !custom->outroAnimation.empty();
@@ -1035,7 +1036,7 @@ void PruneMade()
 
 void CustomCharactersFrame()
 {
-    if (g_Forced.id && GetTickCount64() >= g_Forced.until) // a forced line's time is up: its entry's own line back
+    if (g_Forced.id && kernel::GameTickCount64() >= g_Forced.until) // a forced line's time is up: its entry's own line back
         EndForcedLine();
     PruneMade(); // those taken away (a match's fighters after a respawn) out
     __try {
@@ -1677,8 +1678,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
         g_Customs.clear();
         return;
     }
-    // The stub lives in the port's memory and survives reboots; the jump is patched into every new image.
-    static uint8_t* stub = [] {
+    uint8_t* stub = [] { // made again at every start (ResetStubsForBoot)
         uint8_t* s = AllocStub(sizeof(kClassLookupBytes) + 5);
         std::memcpy(s, kClassLookupBytes, sizeof(kClassLookupBytes));
         s[sizeof(kClassLookupBytes)] = 0xE9;
@@ -1688,9 +1688,9 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
         return s;
     }();
     g_OriginalLookup = reinterpret_cast<LookupFn>(stub);
-    PatchJump(kClassLookup, reinterpret_cast<const void*>(&LookupHook));
+    PatchHook(kClassLookup, reinterpret_cast<const void*>(&LookupHook));
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kStartEntry)), kStartEntryBytes, sizeof kStartEntryBytes) == 0) {
-        static uint8_t* startEntryStub = [] { // once: the port's memory outlives the game's reboots
+        uint8_t* startEntryStub = [] { // made again at every start (ResetStubsForBoot)
             uint8_t* stub = AllocStub(sizeof kStartEntryBytes + 5);
             std::memcpy(stub, kStartEntryBytes, sizeof kStartEntryBytes);
             stub[sizeof kStartEntryBytes] = 0xE9;
@@ -1700,11 +1700,11 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
             return stub;
         }();
         g_StartEntry = reinterpret_cast<StartEntryFn>(startEntryStub);
-        PatchJump(kStartEntry, reinterpret_cast<const void*>(&StartEntryHook));
+        PatchHook(kStartEntry, reinterpret_cast<const void*>(&StartEntryHook));
     }
     g_DuelLine = {};
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kChargeupPick)), kChargeupPickBytes, sizeof kChargeupPickBytes) == 0) {
-        static uint8_t* pickStub = [] { // once: the port's memory outlives the game's reboots
+        uint8_t* pickStub = [] { // made again at every start (ResetStubsForBoot)
             uint8_t* stub = AllocStub(sizeof kChargeupPickBytes + 5);
             std::memcpy(stub, kChargeupPickBytes, sizeof kChargeupPickBytes);
             stub[sizeof kChargeupPickBytes] = 0xE9;
@@ -1714,13 +1714,13 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
             return stub;
         }();
         g_ChargeupPick = reinterpret_cast<ChargeupPickFn>(pickStub);
-        PatchJump(kChargeupPick, reinterpret_cast<const void*>(&ChargeupPickHook));
+        PatchHook(kChargeupPick, reinterpret_cast<const void*>(&ChargeupPickHook));
     }
     if (std::any_of(g_Customs.begin(), g_Customs.end(), [](const CustomCharacter& c) { return c.scale != 1.0f; }) &&
         std::memcmp(reinterpret_cast<const void*>(uintptr_t(kScriptSetScale)), kScriptSetScaleBytes, sizeof kScriptSetScaleBytes) == 0)
-        PatchJump(kScriptSetScale, reinterpret_cast<const void*>(&ScriptSetScale));
+        PatchHook(kScriptSetScale, reinterpret_cast<const void*>(&ScriptSetScale));
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kSayEvent)), kSayEventBytes, sizeof kSayEventBytes) == 0) {
-        static uint8_t* sayStub = [] { // once: the port's memory outlives the game's reboots
+        uint8_t* sayStub = [] { // made again at every start (ResetStubsForBoot)
             uint8_t* stub = AllocStub(sizeof kSayEventBytes + 5);
             std::memcpy(stub, kSayEventBytes, sizeof kSayEventBytes);
             stub[sizeof kSayEventBytes] = 0xE9;
@@ -1729,7 +1729,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
             return stub;
         }();
         g_SayEvent = reinterpret_cast<SayEventFn>(sayStub);
-        PatchJump(kSayEvent, reinterpret_cast<const void*>(&SayEventHook));
+        PatchHook(kSayEvent, reinterpret_cast<const void*>(&SayEventHook));
     }
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kSaberSetup)), kSaberSetupBytes, sizeof kSaberSetupBytes) == 0)
         PatchCall(kSaberSetup, reinterpret_cast<const void*>(&SaberSetupHook), sizeof kSaberSetupBytes);
@@ -1800,7 +1800,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
         break;
     }
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kJediSetup)), kJediSetupBytes, sizeof kJediSetupBytes) == 0) {
-        static uint8_t* jediStub = [] { // once: the port's memory outlives the game's restarts
+        uint8_t* jediStub = [] { // made again at every start (ResetStubsForBoot)
             uint8_t* s = AllocStub(13);
             s[0] = 0x56; // push esi
             s[1] = 0x8B; // mov esi, ecx
@@ -1814,7 +1814,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
             return s;
         }();
         g_OriginalJediSetup = reinterpret_cast<JediSetupFn>(jediStub);
-        PatchJump(kJediSetup, reinterpret_cast<const void*>(&JediSetupHook));
+        PatchHook(kJediSetup, reinterpret_cast<const void*>(&JediSetupHook));
     }
     if (std::any_of(g_Customs.begin(), g_Customs.end(),
             [](const CustomCharacter& c) { return c.intro >= 0 || !c.introAnimation.empty() || !c.outroAnimation.empty(); })) {
@@ -1926,7 +1926,7 @@ void ForceNextLine(const uint8_t* speaker, const char* event, const char* lineId
     g_Forced.speaker = speaker;
     strncpy_s(g_Forced.event, event, 3);
     g_Forced.id = id;
-    g_Forced.until = GetTickCount64() + milliseconds;
+    g_Forced.until = kernel::GameTickCount64() + milliseconds;
 }
 
 const char* IntroCameras(const CustomCharacter& custom)

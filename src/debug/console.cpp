@@ -8,11 +8,13 @@
 #include <iterator>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <mutex>
 
 #include "core/log.h"
+#include "core/window.h"
 #include "core/patch.h"
 #include "d3d/recorder.h"
 #include "game/freecam.h"
@@ -25,7 +27,14 @@
 #include "game/hvv.h"
 #include "game/missions.h"
 #include "game/versus.h"
+#include "input/controls.h"
 #include "kernel/kernel.h"
+#include "net/rollback.h"
+#include "game/menus.h"
+#include "game/onlinemenu.h"
+#include "net/duelstate.h"
+#include "net/props.h"
+#include "net/session.h"
 
 namespace swrots::debug {
 
@@ -991,6 +1000,111 @@ void FreeCamera(const std::vector<std::string>& words)
     }
 }
 
+// synctest [<distance> [<every>]] | off | (nothing): netplay's rollback check (net/rollback.h): every <every>
+// frames (1), back <distance> frames (4) and played again; the checksums must come out the same. Results in the log.
+void SyncTest(const std::vector<std::string>& words)
+{
+    if (words.size() >= 2 && _stricmp(words[1].c_str(), "off") == 0) {
+        net::StopRollback();
+        Print(LineKind::Output, "  SyncTest off (results in the log)");
+        return;
+    }
+    if (words.size() < 2) {
+        Print(LineKind::Output, "  %s", net::RollbackStatus().c_str());
+        Print(LineKind::Output, "  synctest <distance> [<every>] starts it, synctest off stops it");
+        return;
+    }
+    const int distance = std::atoi(words[1].c_str());
+    const int every = words.size() >= 3 ? std::atoi(words[2].c_str()) : 1;
+    const bool det = words.size() >= 4 && _strnicmp(words[3].c_str(), "det", 3) == 0;
+    const bool next = words.size() >= 5 && _stricmp(words[4].c_str(), "next") == 0; // the next start, not a restart
+    if (distance < 1 || distance > 30 || every < 1) {
+        Print(LineKind::Output, "  synctest <distance 1-30> [<every 1+>] [det]");
+        return;
+    }
+    net::StartSyncTest(uint32_t(distance), uint32_t(every), det, !next);
+    Print(LineKind::Output, "  SyncTest from the next frame: back %d frames every %d frame(s)", distance, every);
+}
+
+// nettest record|compare <name> [<frames>]: the cross-run determinism test for lockstep (net/rollback.h).
+void NetTest(const std::vector<std::string>& words)
+{
+    const bool record = words.size() >= 3 && _stricmp(words[1].c_str(), "record") == 0;
+    const bool compare = words.size() >= 3 && _stricmp(words[1].c_str(), "compare") == 0;
+    if (!record && !compare) {
+        Print(LineKind::Output, "  nettest record <name> [<frames>] | nettest compare <name>");
+        return;
+    }
+    const int frames = words.size() >= 4 ? std::atoi(words[3].c_str()) : 1800;
+    net::StartNetTest(record, words[2], uint32_t(std::max(frames, 60)));
+    Print(LineKind::Output, "  nettest %s '%s' from the next settled level frame (results in the log)",
+        record ? "record" : "compare", words[2].c_str());
+}
+
+// online host | online join <code or address> | online leave | online: online play (net/session.h).
+void Online(const std::vector<std::string>& words)
+{
+    const std::string what = words.size() >= 2 ? words[1] : "";
+    if (_stricmp(what.c_str(), "host") == 0) {
+        net::OnlineHost();
+    } else if (_stricmp(what.c_str(), "join") == 0 && words.size() >= 3) {
+        std::string code;
+        for (size_t i = 2; i < words.size(); ++i)
+            code += words[i];
+        net::OnlineJoin(code);
+    } else if (_stricmp(what.c_str(), "leave") == 0) {
+        net::OnlineLeave();
+    } else if (_stricmp(what.c_str(), "set") == 0 && words.size() >= 5) { // online set <rounds> <arena 0|1> <rematch 0|1> [public] [time] [mode]
+        net::OnlineRoomSettings room = net::OnlineStatus().room; // its name kept
+        room.rounds = uint8_t(std::clamp(std::atoi(words[2].c_str()), 1, 5));
+        room.arena = uint8_t(std::clamp(std::atoi(words[3].c_str()), 0, 3));
+        room.rematch = uint8_t(std::atoi(words[4].c_str()) ? 1 : 0);
+        room.open = uint8_t(words.size() > 5 && std::atoi(words[5].c_str()) ? 1 : 0); // [public 0|1]
+        room.time = uint8_t(words.size() > 6 ? std::clamp(std::atoi(words[6].c_str()), 0, 99) : 0); // [time 0|30|60|99]
+        room.mode = uint8_t(words.size() > 7 && std::atoi(words[7].c_str()) == 1 ? 1 : 0); // [mode 0 Versus|1 Cooperative]
+        net::SetOnlineRoom(room);
+    } else if (_stricmp(what.c_str(), "boot") == 0) { // online boot: the main menu once, as soon as the shell is up (tests)
+        static bool done = false;
+        if (!done && game::GoToShellScreen("main_menu")) {
+            done = true;
+            Print(LineKind::Output, "  to the main menu");
+        }
+    } else if (_stricmp(what.c_str(), "keyboard") == 0) { // online keyboard: the room code's keyboard (tests)
+        game::OnlineOpenCodeKeyboard();
+    } else if (_stricmp(what.c_str(), "ready") == 0) { // online ready [0|1]: this player's Ready in the room
+        net::SetOnlineReady(words.size() < 3 || std::atoi(words[2].c_str()) != 0);
+    } else if (_stricmp(what.c_str(), "arena") == 0 && words.size() >= 6) {
+        // online arena <class 1> <class 2> <map> <arena number>: a Versus duel as the select screens start one (tests)
+        kernel::LaunchGame("v_sessionCreated:1 v_ch01:0 v_ch02:0 v_ch03:0 v_ch04:0 v_ch05:0 v_ch06:0 v_c1:" + words[2] +
+            " v_p1:0 v_c2:" + words[3] + " v_p2:1 v_roundcount:3 v_arena:" + words[5] +
+            " controller:0 memoryunit:0 pack:2 session: sessionload:1 nextmap:0 preservebackbuffer:0 useSelectScreen:0 "
+            "preservelogfile:1 spawnindex:-1 map:" + words[4] + " title:0 previousmap: cheats:0 resurrected:0 checkpoint:0 "
+            "spawnindex:-1 language:english autosave:1 playlicensemovie:0 allowgameskipmovie:0 alreadyPlayedMovieList: "
+            "v_checkpointIndex:-1 v_versusMode:0 v_bonusMissionMode:0 v_challengeMissionMode:0 v_shellBetweenLevels:0 ");
+        Print(LineKind::Output, "  starting the duel");
+    } else if (_stricmp(what.c_str(), "hurt") == 0 && words.size() >= 4) { // online hurt <player 1|2> <health> (tests)
+        uint8_t* fighter = game::GamePlayerSlot(std::atoi(words[2].c_str()) == 2 ? 1 : 0);
+        if (fighter)
+            reinterpret_cast<void(__fastcall*)(uint8_t*, void*, float, uint32_t, uint32_t)>(uintptr_t(0x00151500))(
+                fighter, nullptr, -float(std::atof(words[3].c_str())), 0, 0);
+        Print(LineKind::Output, fighter ? "  hurt" : "  no such fighter");
+    } else if (_stricmp(what.c_str(), "start") == 0) { // the room's Start (tests)
+        Print(LineKind::Output, game::OnlineStartVersus() ? "  to the Versus select" : "  not in the front end");
+        return;
+    } else if (_stricmp(what.c_str(), "close") == 0) { // online close: the window closed as Alt+F4 does (tests)
+        if (HWND game = GameWindow())
+            PostMessageW(GetAncestor(game, GA_ROOT), WM_CLOSE, 0, 0);
+        return;
+    } else if (_stricmp(what.c_str(), "menu") == 0) { // the Online screen (from any front-end screen; tests)
+        Print(LineKind::Output, game::GoToShellScreen("main_menu") ? "  to the main menu" : "  not in the front end");
+        return;
+    } else if (!what.empty()) {
+        Print(LineKind::Output, "  online host | online join <room code or host[:port]> | online leave | online menu | online");
+        return;
+    }
+    Print(LineKind::Output, "  %s", net::OnlineStatusLine().c_str());
+}
+
 // Returns false when the line is for the game's own console.
 bool RunPortCommand(uint8_t* console, const std::string& line)
 {
@@ -1022,7 +1136,9 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         command != "infiniteforce" && command != "memory" && command != "team" &&
         command != "findrefs" && command != "despawn" && command != "characters" && command != "scale" &&
         command != "screenshot" && command != "coop" &&
-        command != "devmap" && command != "hvv" && command != "versus" && command != "mission" && command != "kill")
+        command != "devmap" && command != "hvv" && command != "versus" && command != "mission" && command != "kill" && command != "synctest" && command != "nettest" &&
+        command != "press" && command != "objects" &&
+        command != "online" && command != "duelrec" && command != "duelsnap" && command != "duelplay")
         return false;
     Print(LineKind::Output, "> %s", line.c_str());
     if (command == "duelist") {
@@ -1039,6 +1155,29 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         AutoRestart(words);
     } else if (command == "freecam") {
         FreeCamera(words);
+    } else if (command == "synctest") {
+        SyncTest(words);
+    } else if (command == "nettest") {
+        NetTest(words);
+    } else if (command == "online") {
+        Online(words);
+    } else if (command == "duelrec") { // duelrec <name> <frames> | duelrec off: the duel's state (net/duelstate.h)
+        if (words.size() >= 6) // duelrec <name> <frames> <shots from> <to> <every>
+            net::SetDuelRecorderShots(uint32_t(std::atoi(words[3].c_str())), uint32_t(std::atoi(words[4].c_str())),
+                uint32_t(std::atoi(words[5].c_str())));
+        if (words.size() >= 3)
+            net::StartDuelRecorder(words[1], uint32_t(std::max(0, std::atoi(words[2].c_str()))));
+        else if (words.size() == 2)
+            net::StartDuelRecorder("", 0);
+        Print(LineKind::Output, "  %s", net::DuelRecorderStatus().c_str());
+    } else if (command == "duelsnap") { // duelsnap save | load [full|fields|pos] | test <a> <b> | mode <m>
+        auto word = [&](size_t i) { return i < words.size() ? words[i] : std::string(); };
+        Print(LineKind::Output, "  %s", net::DuelSnapCommand(word(1), word(2), word(3)).c_str());
+    } else if (command == "duelplay") { // duelplay <name> <from> <frames> [shots every] [fighters 1|2|3]
+        auto num = [&](size_t i) { return i < words.size() ? uint32_t(std::max(0, std::atoi(words[i].c_str()))) : 0u; };
+        Print(LineKind::Output, "  %s",
+            words.size() >= 4 ? net::StartDuelPlay(words[1], num(2), num(3), num(4), num(5)).c_str()
+                              : "usage: duelplay <name> <from frame> <frames> [screenshot every n] [fighters 1|2|3]");
     } else if (command == "saber") {
         Saber(words);
     } else if (command == "spawn") {
@@ -1104,17 +1243,26 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         // developer map or a custom map
         std::string map;
         int rounds = 0;
+        bool human = false; // "human": player 2 on the second pad (an online match's guest) instead of the computer
         std::vector<std::string> classes;
         for (size_t i = 1; i < words.size(); ++i) {
-            if (words[i] == "map" && i + 1 < words.size())
+            if (words[i] == "human")
+                human = true;
+            else if (words[i] == "map" && i + 1 < words.size())
                 map = words[++i];
             else if (words[i] == "rounds" && i + 1 < words.size())
                 rounds = std::atoi(words[++i].c_str());
             else
                 classes.push_back(words[i]);
         }
+        // the names as registered; before any level (the title, the menus) the classes are not registered yet: then
+        // as typed
         const char* first = classes.size() == 2 ? game::RegisteredClassName(classes[0].c_str()) : nullptr;
         const char* second = classes.size() == 2 ? game::RegisteredClassName(classes[1].c_str()) : nullptr;
+        if (classes.size() == 2 && !first && !second && !game::PlayerObject()) {
+            first = classes[0].c_str();
+            second = classes[1].c_str();
+        }
         if (!first || !second) {
             Print(LineKind::Error, "versus <your class> <the computer's class> [map <map>] [rounds <n>]");
             return true;
@@ -1124,7 +1272,7 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
             return true;
         }
         Print(LineKind::Output, "  starting a duel...");
-        game::StartDuel(first, second, map, rounds, game::ProfileSessionArguments());
+        game::StartDuel(first, second, map, rounds, game::ProfileSessionArguments(), human);
     } else if (command == "kill") {
         // kill: the player's character is defeated at once, as by a killing blow (to see what a defeat does: a
         // mission's Game Over, a mode's comeback)
@@ -1165,6 +1313,13 @@ bool RunPortCommand(uint8_t* console, const std::string& line)
         }
         Print(LineKind::Output, "  starting the developer map...");
         game::StartDevMap(words.size() > 1 ? "custommap:" + words[1] : "");
+    } else if (command == "objects") { // objects [list [class]] | move <class> <up> | destroy <class>
+        const std::string verb = words.size() > 1 ? words[1] : "list";
+        Print(LineKind::Output, "  %s", net::ObjectsCommand(verb, words.size() > 2 ? words[2] : "",
+            words.size() > 3 ? float(std::atof(words[3].c_str())) : 0.0f).c_str());
+    } else if (command == "press") { // player 1's buttons held a while (a test's): press Start+A 0.2
+        input::ScriptButtons(words.size() > 1 ? words[1].c_str() : "", words.size() > 2 ? std::atof(words[2].c_str()) : 0.15);
+        Print(LineKind::Output, "  pressed");
     } else if (command == "screenshot") {
         d3d::RequestScreenshot(words.size() > 1 ? words[1] : "");
         Print(LineKind::Output, "  saved at the next frame, without this menu, to the screenshots folder");
@@ -1259,7 +1414,7 @@ void RunQueuedConsoleCommands()
             // and gone while a level loads).
             const std::vector<std::string> words = Words(line);
             static const char* const kStandalone[] = { "player", "variants", "meshes", "restart", "autorestart",
-                "duelist", "freecam", "saber", "spawn", "peek", "infiniteforce", "memory", "team", "findrefs", "despawn", "characters", "scale", "screenshot", "coop", "devmap", "hvv", "versus", "mission", "kill", "clear", "cls" };
+                "duelist", "freecam", "saber", "spawn", "peek", "infiniteforce", "memory", "team", "findrefs", "despawn", "characters", "scale", "screenshot", "coop", "devmap", "hvv", "versus", "mission", "kill", "synctest", "nettest", "online", "press", "objects", "clear", "cls" };
             const bool standalone = !words.empty() && std::any_of(std::begin(kStandalone), std::end(kStandalone),
                 [&](const char* c) { return _stricmp(words[0].c_str(), c) == 0; });
             if (standalone) {

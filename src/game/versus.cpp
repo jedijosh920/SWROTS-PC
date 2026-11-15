@@ -215,4 +215,62 @@ const char* Duelist(int slot)
     return reinterpret_cast<const char* const*>(uintptr_t(kDuelistClasses))[slot];
 }
 
+// --- A duel's round ---------------------------------------------------------------------------------------------------
+// The game's Versus logic (its game mode object [0x7EB964], valid with +0xC bit 0x40000; its update 0x27CA80 steps
+// the round's state +0x240). A fighter down in the fight (state 4) ends the round (0x27D35A): +0x1E1 set, each
+// living fighter's controller taken away (0x150580: -1), the round's end staged (0x27AE00) with its camera on the
+// fighters (the shell's 0x2E5570 / 0x2E55B0, the cameras' ids kept at 0x646A60 / 0x646A5C), state 5 with its time
+// (+0x288) from 0. 2.7 s later the game gives the round to the one living, or with both down or both living says
+// IDS_ROUND_DRAW and gives no point (0x27D509); the next round follows either way.
+constexpr uint32_t kVersusGame = 0x007EB964, kVersusFighter = 0x0027AB30, kSetController = 0x00150580,
+    kStageRoundEnd = 0x0027AE00, kShell = 0x007F33F0, kCameraOn = 0x002E5570, kCameraAlso = 0x002E55B0,
+    kCameraFirst = 0x00646A60, kCameraSecond = 0x00646A5C;
+
+uint8_t* VersusGame()
+{
+    __try {
+        uint8_t* game = *reinterpret_cast<uint8_t**>(uintptr_t(kVersusGame));
+        return game && (*reinterpret_cast<uint32_t*>(game + 0xC) & 0x40000) ? game : nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
+int VersusRoundState()
+{
+    uint8_t* game = VersusGame();
+    return game ? *reinterpret_cast<int*>(game + 0x240) : -1;
+}
+
+bool VersusRoundDraw()
+{
+    uint8_t* game = VersusGame();
+    if (!game || *reinterpret_cast<int*>(game + 0x240) != 4 || game[0x1E1])
+        return false;
+    __try {
+        game[0x1E1] = 1;
+        *reinterpret_cast<int*>(game + 0x240) = 5;
+        using FighterFn = uint8_t*(__fastcall*)(uint8_t*, void*, int);
+        for (int slot = 0; slot < 2; ++slot)
+            if (uint8_t* fighter = reinterpret_cast<FighterFn>(uintptr_t(kVersusFighter))(game, nullptr, slot))
+                reinterpret_cast<void(__fastcall*)(uint8_t*, void*, int)>(uintptr_t(kSetController))(fighter, nullptr, -1);
+        reinterpret_cast<void(__fastcall*)(uint8_t*, void*)>(uintptr_t(kStageRoundEnd))(game, nullptr);
+        uint8_t* shell = *reinterpret_cast<uint8_t**>(uintptr_t(kShell));
+        const int first = *reinterpret_cast<int*>(uintptr_t(kCameraFirst));
+        const int second = *reinterpret_cast<int*>(uintptr_t(kCameraSecond));
+        if (shell) {
+            reinterpret_cast<void(__fastcall*)(uint8_t*, void*, int)>(uintptr_t(kCameraOn))(shell, nullptr, first);
+            if (second != -1)
+                reinterpret_cast<void(__fastcall*)(uint8_t*, void*, int)>(uintptr_t(kCameraAlso))(shell, nullptr, second);
+        }
+        *reinterpret_cast<int*>(game + 0x240) = 5;
+        *reinterpret_cast<float*>(game + 0x288) = 0.0f;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        LOG_WARN("Versus: the round could not be ended as a draw");
+        return false;
+    }
+    LOG_INFO("Versus: the round ends as a draw");
+    return true;
+}
+
 } // namespace swrots::game

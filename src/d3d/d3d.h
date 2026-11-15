@@ -77,6 +77,15 @@ struct XboxState {
 XboxState& State();
 IDirect3DDevice9* Device();
 
+// A picture held on screen across the game's restart (online play: the menus' last picture, with the game's popup,
+// while both games restart for the match): 0 nothing, 1 the last picture kept (taken as the device goes), 2 shown
+// in place of the game's frames once the device came back (the HUD sets it every frame).
+void SetFrameHold(int mode);
+// A held picture is shown now.
+bool FrameHeld();
+// The host device's count of creations (a restart makes a new one).
+uint32_t DeviceGeneration();
+
 // Internal resolution scale: host render targets are this many times the
 // size of their Xbox surfaces. Xbox pixel coordinates (viewports, scissors,
 // pre-transformed vertices) are multiplied by it. Fixed while a device exists.

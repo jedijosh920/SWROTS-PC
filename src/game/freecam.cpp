@@ -83,7 +83,7 @@ void* Detour(uint32_t address, const uint8_t* prologue, uint32_t length, const v
     stub[length] = 0xE9;
     int32_t back = int32_t(address + length) - int32_t(uintptr_t(stub) + length + 5);
     std::memcpy(stub + length + 1, &back, 4);
-    PatchJump(address, hook);
+    PatchHook(address, hook);
     return stub;
 }
 

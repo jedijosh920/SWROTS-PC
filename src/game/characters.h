@@ -156,6 +156,8 @@ int SpawnedCount();
 int RemoveSpawned();
 // Removes one spawned character (still there), as RemoveSpawned does. False when it is not one.
 bool RemoveSpawnedCharacter(uint8_t* character);
+// A character's costume's name (as SpawnCharacterAt takes it), copied into `out`; false when it has none.
+bool CostumeNameRaw(const uint8_t* character, char* out, size_t size);
 
 // A character fighting for another (a fighter's reinforcement, e.g. Commander Cody's clones): created and placed at
 // `place` (a transform) in any running level, Versus too, on its master's side (its teams; `againstPlayer` when the
@@ -199,6 +201,9 @@ std::vector<std::string> CharacterClasses(bool all);
 
 // True once a level's player was created since the last boot (a level is running).
 bool PlayerInLevel();
+// The class the level created its player in (as the level names it; empty in the front end, whose "level" has a
+// player of no class, and before a level started).
+const std::string& LevelPlayerClass();
 
 // Whether a change of character restarts the running mission at once ([Debug] AutoRestart, on by
 // default); otherwise it applies from the next level start.

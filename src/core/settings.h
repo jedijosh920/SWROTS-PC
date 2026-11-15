@@ -42,5 +42,8 @@ Settings& EditSettings();
 // Loads `path` (creating it with defaults if missing); later Save() calls write there.
 void LoadSettings(const std::wstring& path);
 void SaveSettings();
+// An online match plays with the host's gameplay settings (in memory): while `own` is set, SaveSettings writes this
+// PC's own gameplay settings from it, never the host's.
+void SetOwnGameplaySettings(const Settings* own);
 
 } // namespace swrots

@@ -18,6 +18,8 @@
 #include "kernel/host_nt.h"
 #include "kernel/kernel.h"
 #include "kernel/reboot.h"
+#include "kernel/sched.h"
+#include "kernel/clock.h"
 
 namespace swrots::kernel {
 
@@ -127,7 +129,7 @@ static void DpcThreadMain()
 static void QueueDpc(KDPC* dpc, void* arg1, void* arg2)
 {
     std::lock_guard<std::mutex> lock(g_DpcLock);
-    if (!g_DpcThreadStarted) {
+    if (!g_DpcThreadStarted && !SchedActive()) { // the scheduler runs DPCs itself (RunDueTimersAndDpcs)
         std::thread(DpcThreadMain).detach();
         g_DpcThreadStarted = true;
     }
@@ -278,7 +280,8 @@ static std::condition_variable g_TimerCv;
 static std::unordered_map<KTIMER*, TimerEntry> g_Timers;
 static bool g_TimerThreadStarted = false;
 
-static ULONGLONG NowMs() { return GetTickCount64(); }
+// The fixed clock's milliseconds while the deterministic scheduler runs (it fires the timers), else the PC's.
+static ULONGLONG NowMs() { return SchedActive() ? FixedClockPeek() / 10000 : GetTickCount64(); }
 
 static void TimerThreadMain()
 {
@@ -331,7 +334,7 @@ void XBAPI KeInitializeTimerEx(KTIMER* Timer, ULONG Type)
 BOOLEAN XBAPI KeSetTimerEx(KTIMER* Timer, LARGE_INTEGER DueTime, LONG Period, KDPC* Dpc)
 {
     std::lock_guard<std::mutex> lock(g_TimerLock);
-    if (!g_TimerThreadStarted) {
+    if (!g_TimerThreadStarted && !SchedActive()) { // the scheduler fires them itself (RunDueTimersAndDpcs)
         std::thread(TimerThreadMain).detach();
         g_TimerThreadStarted = true;
     }
@@ -357,6 +360,68 @@ BOOLEAN XBAPI KeCancelTimer(KTIMER* Timer)
     Timer->Header.Inserted = FALSE;
     return g_Timers.erase(Timer) != 0;
 }
+// While the deterministic scheduler runs (kernel/sched.h), it fires timers and runs DPCs itself, on the game thread
+// that holds the baton, when the fixed clock reaches them: the earliest timer's due time, or ~0.
+uint64_t NextTimerDueMs()
+{
+    std::lock_guard<std::mutex> lock(g_TimerLock);
+    uint64_t next = ~0ull;
+    for (const auto& [timer, entry] : g_Timers)
+        next = std::min<uint64_t>(next, entry.due);
+    return next;
+}
+
+bool RunDueTimersAndDpcs(uint64_t nowMs)
+{
+    bool any = false;
+    // Due timers, in due order (then by address: the same on every PC with deterministic addresses).
+    for (;;) {
+        KTIMER* due = nullptr;
+        KDPC* dpc = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_TimerLock);
+            ULONGLONG best = ~0ull;
+            for (const auto& [timer, entry] : g_Timers) {
+                if (entry.due <= nowMs && (entry.due < best || (entry.due == best && timer < due))) {
+                    best = entry.due;
+                    due = timer;
+                }
+            }
+            if (!due)
+                break;
+            TimerEntry& entry = g_Timers[due];
+            dpc = due->Dpc;
+            SignalObject(&due->Header);
+            if (entry.period > 0) {
+                entry.due += ULONGLONG(entry.period);
+            } else {
+                due->Header.Inserted = FALSE;
+                g_Timers.erase(due);
+            }
+        }
+        if (dpc)
+            QueueDpc(dpc, nullptr, nullptr);
+        any = true;
+    }
+    // Queued DPCs, in order, at dispatch level.
+    for (;;) {
+        KDPC* dpc = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_DpcLock);
+            if (g_DpcQueue.empty())
+                break;
+            dpc = g_DpcQueue.front();
+            g_DpcQueue.pop_front();
+            dpc->Inserted = FALSE;
+        }
+        UCHAR old = RaiseIrql(kDispatchLevel);
+        dpc->DeferredRoutine(dpc, dpc->DeferredContext, dpc->SystemArgument1, dpc->SystemArgument2);
+        LowerIrql(old);
+        any = true;
+    }
+    return any;
+}
+
 KERNEL_EXPORT(113, KeInitializeTimerEx);
 KERNEL_EXPORT(150, KeSetTimerEx);
 KERNEL_EXPORT(149, KeSetTimer);
@@ -375,8 +440,10 @@ NTSTATUS XBAPI NtCreateEvent(HANDLE* EventHandle, xbox::OBJECT_ATTRIBUTES* Objec
 {
     WarnNamed(ObjectAttributes, "NtCreateEvent");
     NTSTATUS status = ::NtCreateEvent(EventHandle, EVENT_ALL_ACCESS, nullptr, EventType, InitialState);
-    if (status >= 0)
+    if (status >= 0) {
         TrackGameHandle(*EventHandle);
+        *EventHandle = ToGameHandle(*EventHandle);
+    }
     return status;
 }
 
@@ -384,16 +451,24 @@ NTSTATUS XBAPI NtCreateSemaphore(HANDLE* SemaphoreHandle, xbox::OBJECT_ATTRIBUTE
 {
     WarnNamed(ObjectAttributes, "NtCreateSemaphore");
     NTSTATUS status = ::NtCreateSemaphore(SemaphoreHandle, SEMAPHORE_ALL_ACCESS, nullptr, InitialCount, MaximumCount);
-    if (status >= 0)
+    if (status >= 0) {
         TrackGameHandle(*SemaphoreHandle);
+        *SemaphoreHandle = ToGameHandle(*SemaphoreHandle);
+    }
     return status;
 }
 
-NTSTATUS XBAPI NtSetEvent(HANDLE EventHandle, LONG* PreviousState) { return ::NtSetEvent(EventHandle, PreviousState); }
-NTSTATUS XBAPI NtPulseEvent(HANDLE EventHandle, LONG* PreviousState) { return ::NtPulseEvent(EventHandle, PreviousState); }
+NTSTATUS XBAPI NtSetEvent(HANDLE EventHandle, LONG* PreviousState)
+{
+    return ::NtSetEvent(ToHostHandle(EventHandle), PreviousState);
+}
+NTSTATUS XBAPI NtPulseEvent(HANDLE EventHandle, LONG* PreviousState)
+{
+    return ::NtPulseEvent(ToHostHandle(EventHandle), PreviousState);
+}
 NTSTATUS XBAPI NtReleaseSemaphore(HANDLE SemaphoreHandle, LONG ReleaseCount, LONG* PreviousCount)
 {
-    return ::NtReleaseSemaphore(SemaphoreHandle, ReleaseCount, PreviousCount);
+    return ::NtReleaseSemaphore(ToHostHandle(SemaphoreHandle), ReleaseCount, PreviousCount);
 }
 
 NTSTATUS XBAPI NtWaitForSingleObject(HANDLE Handle, BOOLEAN Alertable, LARGE_INTEGER* Timeout)
@@ -407,7 +482,14 @@ NTSTATUS XBAPI NtWaitForSingleObjectEx(HANDLE Handle, CHAR WaitMode, BOOLEAN Ale
     return StatusOfWait(GameWait(1, &Handle, FALSE, TimeoutToMs(Timeout), Alertable));
 }
 
-NTSTATUS XBAPI NtYieldExecution() { return ::NtYieldExecution(); }
+NTSTATUS XBAPI NtYieldExecution()
+{
+    if (SchedHolding()) {
+        SchedYield();
+        return X_STATUS_SUCCESS;
+    }
+    return ::NtYieldExecution();
+}
 
 KERNEL_EXPORT(189, NtCreateEvent);
 KERNEL_EXPORT(193, NtCreateSemaphore);
@@ -425,6 +507,10 @@ NTSTATUS XBAPI KeDelayExecutionThread(CHAR WaitMode, BOOLEAN Alertable, LARGE_IN
     if (ms == 0) { // a yield
         if (Rebooting())
             ExitGameThread();
+        if (SchedHolding()) {
+            SchedYield();
+            return X_STATUS_SUCCESS;
+        }
         return ::NtDelayExecution(Alertable, Interval);
     }
     return GameWait(0, nullptr, FALSE, ms, Alertable) == WAIT_IO_COMPLETION ? X_STATUS_USER_APC : X_STATUS_SUCCESS;
@@ -446,26 +532,40 @@ NTSTATUS XBAPI PsCreateSystemThreadEx(HANDLE* ThreadHandle, ULONG ThreadExtensio
     if (!h)
         return X_STATUS_INSUFFICIENT_RESOURCES;
     LOG_DEBUG("Thread %lu created: start %p ctx %p stack %lu tls %lu", tid, StartRoutine, StartContext, KernelStackSize, TlsDataSize);
-    *ThreadHandle = h;
     TrackGameHandle(h);
-    if (ThreadId)
-        *ThreadId = reinterpret_cast<HANDLE>(uintptr_t(tid));
+    *ThreadHandle = ToGameHandle(h);
+    if (ThreadId) // netplay: not the host's id, which differs from PC to PC (the game's handle's number)
+        *ThreadId = SchedActive() ? *ThreadHandle : reinterpret_cast<HANDLE>(uintptr_t(tid));
     return X_STATUS_SUCCESS;
 }
 
 void XBAPI PsTerminateSystemThread(NTSTATUS ExitStatus)
 {
+    SchedThreadEnd();
     ExitThread(DWORD(ExitStatus));
 }
 
 NTSTATUS XBAPI NtSuspendThread(HANDLE ThreadHandle, ULONG* PreviousSuspendCount)
 {
+    ThreadHandle = ToHostHandle(ThreadHandle);
+    if (SchedSuspend(ThreadHandle, PreviousSuspendCount)) // the deterministic scheduler keeps it
+        return X_STATUS_SUCCESS;
     return ::NtSuspendThread(ThreadHandle, PreviousSuspendCount);
 }
 
 NTSTATUS XBAPI NtResumeThread(HANDLE ThreadHandle, ULONG* PreviousSuspendCount)
 {
-    return ::NtResumeThread(ThreadHandle, PreviousSuspendCount);
+    ThreadHandle = ToHostHandle(ThreadHandle);
+    NTSTATUS status = X_STATUS_SUCCESS;
+    if (!SchedResume(ThreadHandle, PreviousSuspendCount)) { // a started thread's: the scheduler's count
+        SchedResumed(ThreadHandle); // one made suspended: Windows resumes it, it takes turns from now
+        status = ::NtResumeThread(ThreadHandle, PreviousSuspendCount);
+    }
+    // The deterministic scheduler: the threads ready to run take their turn first, as a preemptive kernel would run
+    // the resumed one soon (the movie player resumes its threads in a loop until one of them answers).
+    if (SchedHolding())
+        SchedYield();
+    return status;
 }
 
 LONG XBAPI KeQueryBasePriorityThread(void* Thread)
@@ -523,7 +623,7 @@ static KEVENT* EventProxyFor(HANDLE handle)
     HANDLE dup = nullptr;
     if (!DuplicateHandle(GetCurrentProcess(), handle, GetCurrentProcess(), &dup, 0, FALSE, DUPLICATE_SAME_ACCESS))
         return nullptr;
-    auto* ev = static_cast<KEVENT*>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(KEVENT)));
+    auto* ev = static_cast<KEVENT*>(GameAlloc(sizeof(KEVENT))); // the game holds it (netplay: a fixed address)
     ev->Header.Type = EventNotificationObject;
     ev->Header.Size = sizeof(KEVENT) / sizeof(LONG);
     ev->Header.Inserted = kProxyMarker;
@@ -534,6 +634,7 @@ static KEVENT* EventProxyFor(HANDLE handle)
 
 NTSTATUS XBAPI ObReferenceObjectByHandle(HANDLE Handle, OBJECT_TYPE* ObjectType, void** ReturnedObject)
 {
+    Handle = ToHostHandle(Handle);
     if (ObjectType == &PsThreadObjectType || ObjectType == nullptr) {
         if (XboxThread* t = ThreadFromHandle(Handle)) {
             *ReturnedObject = t;
@@ -571,14 +672,16 @@ static HANDLE CsEvent(xbox::RTL_CRITICAL_SECTION* cs)
     auto* slot = reinterpret_cast<HANDLE volatile*>(&cs->Event.WaitListHead);
     HANDLE h = *slot;
     if (h)
-        return h;
+        return ToHostHandle(h);
     HANDLE created = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    HANDLE prev = InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(slot), created, nullptr);
+    HANDLE numbered = ToGameHandle(created); // lives in game memory: the game's numbering (netplay)
+    HANDLE prev = InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(slot), numbered, nullptr);
     if (prev) {
+        ForgetGameHandle(numbered);
         CloseHandle(created);
-        return prev;
+        return ToHostHandle(prev);
     }
-    TrackGameHandle(created); // lives in game memory
+    TrackGameHandle(created);
     return created;
 }
 
@@ -592,7 +695,10 @@ void XBAPI RtlInitializeCriticalSection(xbox::RTL_CRITICAL_SECTION* cs)
 
 void XBAPI RtlEnterCriticalSection(xbox::RTL_CRITICAL_SECTION* cs)
 {
-    HANDLE self = reinterpret_cast<HANDLE>(uintptr_t(GetCurrentThreadId()));
+    // The owner as the Xbox kernel names it, the thread object (KTHREAD): in the game's memory, the same on every PC
+    // (netplay), where the host's thread id is not.
+    XboxThread* current = CurrentThread();
+    HANDLE self = current ? static_cast<HANDLE>(current) : reinterpret_cast<HANDLE>(uintptr_t(GetCurrentThreadId()));
     if (InterlockedIncrement(&cs->LockCount) == 0) {
         cs->OwningThread = self;
         cs->RecursionCount = 1;
@@ -649,7 +755,7 @@ void ResetDispatcherForReboot()
             CloseHandle(event);
         g_ObjectEvents.clear();
         for (auto& [handle, proxy] : g_EventProxies)
-            HeapFree(GetProcessHeap(), 0, proxy);
+            GameFree(proxy);
         g_EventProxies.clear();
     }
     // A stopped thread may have held it (game code at raised IRQL).

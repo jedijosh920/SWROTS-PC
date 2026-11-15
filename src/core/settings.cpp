@@ -89,11 +89,28 @@ void LoadSettings(const std::wstring& path)
         s.coopStorySafety ? "on" : "off", s.coopPlayer2.empty() ? "automatic" : s.coopPlayer2.c_str());
 }
 
+static const Settings* g_OwnGameplay = nullptr;
+
+void SetOwnGameplaySettings(const Settings* own) { g_OwnGameplay = own; }
+
 void SaveSettings()
 {
     if (g_Path.empty())
         return;
-    const Settings& s = g_Settings;
+    Settings s = g_Settings;
+    if (const Settings* own = g_OwnGameplay) { // an online match's: the host's gameplay settings are not this PC's
+        s.fpsLimit = own->fpsLimit;
+        s.widescreen = own->widescreen;
+        s.coop = own->coop;
+        s.coopDeath = own->coopDeath;
+        s.coopCamera = own->coopCamera;
+        s.coopStorySafety = own->coopStorySafety;
+        s.coopBoss = own->coopBoss;
+        s.coopFriendlyFire = own->coopFriendlyFire;
+        s.coopPlayer2 = own->coopPlayer2;
+        s.hvvOverheadInfo = own->hvvOverheadInfo;
+        s.hvvOthersSlowMotion = own->hvvOthersSlowMotion;
+    }
     WriteInt(L"Display", L"Width", s.width);
     WriteInt(L"Display", L"Height", s.height);
     WriteInt(L"Display", L"Fullscreen", s.fullscreen);

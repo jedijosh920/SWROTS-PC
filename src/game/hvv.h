@@ -14,6 +14,11 @@ namespace swrots::game {
 // arguments `hvv:<8 classes>` (heroes, then villains), `hvvplayer:<0-7>` (the player's place in the line-up, 0 by
 // default), `hvvlives:<n>`, `hvvhealth:<n>` and `hvvintro:0` (no intro), next to the dev map's.
 
+// Saves the player's profile to the utility drive (Z:\persist.tmp) for the next start of the game, which reads it with
+// the arguments v_sessionCreated:1 ... controller:<n> memoryunit:<n> (those two given here); false without one (before
+// the menus). On a game thread.
+bool SaveProfileForStart(int& controller, int& memoryUnit);
+
 // Each start of the game image, after InstallDevMap: lays out the dev map for a match when this start asks for one.
 void InstallHvv();
 

@@ -22,6 +22,19 @@ struct Paths {
     std::wstring logs;     // the game's own log (it writes D:\\Message.log), next to ours
 };
 
+// An online match's own save drive (E:) and utility drive (Z:) folders, in place of the player's (empty: the
+// player's again). For the files opened from then on: set before the match's start of the game.
+void SetSessionDrives(const std::wstring& saves, const std::wstring& utility);
+// The host folders the save drive and the utility drive are now.
+std::wstring SaveDrivePath();
+// An online match's own mods and cache folders (an empty mods folder: matches are played without mods, the same on
+// both PCs whatever each has installed; a cache of its own: nothing generated from a PC's mods is served). Empty:
+// the PC's own again. The next start of the game uses them (ModsPath, CachePath).
+void SetSessionFolders(const std::wstring& mods, const std::wstring& cache);
+std::wstring ModsPath();
+std::wstring CachePath();
+std::wstring UtilityDrivePath();
+
 // Order matters: Init once per process; BootInit each time the game image is (re)started,
 // with the launch data page handed over by a reboot (or null).
 void Init(const XbeFile& xbe, const Paths& paths);
@@ -39,6 +52,8 @@ void RestartMission();
 // Starts the game again with `arguments` as its launch data, a line of launch arguments as in Default_Xbox.cfg
 // (e.g. "map:u112_mus_lava"), as the game's own level changes do. Any thread; returns at once.
 void LaunchGame(const std::string& arguments);
+// Starts the game again with no launch data, as the dashboard starts it (its intro, then the title).
+void RestartFromDashboard();
 // The launch arguments this start of the game was given (empty when none: a start from the dashboard or
 // Default_Xbox.cfg).
 const std::string& LaunchArguments();
@@ -50,6 +65,9 @@ void SetDiscFileOverride(const std::string& rest, const std::wstring& host);
 // it restarts: it may change them (e.g. the level). Several can be set (each once), run in order.
 using LaunchFilter = void (*)(std::string& arguments);
 void SetLaunchFilter(LaunchFilter filter);
+// Online play's look at the same launches, after the filter (it may change them too, and may wait first: the guest
+// waits for the host's).
+void SetLaunchObserver(LaunchFilter observer);
 // Development aid: restarts the game in this process every `seconds` (SWROTS_REBOOT_EVERY), as a level
 // change does, to test what a restart leaves behind.
 void StartRebootTest(unsigned seconds);
@@ -74,6 +92,11 @@ struct XboxThread {
     StartRoutine start = nullptr;
     void* context = nullptr;
     SystemRoutine system = nullptr;
+    // Deterministic addresses (netplay): the thread object and TLS are in the fixed range (not freed with the
+    // heap), and the thread runs on a stack there.
+    bool fixedMemory = false;
+    uint8_t* fixedStack = nullptr;
+    uint32_t fixedStackSize = 0;
 };
 
 void ThreadingInit(const XbeFile& xbe);
@@ -86,6 +109,8 @@ XboxThread* ThreadFromHandle(HANDLE handle);
 void ForEachThread(void (*fn)(XboxThread* t, void* ctx), void* ctx);
 HANDLE CreateXboxThread(StartRoutine start, void* context, SystemRoutine system, uint32_t stackSize,
     uint32_t tlsSize, bool suspended, DWORD* threadId);
+// Called with each game thread made, still suspended (diagnostics: netplay's watch of a word from the start).
+void SetNewThreadHook(void (*hook)(void* suspendedThread));
 // Keeps a thread that runs game code on the one CPU core shared by all of them.
 void PinToGameCpu(HANDLE thread);
 
@@ -120,6 +145,32 @@ MemoryUsage QueryMemoryUsage();
 // The game's committed memory regions (contiguous allocations and the committed parts of its virtual
 // allocations), for research scans. Any thread.
 std::vector<std::pair<uintptr_t, size_t>> GameMemoryRegions();
+// The game's pool blocks (ExAllocatePoolWithTag: on the PC's heap) and their sizes. Any thread.
+std::vector<std::pair<uintptr_t, size_t>> GamePoolBlocks();
+// A number that moves on whenever the game allocates or frees memory (contiguous, virtual, system or pool), so
+// netplay's snapshots (net/state.h) know when the memory they cover has changed shape. Any thread.
+uint32_t MemoryLayoutGeneration();
+// Netplay: while on, pool blocks (ExAllocatePoolWithTag) come from a deterministic allocator in an arena of the
+// game's virtual memory, which the snapshots cover, and heap blocks the game frees are only freed when it is turned
+// off (a rollback could give one back). The arena is made the first time (a change of the memory layout). False when
+// it cannot be made. On the game's main thread at a frame boundary.
+bool SetDeterministicPool(bool on);
+// Netplay: while on (a match, from the reboot into its level), the game's virtual memory and pool blocks are placed by
+// the port in a range reserved at a fixed address (0x20000000, 256 MiB), first-fit, so that every PC gives the game
+// the same addresses. Stays on across reboots. False when the range is taken on this PC.
+bool SetDeterministicAddresses(bool on);
+bool DeterministicAddresses();
+// Diagnostics: where an address is in the fixed range (its placed reservation, or none); empty outside it.
+std::string DescribeFixedAddress(uintptr_t address);
+// While deterministic addresses are on: committed memory for a game thread's own use (its stack, its thread object
+// and TLS), at an address the same on every PC, outside what netplay's snapshots cover. Null otherwise. Freed by
+// the next reboot.
+void* AllocFixedThreadMemory(uint32_t size);
+// Memory the port hands to the game (a sound buffer's data, a surface header, an event object): zeroed, from the
+// netplay pool's arena while deterministic addresses are on (the same address on every PC, saved with the game),
+// else from the heap. GameFree takes either.
+void* GameAlloc(uint32_t size);
+void GameFree(void* p);
 
 // --- File system (file.cpp) ------------------------------------------------
 void FileSystemInit(const Paths& paths);

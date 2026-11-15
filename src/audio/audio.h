@@ -19,6 +19,19 @@ void SetMixTap(MixTap tap);
 bool PlayPortSound(std::vector<int16_t> samples, unsigned channels, unsigned sampleRate, float volume);
 void StopPortSounds();
 
+// Netplay (net/rollback.h): while on, everything the game learns from the sound layer (whether a buffer plays,
+// where it is, the audio clock, when a stream packet is done) comes from a deterministic model on the fixed clock
+// (kernel/clock.h), whose state is saved and restored with the game's (DeterministicState). Called on the game's
+// main thread at a frame boundary.
+void SetDeterministic(bool on);
+bool Deterministic();
+// A frame played again: the model answers as the first time, nothing new is heard.
+void SetReplaying(bool replaying);
+// At every frame boundary while on: the model's stream packets done by the frame's start are completed (the same
+// in every play of the frame).
+void OnFrame();
+void* DeterministicState(uint32_t& size);
+
 // Stops all sound output (used when the game restarts itself).
 void Silence();
 

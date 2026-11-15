@@ -26,6 +26,7 @@
 #include "game/hvv.h"
 #include "game/resources.h"
 #include "kernel/kernel.h"
+#include "kernel/clock.h"
 
 namespace swrots::game {
 
@@ -1070,8 +1071,8 @@ void HookReactions(ReactionWrapper wrapper)
         LOG_WARN("Characters: unexpected code at the hit reaction; hits are not filtered");
         return;
     }
-    // the stub lives in the port's memory and survives reboots; the jump goes into every new image
-    static uint8_t* stub = [] {
+    // made again at every start (ResetStubsForBoot), as the jump into every new image
+    uint8_t* stub = [] {
         uint8_t* s = AllocStub(sizeof kReactionCallBytes + 5);
         std::memcpy(s, kReactionCallBytes, sizeof kReactionCallBytes);
         s[sizeof kReactionCallBytes] = 0xE9;
@@ -1081,7 +1082,7 @@ void HookReactions(ReactionWrapper wrapper)
         return s;
     }();
     g_OriginalReactionCall = reinterpret_cast<ReactionCallFn>(stub);
-    PatchJump(kReactionCall, reinterpret_cast<const void*>(&ReactionCallHook));
+    PatchHook(kReactionCall, reinterpret_cast<const void*>(&ReactionCallHook));
 }
 
 // Neutral spawns and the health they had: one that loses health was attacked, and riots.
@@ -1150,7 +1151,7 @@ void InstallCharacters()
         const int32_t back = int32_t(kIsEnemy + 8) - int32_t(uintptr_t(stub) + 13);
         std::memcpy(stub + 9, &back, 4);
         g_OriginalIsEnemy = reinterpret_cast<IsEnemyFn>(stub);
-        PatchJump(kIsEnemy, reinterpret_cast<const void*>(&IsEnemyHook));
+        PatchHook(kIsEnemy, reinterpret_cast<const void*>(&IsEnemyHook));
         const uint8_t* call = reinterpret_cast<const uint8_t*>(uintptr_t(kProvokeCall));
         if (call[0] == 0xE8 && kProvokeCall + 5 + *reinterpret_cast<const int32_t*>(call + 1) == kProvoke)
             PatchCall(kProvokeCall, reinterpret_cast<const void*>(&ProvokeHook), 5);
@@ -1222,7 +1223,7 @@ void InstallCharacters()
     int32_t rel = int32_t(kSpawnPlayer + 5) - int32_t(uintptr_t(stub) + 10);
     std::memcpy(stub + 6, &rel, 4);
     g_OriginalSpawnPlayer = reinterpret_cast<SpawnPlayerFn>(stub);
-    PatchJump(kSpawnPlayer, reinterpret_cast<const void*>(&SpawnPlayerHook));
+    PatchHook(kSpawnPlayer, reinterpret_cast<const void*>(&SpawnPlayerHook));
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kPlayerVariantSite)), kPlayerVariantBytes,
             sizeof(kPlayerVariantBytes)) == 0) {
         PatchJump(kPlayerVariantSite, reinterpret_cast<const void*>(&PlayerVariantStub));
@@ -1238,7 +1239,7 @@ void InstallCharacters()
         int32_t back = int32_t(kPortraitLookup + 7) - int32_t(uintptr_t(portraitStub) + 12);
         std::memcpy(portraitStub + 8, &back, 4);
         g_OriginalPortraitLookup = reinterpret_cast<PortraitLookupFn>(portraitStub);
-        PatchJump(kPortraitLookup, reinterpret_cast<const void*>(&PortraitLookupHook));
+        PatchHook(kPortraitLookup, reinterpret_cast<const void*>(&PortraitLookupHook));
         const int32_t lookup = int32_t(kPortraitLookup) - int32_t(kHudPortraitCall + 5);
         if (*reinterpret_cast<const uint8_t*>(uintptr_t(kHudPortraitCall)) == 0xE8 &&
             std::memcmp(reinterpret_cast<const void*>(uintptr_t(kHudPortraitCall + 1)), &lookup, 4) == 0)
@@ -1317,6 +1318,11 @@ std::vector<std::string> CharacterClasses(bool all)
 bool PlayerInLevel()
 {
     return g_PlayerSpawned;
+}
+
+const std::string& LevelPlayerClass()
+{
+    return g_LevelClassName;
 }
 
 void SetRestartOnChange(bool enabled)
@@ -1663,7 +1669,7 @@ std::vector<uint8_t*> LevelCharacters()
     static std::vector<uint8_t*> kept;
     static uint8_t* keptScene = nullptr;
     ULONGLONG& keptAt = g_LevelCharactersAt;
-    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG now = kernel::GameTickCount64();
     uint8_t* scene = *reinterpret_cast<uint8_t**>(uintptr_t(0x0068D944)); // the game's services: a new boot, a new list
     if (keptAt && now - keptAt < kLevelCharactersKeepMs && scene == keptScene) {
         std::vector<uint8_t*> still;
@@ -1835,7 +1841,7 @@ int ClearReferencesTo(const std::vector<uint8_t*>& removed)
 
 int RepointPlayerReferences(uint8_t* from, uint8_t* to)
 {
-    const ULONGLONG started = GetTickCount64();
+    const ULONGLONG started = kernel::GameTickCount64();
     std::vector<std::pair<uintptr_t, size_t>> regions = kernel::GameMemoryRegions();
     regions.push_back({ 0x00612BE0, 0x0096E000 - 0x00612BE0 }); // the image's .data and .bss
     std::sort(regions.begin(), regions.end());
@@ -1919,7 +1925,7 @@ int RepointPlayerReferences(uint8_t* from, uint8_t* to)
     }
     LOG_INFO("Characters: %zu camera focus list(s) resolved again, %d HUD portrait(s) to pick again, %d "
         "instance id(s) moved, %d other pointer(s) to the old player left (its own parts); %zu candidates, %llu ms",
-        focusLists.size(), portraits, ids, kept, checked, GetTickCount64() - started);
+        focusLists.size(), portraits, ids, kept, checked, kernel::GameTickCount64() - started);
     g_ScanRegions = nullptr;
     g_ReadablePages = nullptr;
     return moved;
@@ -2545,6 +2551,26 @@ void SetLevelPlayerDefault(const char* className)
 void SettleActivated(uint8_t* character)
 {
     SettleGrievous(character);
+}
+
+// A character's costume's name (its variant list's, at its chosen costume), copied out; false when it has none.
+bool CostumeNameRaw(const uint8_t* character, char* out, size_t size)
+{
+    out[0] = 0;
+    __try {
+        const uint8_t* list = *reinterpret_cast<const uint8_t* const*>(character + kCharacterVariants);
+        const int chosen = *reinterpret_cast<const int*>(character + kCharacterCostume);
+        if (!list || chosen < 0 || chosen >= VariantCount(list))
+            return false;
+        const char* name = VariantName(list, chosen);
+        size_t i = 0;
+        for (; name && i + 1 < size && name[i]; ++i)
+            out[i] = name[i];
+        out[i] = 0;
+        return i > 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
 
 } // namespace swrots::game
