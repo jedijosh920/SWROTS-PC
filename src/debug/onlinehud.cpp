@@ -79,6 +79,24 @@ void Banner(const ImGuiViewport* vp, float u, float y, ImU32 colour, const std::
         Text(cx, top + h1 + pad * 0.6f, h2, kWhite, line, 0.5f);
 }
 
+// The game's picture in the window (as d3d's PresentFrame fits it: 16:9 or 4:3, black bars): its top left and the
+// menus' 640 x 480 scale.
+void MenuSpace(const ImGuiViewport* vp, float& left, float& top, float& sx, float& sy)
+{
+    float w = vp->Size.x, hh = vp->Size.y;
+    if (!GetSettings().stretch) {
+        const float aspect = GetSettings().widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
+        if (w > hh * aspect)
+            w = hh * aspect;
+        else
+            hh = w / aspect;
+    }
+    left = vp->Pos.x + (vp->Size.x - w) / 2;
+    top = vp->Pos.y + (vp->Size.y - hh) / 2;
+    sx = w / 640.0f;
+    sy = hh / 480.0f;
+}
+
 // A level played by both (a Versus duel, a Cooperative mission): each player's name under their portrait (the game's
 // own, at the bottom corners: player 1's on the left, player 2's on the right), centred on it as its number's badge is
 // above it: the subtitles' line over the bars and the rounds won under them stay clear. In the menus' font and the
@@ -90,12 +108,17 @@ void HudNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u, 
     if (!game::GamePlayerSlot(0) || !(game::GamePlayerSlot(1) || game::GamePlayer2()) || fade <= 0.01f)
         return;
     const std::string p1 = s.host ? s.localName : s.remoteName, p2 = s.host ? s.remoteName : s.localName;
-    // under each portrait (player 1's centred at 11.8% of the width, player 2's at 90.3%)
-    const float h = 16 * u, y = vp->Pos.y + vp->Size.y * 0.952f;
+    // under each portrait (player 1's centred at 11.8% of the game's picture, player 2's at 90.3%: the picture, not
+    // the window, which may be wider or taller with black bars)
+    float left, top, sx, sy;
+    MenuSpace(vp, left, top, sx, sy);
+    const float pw = 640.0f * sx, ph = 480.0f * sy;
+    u = std::max(0.5f, ph / 720.0f); // (the picture's scale: a window taller than it has bars above and below)
+    const float h = 16 * u, y = top + ph * 0.952f;
     const auto name = [&](float x, const std::string& text, float align) {
         const std::string t = Upper(text.substr(0, size_t(net::kPlayerNameMax)));
         // (no wider than the portrait's corner: a name of wide letters smaller)
-        const float most = vp->Size.x * 0.20f, wide = GameFontWidthOf(GameFont::Menu, h, t);
+        const float most = pw * 0.20f, wide = GameFontWidthOf(GameFont::Menu, h, t);
         const float hh = wide > most ? h * most / wide : h;
         const ImVec2 at(x - GameFontWidthOf(GameFont::Menu, hh, t) * align, y + (h - hh) * 0.5f);
         const float r = 1.2f * u;
@@ -107,8 +130,8 @@ void HudNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u, 
         if (!GameFontTextOf(GameFont::Menu, g_Draw, at, hh, WithAlpha(kNameText, fade), t, false))
             Text(x, y, hh, WithAlpha(kNameText, fade), t, align);
     };
-    name(vp->Pos.x + vp->Size.x * 0.118f, p1, 0.5f);
-    name(vp->Pos.x + vp->Size.x * 0.903f, p2, 0.5f);
+    name(left + pw * 0.118f, p1, 0.5f);
+    name(left + pw * 0.903f, p2, 0.5f);
 }
 
 // A Versus duel with a time limit (the room's): the round's time left at the bottom, between the two health bars, in
@@ -126,7 +149,9 @@ void DuelClock(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u,
         return;
     const int seconds = (s.clockTenths + 9) / 10;
     const std::string text = std::to_string(seconds);
-    const float cx = vp->Pos.x + vp->Size.x / 2, cy = vp->Pos.y + vp->Size.y * 0.883f;
+    float left, top, sx, sy; // (in the game's picture: the window may have black bars)
+    MenuSpace(vp, left, top, sx, sy);
+    const float cx = left + 320.0f * sx, cy = top + 480.0f * sy * 0.883f;
     const float h = 34 * u, w = std::max(72 * u, Width(h, "88") + 28 * u), ph = 46 * u;
     const ImVec2 a(cx - w / 2, cy - ph / 2), b(cx + w / 2, cy + ph / 2);
     g_Draw->AddRectFilled(a, b, WithAlpha(kClockPanel, fade), 8 * u);
@@ -137,24 +162,6 @@ void DuelClock(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u,
     const ImVec2 at(cx - GameFontWidthOf(GameFont::Hud, h, text) / 2, cy - h / 2);
     if (!GameFontTextOf(GameFont::Hud, g_Draw, at, h, colour, text))
         Text(cx, cy - h / 2, h, colour, text, 0.5f);
-}
-
-// The game's picture in the window (as d3d's PresentFrame fits it: 16:9 or 4:3, black bars): its top left and the
-// menus' 640 x 480 scale.
-void MenuSpace(const ImGuiViewport* vp, float& left, float& top, float& sx, float& sy)
-{
-    float w = vp->Size.x, hh = vp->Size.y;
-    if (!GetSettings().stretch) {
-        const float aspect = GetSettings().widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
-        if (w > hh * aspect)
-            w = hh * aspect;
-        else
-            hh = w / aspect;
-    }
-    left = vp->Pos.x + (vp->Size.x - w) / 2;
-    top = vp->Pos.y + (vp->Size.y - hh) / 2;
-    sx = w / 640.0f;
-    sy = hh / 480.0f;
 }
 
 // Cooperative online's Restart and Quit vote (onlinemenu.cpp draws each voter's lit box right of the row chosen): the
