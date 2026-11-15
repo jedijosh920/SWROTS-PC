@@ -678,12 +678,24 @@ host's was also applied again on every guest frame without a new one (one in six
   frame, **then** that state is applied (`playing`): the guest's game computes what the host's did from the same
   pads, and the state corrects only what parted. Presses of states the guest's frames skip (a slower guest) are kept
   for the next frame; no state for half a second gives the pads back to the devices.
-- Corrections (`ApplyInto`, a player not `own`): the fields as before; a place less than 45 units off closes by half
-  at each state instead of jumping (the two games' frames are not the same length); another sequence than the
-  host's is started again when the host started one and the guest's has differed for two states, or after three.
+- While a fighter fights (the Versus round's state 4, or a mission; not its staged intro and outro, which stay the
+  guest's game's own), its behaviour's sequence starts are **held** on the guest (`HoldPlayerRaw`, as a mission's
+  enemies'): the host's starts alone play, each at the host's time in the sequence. The guest's own play of the same
+  pads otherwise chose another sequence about once a second for each fighter (its frames are not the host's).
+- Its place is the host's, **between the host's states by the host's own clock** (`PlayerFollow`: each state's game
+  tick, +0x314, against this PC's clock; shown behind the newest by the longest gap between states lately and a tick,
+  2 to 8 ticks), written each frame: nothing of the guest's own play moves it, whatever the two games' frame rates.
+  (Its own play between states, pulled to each state, stepped back in 10 to 20 % of its frames when the host's
+  frames were much longer than the guest's.)
 - A state is applied once (in a duel too).
-- The guest's own presses show after a round trip and some three frames (the host's frame, the guest's frame);
+- The guest's own presses show after a round trip, the host's frame and that delay (some 70 ms on a local network);
   nothing is taken back. `Predict=1` keeps the play ahead.
+
+Measured on one PC (`follow-test.bat`: a duel of busy scripted players, 35 ms of round trip, the host's game at 55
+frames a second and the guest's at 58, three rounds ended): the guest's fighters step back in 0.3 to 0.8 % of their
+frames (the host's own: 0.1 to 0.6 %), 0 to 2 sequences in ten seconds started again against the host's (74 a minute
+before, two PCs), rounds and the match end together. A Cooperative mission (`coop-motion-test.bat`): 0.3 % (the
+host's 0.2 %), the identity line as before (96 to 100 % there, 94 to 97 % the same sequence).
 
 The guest logs every ten seconds how far its own play was from the host's states before each correction
 (`following the host's play`: the distance, the states with another sequence, the sequences started again), and both
