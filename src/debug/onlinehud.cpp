@@ -100,7 +100,7 @@ void MenuSpace(const ImGuiViewport* vp, float& left, float& top, float& sx, floa
 // A level played by both (a Versus duel, a Cooperative mission): each player's name under their portrait (the game's
 // own, at the bottom corners: player 1's on the left, player 2's on the right), centred on it as its number's badge is
 // above it: the subtitles' line over the bars and the rounds won under them stay clear. In the menus' font and the
-// subtitles' look (the speaker's blue at the subtitles' size, with their dark drop shadow). Nothing is drawn over a
+// subtitles' look (the speaker's blue with their dark drop shadow). Nothing is drawn over a
 // character's head.
 constexpr ImU32 kNameText = IM_COL32(108, 171, 247, 255);
 constexpr ImU32 kNameShadow = IM_COL32(8, 10, 18, 220);
@@ -116,12 +116,11 @@ void HudNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u, 
     MenuSpace(vp, left, top, sx, sy);
     const float pw = 640.0f * sx, ph = 480.0f * sy;
     u = std::max(0.5f, ph / 720.0f); // (the picture's scale: a window taller than it has bars above and below)
-    // (the subtitles' letters are about 30 pixels tall in a 1358 pixels tall picture: h 37 at the picture's scale)
-    const float h = 37 * u, y = top + ph * 0.928f;
+    const float h = 21 * u, y = top + ph * 0.947f;
     const auto name = [&](float x, const std::string& text, float align) {
         const std::string t = Upper(text.substr(0, size_t(net::kPlayerNameMax)));
         // (no wider than the portrait's corner: a name of wide letters smaller)
-        const float most = pw * 0.22f, wide = GameFontWidthOf(GameFont::Menu, h, t);
+        const float most = pw * 0.20f, wide = GameFontWidthOf(GameFont::Menu, h, t);
         const float hh = wide > most ? h * most / wide : h;
         const ImVec2 at(x - GameFontWidthOf(GameFont::Menu, hh, t) * align, y + (h - hh) * 0.5f);
         const float off = 1.6f * u * hh / h;
