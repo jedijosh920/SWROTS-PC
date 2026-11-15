@@ -266,6 +266,29 @@ bool HasSaberColor(uint8_t* character)
     return isA(character, nullptr, kJediType);
 }
 
+bool IsGrievous(uint8_t* character)
+{
+    if (!character)
+        return false;
+    const auto typeName = reinterpret_cast<const char*(__fastcall*)(uint8_t*, void*)>(
+        (*reinterpret_cast<void* const* const*>(character))[3]);
+    const char* name = typeName(character, nullptr);
+    return name && _stricmp(name, "IGrievous") == 0;
+}
+
+constexpr uint32_t kSaberGameManager = 0x007EB964;
+constexpr uint32_t kSaberManagerPlayerIds = 0x2A4;
+constexpr uint32_t kSaberObjectById = 0x000A31F0;
+
+uint8_t* PlayerByManagerSlot(int slot)
+{
+    uint8_t* manager = *reinterpret_cast<uint8_t**>(uintptr_t(kSaberGameManager));
+    if (!manager)
+        return nullptr;
+    const uint32_t id = *reinterpret_cast<const uint32_t*>(manager + kSaberManagerPlayerIds + slot * 4);
+    return id ? reinterpret_cast<uint8_t*(__cdecl*)(uint32_t)>(uintptr_t(kSaberObjectById))(id) : nullptr;
+}
+
 // Gives the player's sabers the chosen colour (or, with none, nothing: they keep theirs until the
 // next level start).
 // `onlyChanged`: only sabers whose colour (saber +0x814, three floats, as SetColor stores it) is not the
@@ -273,25 +296,49 @@ bool HasSaberColor(uint8_t* character)
 // sabers themselves, so the player's are checked every frame.
 constexpr uint32_t kSaberColor = 0x814;
 
-void ApplySaberColor(bool onlyChanged = false)
+void ApplySaberColorFor(uint8_t* player, bool onlyChanged = false)
 {
-    if (!PlayerAlive() || !HasSaberColor(g_Player))
+    if (!player || !HasSaberColor(player))
         return;
-    *reinterpret_cast<const float**>(g_Player + kCharacterSaberColor) = g_SaberColorSet ? g_SaberColor : nullptr;
-    if (!g_SaberColorSet)
+    const bool grievous = IsGrievous(player);
+    if (!g_SaberColorSet && !grievous)
         return;
+    if (g_SaberColorSet)
+        *reinterpret_cast<const float**>(player + kCharacterSaberColor) = g_SaberColor;
+
+    static const float kGreen[3] = { 0.0f, 1.0f, 0.0f };
+    static const float kBlue[3] = { 0.0f, 0.0f, 1.0f };
+
     for (int i = 0; i < kWeaponSlots; ++i) {
-        uint8_t* weapon = *reinterpret_cast<uint8_t**>(g_Player + kCharacterWeapons + i * 0x20);
+        uint8_t* weapon = *reinterpret_cast<uint8_t**>(player + kCharacterWeapons + i * 0x20);
         if (!weapon)
             continue;
         const uint32_t vtable = *reinterpret_cast<uint32_t*>(weapon);
         if (std::find(std::begin(kSaberVtables), std::end(kSaberVtables), vtable) == std::end(kSaberVtables))
             continue;
-        if (onlyChanged && std::memcmp(weapon + kSaberColor, g_SaberColor, sizeof(g_SaberColor)) == 0)
+        // Grievous: movie accurate (front right green, front left blue, back right blue, back left green)
+        const float* colour = g_SaberColorSet ? g_SaberColor
+            : grievous ? ((i == 0 || i == 3) ? kGreen : kBlue)
+            : nullptr;
+        if (!colour)
+            continue;
+        if (onlyChanged && std::memcmp(weapon + kSaberColor, colour, sizeof(g_SaberColor)) == 0)
             continue;
         const auto setColor = reinterpret_cast<void(__fastcall*)(uint8_t*, void*, const float*)>(
             reinterpret_cast<void* const*>(uintptr_t(vtable))[kSaberSetColor / 4]);
-        setColor(weapon, nullptr, g_SaberColor);
+        setColor(weapon, nullptr, colour);
+    }
+}
+
+void ApplySaberColor(bool onlyChanged = false)
+{
+    if (PlayerAlive())
+        ApplySaberColorFor(g_Player, onlyChanged);
+    for (int slot = 0; slot < 2; ++slot) {
+        if (uint8_t* fighter = PlayerByManagerSlot(slot)) {
+            if (fighter != g_Player)
+                ApplySaberColorFor(fighter, onlyChanged);
+        }
     }
 }
 
@@ -2258,8 +2305,7 @@ void PlayerFrame()
         ++it;
     }
 
-    if (g_SaberColorSet)
-        ApplySaberColor(true);
+    ApplySaberColor(true);
 
     // Infinite Force: the player's Force kept at its maximum (Jedi-like characters have it).
     if (g_InfiniteForce && PlayerAlive() && HasSaberColor(g_Player))
