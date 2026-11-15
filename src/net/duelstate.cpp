@@ -691,12 +691,6 @@ struct Applied {
     uint32_t starts = 0;     // the host's start count last seen
     uint32_t parted = 0;     // frames this game's sequence has differed from the host's
     uint32_t refusedUntil = 0;
-    // On the host's time: the host's last state's tick and place, and how many game ticks this game has run past the
-    // host's states (its frames are not the host's: a state finds it a tick or two ahead or behind).
-    uint32_t hostTick = 0;
-    float hostAt[3] = {};
-    bool hostKnown = false;
-    int ahead = 0;
     bool held = false;       // its behaviour's sequence starts are held (the host's alone)
 };
 Applied g_Applied[2];
@@ -719,7 +713,6 @@ constexpr float kEaseWithin = 45.0f, kEaseShare = 0.5f;
 // (diagnostics, FollowStats) how far this game's own play of the host's pads was from the host's states
 struct FollowStat {
     uint32_t states = 0, parted = 0, starts = 0, jumps = 0, held = 0;
-    int aheadSum = 0;
     double offSum = 0;
     float offMax = 0;
 };
@@ -908,7 +901,6 @@ void ApplyInto(const char* who, Applied& a, const Applied& other, uint8_t* fight
         ++g_ApplyStaged;
         a.starts = s.starts;
         a.parted = 0;
-        a.hostKnown = false;
         ApplyHealth(who, a, fighter, s); // its damage still comes from the host
         return;
     }
@@ -950,48 +942,26 @@ void ApplyInto(const char* who, Applied& a, const Applied& other, uint8_t* fight
             }
         }
     }
+    // On the host's time. A fighter whose sequences are the host's alone is put each frame where the host's was a
+    // moment ago, between its states (the session: PlayerFollow), as a mission's enemies are: nothing of this game's
+    // own play moves it. Otherwise (not yet held) a place a little off closes by half instead of jumping.
     float was[3] = {};
-    uint32_t tickHere = 0;
-    const bool eased = hostTime && into == Into::Remote && ReadFloat(fighter, 0x180, was[0]) &&
-        ReadFloat(fighter, 0x184, was[1]) && ReadFloat(fighter, 0x188, was[2]) && ReadU32(fighter, 0x314, tickHere);
+    const bool measured = hostTime && into == Into::Remote && ReadFloat(fighter, 0x180, was[0]) &&
+        ReadFloat(fighter, 0x184, was[1]) && ReadFloat(fighter, 0x188, was[2]);
     CopyFields(fighter, s.fields, into);
-    if (eased) {
-        // Where the host's fighter is by this game's time: this game has run `ahead` ticks more (or fewer) than the
-        // host's game since they were level (its tick is the host's at each state, then runs on with this game's
-        // frames), the host's own step a tick (its last two states) carries its place there.
+    if (measured) {
         const float to[3] = { Packed<float>(s, 0x180), Packed<float>(s, 0x184), Packed<float>(s, 0x188) };
-        const uint32_t tick = Packed<uint32_t>(s, 0x314);
-        float target[3] = { to[0], to[1], to[2] };
-        const int ranHost = int(tick - a.hostTick), ranHere = int(tickHere - a.hostTick);
-        if (a.hostKnown && ranHost > 0 && ranHost < 20 && ranHere >= 0 && ranHere < 40) {
-            a.ahead += ranHere - ranHost;
-            if (a.ahead > 6 || a.ahead < -6)
-                a.ahead = 0; // (a stall: level again)
-            for (int k = 0; k < 3; ++k) {
-                const float step = (to[k] - a.hostAt[k]) / float(ranHost);
-                if (std::fabs(step) < 25.0f) // (not across a jump of the host's own: a throw, a round's start)
-                    target[k] += step * float(a.ahead);
-            }
-        } else {
-            a.ahead = 0;
-        }
-        a.hostKnown = true;
-        a.hostTick = tick;
-        std::memcpy(a.hostAt, to, sizeof(to));
-        const float d[3] = { target[0] - was[0], target[1] - was[1], target[2] - was[2] };
+        const float d[3] = { to[0] - was[0], to[1] - was[1], to[2] - was[2] };
         const float off = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
         FollowStat& st = g_Follow[who[1] == '2' ? 1 : 0];
         ++st.states;
         st.offSum += off;
         st.offMax = std::max(st.offMax, off);
-        st.aheadSum += a.ahead < 0 ? -a.ahead : a.ahead;
         st.held += a.held;
-        if (off < kEaseWithin) {
+        st.jumps += off >= kEaseWithin;
+        if (!a.held && off < kEaseWithin) {
             const float at[3] = { was[0] + d[0] * kEaseShare, was[1] + d[1] * kEaseShare, was[2] + d[2] * kEaseShare };
             EaseRaw(fighter, at);
-        } else {
-            ++st.jumps;
-            a.ahead = 0;
         }
     }
     ApplyHealth(who, a, fighter, s); // the host's (its hits, its death, the round's end)
@@ -1041,6 +1011,16 @@ void SetPredictApply(bool predict)
     g_PredictApply = predict;
 }
 
+bool PlayerHeld(int slot, const uint8_t* fighter)
+{
+    return slot >= 0 && slot < 2 && fighter && g_Applied[slot].fighter == fighter && g_Applied[slot].held;
+}
+
+uint32_t StateTick(const FighterState& s)
+{
+    return s.valid ? Packed<uint32_t>(s, 0x314) : 0;
+}
+
 void ReleasePlayers()
 {
     if (g_HeldPlayers.empty())
@@ -1056,10 +1036,9 @@ std::string FollowStats()
     for (int i = 0; i < 2; ++i) {
         FollowStat& st = g_Follow[i];
         n += std::snprintf(line + n, sizeof(line) - size_t(n),
-            " P%d %u state(s) (%u its sequences the host's alone), %.2f units off on average (%.0f at most, %u beyond "
-            "%.0f), %.1f tick(s) ahead or behind, another sequence in %u, %u started again;", i + 1, st.states, st.held,
-            st.states ? st.offSum / st.states : 0.0, st.offMax, st.jumps, kEaseWithin,
-            st.states ? double(st.aheadSum) / st.states : 0.0, st.parted, st.starts);
+            " P%d %u state(s) (%u its sequences the host's alone), %.2f units behind the host's latest on average (%.0f "
+            "at most, %u beyond %.0f), another sequence in %u, %u started again;", i + 1, st.states, st.held,
+            st.states ? st.offSum / st.states : 0.0, st.offMax, st.jumps, kEaseWithin, st.parted, st.starts);
         st = FollowStat();
     }
     return line;

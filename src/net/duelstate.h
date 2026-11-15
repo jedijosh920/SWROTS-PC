@@ -66,6 +66,10 @@ void SetCoopApply(bool coop);
 void SetPredictApply(bool predict);
 // How far this game's play of the host's pads was from the host's states since the last call (a log line).
 std::string FollowStats();
+// A player's fighter (slot 0 or 1) has its sequences the host's alone just now (it is fighting, on the host's time).
+bool PlayerHeld(int slot, const uint8_t* fighter);
+// A state's fighter's game tick (one per game step, 60 a second).
+uint32_t StateTick(const FighterState& s);
 // The players' fighters' sequences are this game's own again (the host's states no longer come, the level is left).
 void ReleasePlayers();
 // This PC's own fighter, at its last state: in a grab (either game's), or taking the host's whole (its place too).

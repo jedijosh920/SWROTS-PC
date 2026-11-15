@@ -1316,6 +1316,88 @@ struct CharFollow {
         return s;
     }
 };
+// A player's fighter on the guest, on the host's time: its place between the host's states by the host's own clock
+// (each state's game tick, 60 a second), shown a little behind the newest so that there is always a state after it:
+// the host's frames may be longer than this game's or uneven (a slower PC), and states come with a jitter. The
+// newest state's tick against this PC's clock gives where the host's game is; the delay is the longest gap between
+// states lately and a tick.
+struct PlayerFollow {
+    static constexpr int kKept = 8;
+    FighterState state;
+    float places[kKept][3] = {};
+    uint32_t ticks[kKept] = {};
+    int kept = 0;
+    double offset = 0;  // the host's tick less this PC's clock (in ticks), at the earliest a state came
+    float gap = 2.0f;   // ticks between states, the longest lately
+    const uint8_t* fighter = nullptr;
+    static double Now()
+    {
+        return std::chrono::duration<double>(Clock::now().time_since_epoch()).count() * 60.0;
+    }
+    void Push(const uint8_t* who, const FighterState& s)
+    {
+        float p[3];
+        if (!StatePosition(s, p))
+            return;
+        const uint32_t tick = StateTick(s);
+        const double off = double(tick) - Now();
+        if (who != fighter) {
+            fighter = who;
+            kept = 0;
+        }
+        if (kept) {
+            const float* l = places[kept - 1];
+            const int ran = int(tick - ticks[kept - 1]);
+            if (ran <= 0 && ran > -100000 && tick == ticks[kept - 1]) { // the same tick again: its newest
+                std::memcpy(places[kept - 1], p, sizeof(p));
+                state = s;
+                return;
+            }
+            if (ran <= 0 || ran > 30 || (l[0] - p[0]) * (l[0] - p[0]) + (l[2] - p[2]) * (l[2] - p[2]) > 200.0f * 200.0f)
+                kept = 0; // a new round, a stall, a jump: from here
+            else
+                gap = std::max(float(ran), gap * 0.98f);
+        }
+        offset = kept ? std::max(off, offset - 0.01) : off;
+        if (!kept)
+            gap = 2.0f;
+        if (kept == kKept) {
+            std::memmove(places, places + 1, sizeof(places[0]) * (kKept - 1));
+            std::memmove(ticks, ticks + 1, sizeof(ticks[0]) * (kKept - 1));
+            --kept;
+        }
+        std::memcpy(places[kept], p, sizeof(p));
+        ticks[kept] = tick;
+        ++kept;
+        state = s;
+    }
+    bool At(FighterState& out) const
+    {
+        if (!kept || !state.valid)
+            return false;
+        out = state;
+        const double at = Now() + offset - double(std::clamp(gap + 1.0f, 2.0f, 8.0f));
+        float place[3];
+        if (kept < 2 || at >= double(ticks[kept - 1])) {
+            return true; // (its newest: nothing foreseen)
+        } else if (at <= double(ticks[0])) {
+            std::memcpy(place, places[0], sizeof(place));
+        } else {
+            int n = 0;
+            while (n + 2 < kept && at > double(ticks[n + 1]))
+                ++n;
+            const float k = float((at - double(ticks[n])) / double(ticks[n + 1] - ticks[n]));
+            for (int c = 0; c < 3; ++c)
+                place[c] = places[n][c] + (places[n + 1][c] - places[n][c]) * k;
+        }
+        const float* last = places[kept - 1];
+        const float delta[3] = { place[0] - last[0], place[1] - last[1], place[2] - last[2] };
+        MoveState(out, delta, 0);
+        return true;
+    }
+};
+PlayerFollow g_PlayerFollow[2];
+
 constexpr uint32_t kCharsBehind = 3;  // the characters shown this many frames behind the host's last (their states
 constexpr uint32_t kPlayerBehind = 2; // come every two or three frames), the other player this many
 std::unordered_map<uint32_t, CharFollow> g_CharFollow;
@@ -2335,9 +2417,15 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     if (!predict) {
         // On the host's time: this frame played the pads of `applyState` for both fighters; its state now (what the
         // host's game made of them), each fighter corrected where this game's parted.
-        if (applyNow)
-            for (int i = 0; i < 2; ++i)
+        for (int i = 0; i < 2; ++i) {
+            if (applyNow) {
+                g_PlayerFollow[i].Push(fighters[i], applyState.fighters[i]);
                 ApplyFighter(i, fighters[i], applyState.fighters[i], 0, false);
+            }
+            FighterState shown;
+            if (PlayerHeld(i, fighters[i]) && g_PlayerFollow[i].fighter == fighters[i] && g_PlayerFollow[i].At(shown))
+                PlaceCharacter(fighters[i], shown);
+        }
         if (frame % 600 == 0)
             LOG_INFO("Online: %s", FollowStats().c_str());
     } else {
