@@ -2041,6 +2041,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         g_S.pendingLaunchSet = false;
         g_S.haveState = false;
         g_S.echoValid = g_S.playingValid = false;
+        g_S.playing = {};
         g_S.guestInDuel = false;
         g_S.followingLaunch = true;
         g_S.followStarted = true;
@@ -2069,15 +2070,16 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
     StateMsg applyState = {};
     bool applyNow = false;
     if (!g_S.host && !predict) {
-        if (!haveState || !g_S.inLevel) {
-            g_S.echoValid = g_S.playingValid = false;
+        if (!haveState || !g_S.inLevel || (g_S.echoValid && g_S.frame - g_S.echoAt >= 30)) {
+            g_S.echoValid = g_S.playingValid = false; // (no state for half a second: the devices' pads again)
+            ReleasePlayers();
         } else {
             if (g_S.playingValid && !g_S.playingApplied) {
                 applyState = g_S.playing;
                 applyNow = true;
                 g_S.playingApplied = true;
             }
-            if (!g_S.playingValid || g_S.latestState.seq != g_S.playing.seq) {
+            if (g_S.latestState.seq != g_S.playing.seq) { // (a new one: one left behind is not played again)
                 g_S.playing = g_S.latestState;
                 g_S.playingValid = true;
                 g_S.playingApplied = false;
@@ -3060,6 +3062,7 @@ void ResetSessionLocked(bool host)
     g_S.echoPads[0] = g_S.echoPads[1] = g_S.echoHeld[0] = g_S.echoHeld[1] = {};
     g_S.echoPacket[0] = g_S.echoPacket[1] = g_S.echoAt = 0;
     g_S.echoValid = g_S.playingValid = g_S.playingApplied = false;
+    g_S.playing = {};
     g_S.inLevel = g_S.entering = g_S.enteringRoom = false;
     g_S.roundWinner = g_S.matchWinner = -1;
     g_S.roomSince = 0;
