@@ -1791,14 +1791,21 @@ float GuestDamage(uint8_t* character, float change)
     return change < 0.0f && hosts ? 0.0f : change;
 }
 
-// A launch's map (its "map:" argument): empty for the menus.
-std::string LaunchMap(const std::string& arguments)
+// A launch goes to the game's menus: one of its `map:` arguments is empty or the shell's (a level's launch names its
+// map alone; `nextmap:` and `previousmap:` are other arguments).
+bool LaunchToMenus(const std::string& arguments)
 {
-    const size_t at = arguments.find("map:");
-    if (at == std::string::npos || (at > 0 && arguments[at - 1] != ' '))
-        return {};
-    const size_t end = arguments.find(' ', at + 4);
-    return arguments.substr(at + 4, (end == std::string::npos ? arguments.size() : end) - at - 4);
+    bool any = false;
+    for (size_t at = arguments.find("map:"); at != std::string::npos; at = arguments.find("map:", at + 4)) {
+        if (at > 0 && arguments[at - 1] != ' ')
+            continue;
+        any = true;
+        const size_t end = arguments.find(' ', at + 4);
+        const std::string map = arguments.substr(at + 4, (end == std::string::npos ? arguments.size() : end) - at - 4);
+        if (map.empty() || _stricmp(map.c_str(), "M_EP3_Shell") == 0)
+            return true;
+    }
+    return !any;
 }
 
 // The game starts a level (or the menus) on its own (XLaunchNewImage). The host's goes to the guest, whose game
@@ -1824,23 +1831,28 @@ void LaunchObserved(std::string& arguments)
                 "v_roundcount:" + std::to_string(g_S.room.rounds));
         }
         // back to the menus after a match: to the room, unless it plays again at once
-        if (arguments.find("v_roundsp1:") != std::string::npos && g_S.roundWinner >= 0) {
+        // (v_roundsp1 stays in the game's variables after a match: a level started later in the session, a mission or
+        // another duel, has it too. The match's end is the one that goes to the menus: no map.)
+        const bool matchEnd = arguments.find("v_roundsp1:") != std::string::npos && LaunchToMenus(arguments);
+        if (matchEnd && g_S.roundWinner >= 0) {
             g_S.matchWinner = g_S.roundWinner; // the match's last round
             g_S.roundWinner = -1;
             LOG_INFO("Online: the match won by player %d", g_S.matchWinner + 1);
         }
-        if (arguments.find("v_roundsp1:") != std::string::npos && !g_S.room.rematch) {
+        if (matchEnd && !g_S.room.rematch) {
             g_S.toRoom = true;
             g_S.toRoomAt = g_S.frame;
             CoverToRoomLocked();
         }
         // Cooperative: a mission over (won, lost or quit), the game back at its menus: to the room
-        if (g_S.room.mode == 1 && g_S.inLevel && LaunchMap(arguments).empty() &&
+        if (g_S.room.mode == 1 && !LaunchToMenus(arguments))
+            g_S.retryVoted = false; // (a level: the vote's mission again, if any, is this one)
+        if (g_S.room.mode == 1 && g_S.inLevel && LaunchToMenus(arguments) &&
             g_S.retryVoted) { // (the mission again: through the game's shell map, not the room)
             g_S.retryVoted = false;
             LOG_INFO("Online: the cooperative mission again (the players' vote)");
         }
-        else if (g_S.room.mode == 1 && g_S.inLevel && LaunchMap(arguments).empty()) {
+        else if (g_S.room.mode == 1 && g_S.inLevel && LaunchToMenus(arguments)) {
             g_S.toRoom = true;
             g_S.toRoomAt = g_S.frame;
             CoverToRoomLocked();
@@ -2127,7 +2139,7 @@ void ServerFrameLocked(std::unique_lock<std::mutex>& lock)
         g_S.guestInDuel = false;
         g_S.followingLaunch = true;
         g_S.followStarted = true;
-        if (g_S.inLevel && LaunchMap(args).empty() && g_S.decided != uint8_t(CoopVote::Retry))
+        if (g_S.inLevel && LaunchToMenus(args) && g_S.decided != uint8_t(CoopVote::Retry))
             CoverToRoomLocked(); // (the menus after a level: the room; not the mission again the players voted for)
         lock.unlock();
         LOG_INFO("Online: following the host's launch '%s'", args.c_str());
