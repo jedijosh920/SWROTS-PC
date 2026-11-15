@@ -79,10 +79,10 @@ void Banner(const ImGuiViewport* vp, float u, float y, ImU32 colour, const std::
         Text(cx, top + h1 + pad * 0.6f, h2, kWhite, line, 0.5f);
 }
 
-// A level played by both (a Versus duel, a Cooperative mission): each player's name under their health and Force bars
-// (the game's own, at the bottom: player 1's on the left, player 2's on the right; under them, the subtitles' lines
-// over them stay clear), in the menus' font and the menus' colours (a title's light blue, a dark blue rim). Nothing is
-// drawn over a character's head.
+// A level played by both (a Versus duel, a Cooperative mission): each player's name under their portrait (the game's
+// own, at the bottom corners: player 1's on the left, player 2's on the right), centred on it as its number's badge is
+// above it: the subtitles' line over the bars and the rounds won under them stay clear. In the menus' font and the
+// menus' colours (a title's light blue, a dark blue rim). Nothing is drawn over a character's head.
 constexpr ImU32 kNameText = IM_COL32(153, 191, 243, 255);
 constexpr ImU32 kNameRim = IM_COL32(16, 30, 72, 235);
 void HudNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u, float fade)
@@ -90,12 +90,12 @@ void HudNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u, 
     if (!game::GamePlayerSlot(0) || !(game::GamePlayerSlot(1) || game::GamePlayer2()) || fade <= 0.01f)
         return;
     const std::string p1 = s.host ? s.localName : s.remoteName, p2 = s.host ? s.remoteName : s.localName;
-    // under each bar (player 1's from 18% of the width, player 2's up to 83.5%)
-    const float h = 21 * u, y = vp->Pos.y + vp->Size.y * 0.915f;
+    // under each portrait (player 1's centred at 11.8% of the width, player 2's at 90.3%)
+    const float h = 16 * u, y = vp->Pos.y + vp->Size.y * 0.952f;
     const auto name = [&](float x, const std::string& text, float align) {
         const std::string t = Upper(text);
         const ImVec2 at(x - GameFontWidthOf(GameFont::Menu, h, t) * align, y);
-        const float r = 1.4f * u;
+        const float r = 1.2f * u;
         static const float kAround[8][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 }, { -0.7f, -0.7f }, { 0.7f, -0.7f },
             { -0.7f, 0.7f }, { 0.7f, 0.7f } };
         for (const auto& d : kAround)
@@ -104,8 +104,8 @@ void HudNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u, 
         if (!GameFontTextOf(GameFont::Menu, g_Draw, at, h, WithAlpha(kNameText, fade), t, false))
             Text(x, y, h, WithAlpha(kNameText, fade), text, align);
     };
-    name(vp->Pos.x + vp->Size.x * 0.180f, p1, 0.0f);
-    name(vp->Pos.x + vp->Size.x * 0.835f, p2, 1.0f);
+    name(vp->Pos.x + vp->Size.x * 0.118f, p1, 0.5f);
+    name(vp->Pos.x + vp->Size.x * 0.903f, p2, 0.5f);
 }
 
 // A Versus duel with a time limit (the room's): the round's time left at the bottom, between the two health bars, in
