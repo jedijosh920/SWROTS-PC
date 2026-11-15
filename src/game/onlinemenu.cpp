@@ -1629,7 +1629,7 @@ bool Paste(uint8_t* keyboard);
 void __fastcall KeyboardInit(uint8_t* keyboard, void*)
 {
     reinterpret_cast<void(__fastcall*)(uint8_t*, void*)>(uintptr_t(kCodesKeyboardInit))(keyboard, nullptr);
-    *reinterpret_cast<int*>(keyboard + kMaxLength) = kCodeLength;
+    *reinterpret_cast<int*>(keyboard + kMaxLength) = g_KeyboardFor == KeyboardFor::Name ? net::kPlayerNameMax : kCodeLength;
     g_PasteDown = true; // a Ctrl+V held from before the screen does not count
     if (g_KeyboardFor == KeyboardFor::Name) {
         const std::string name = net::OnlinePlayerName();

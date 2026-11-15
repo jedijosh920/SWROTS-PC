@@ -17,6 +17,10 @@
 
 namespace swrots::net {
 
+// A player's name online: at most this many characters (it is shown centred under the player's portrait, in the
+// HUD's corner).
+constexpr int kPlayerNameMax = 12;
+
 enum class OnlinePhase {
     Off,          // no session
     Opening,      // the host opens its room (its public address asked)

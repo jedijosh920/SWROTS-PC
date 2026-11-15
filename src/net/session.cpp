@@ -688,7 +688,7 @@ void CoverToRoomLocked()
 std::string PlayerName(const char* text, size_t size, const char* fallback)
 {
     std::string name;
-    for (size_t i = 0; i < size && text[i]; ++i)
+    for (size_t i = 0; i < size && text[i] && name.size() < size_t(kPlayerNameMax); ++i)
         if (text[i] >= 32 && text[i] < 127)
             name += text[i];
     while (!name.empty() && name.back() == ' ')
@@ -696,8 +696,8 @@ std::string PlayerName(const char* text, size_t size, const char* fallback)
     return name.empty() ? fallback : name;
 }
 
-// This PC's player name: [Online] Name, else the Windows user name (letters without accents kept as they are,
-// others dropped), at most 20 characters.
+// This PC's player name: [Online] Name, else the profile's (letters without accents kept as they are, others
+// dropped), at most kPlayerNameMax characters.
 // The name of the profile last saved on this PC (the newest UDATA\<title>\<save>\jedi: a u32, then its name in
 // wide characters), or "".
 std::string ProfileName()
@@ -747,7 +747,7 @@ std::string CleanName(const std::wstring& text)
             w = wchar_t(w - 'a' + 'A');
         if ((w >= 'A' && w <= 'Z') || (w >= '0' && w <= '9') || (w == ' ' && !name.empty()))
             name += char(w);
-        if (name.size() >= 15)
+        if (name.size() >= size_t(kPlayerNameMax))
             break;
     }
     while (!name.empty() && name.back() == ' ')

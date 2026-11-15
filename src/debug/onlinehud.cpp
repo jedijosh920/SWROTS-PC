@@ -93,16 +93,19 @@ void HudNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u, 
     // under each portrait (player 1's centred at 11.8% of the width, player 2's at 90.3%)
     const float h = 16 * u, y = vp->Pos.y + vp->Size.y * 0.952f;
     const auto name = [&](float x, const std::string& text, float align) {
-        const std::string t = Upper(text);
-        const ImVec2 at(x - GameFontWidthOf(GameFont::Menu, h, t) * align, y);
+        const std::string t = Upper(text.substr(0, size_t(net::kPlayerNameMax)));
+        // (no wider than the portrait's corner: a name of wide letters smaller)
+        const float most = vp->Size.x * 0.20f, wide = GameFontWidthOf(GameFont::Menu, h, t);
+        const float hh = wide > most ? h * most / wide : h;
+        const ImVec2 at(x - GameFontWidthOf(GameFont::Menu, hh, t) * align, y + (h - hh) * 0.5f);
         const float r = 1.2f * u;
         static const float kAround[8][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 }, { -0.7f, -0.7f }, { 0.7f, -0.7f },
             { -0.7f, 0.7f }, { 0.7f, 0.7f } };
         for (const auto& d : kAround)
-            GameFontTextOf(GameFont::Menu, g_Draw, ImVec2(at.x + d[0] * r, at.y + d[1] * r), h, WithAlpha(kNameRim, fade),
+            GameFontTextOf(GameFont::Menu, g_Draw, ImVec2(at.x + d[0] * r, at.y + d[1] * r), hh, WithAlpha(kNameRim, fade),
                 t, false);
-        if (!GameFontTextOf(GameFont::Menu, g_Draw, at, h, WithAlpha(kNameText, fade), t, false))
-            Text(x, y, h, WithAlpha(kNameText, fade), text, align);
+        if (!GameFontTextOf(GameFont::Menu, g_Draw, at, hh, WithAlpha(kNameText, fade), t, false))
+            Text(x, y, hh, WithAlpha(kNameText, fade), t, align);
     };
     name(vp->Pos.x + vp->Size.x * 0.118f, p1, 0.5f);
     name(vp->Pos.x + vp->Size.x * 0.903f, p2, 0.5f);
