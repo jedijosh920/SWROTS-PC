@@ -1834,7 +1834,7 @@ void LaunchObserved(std::string& arguments)
         // (v_roundsp1 stays in the game's variables after a match: a level started later in the session, a mission or
         // another duel, has it too. The match's end is the one that goes to the menus: no map.)
         const bool matchEnd = arguments.find("v_roundsp1:") != std::string::npos && LaunchToMenus(arguments);
-        if (matchEnd && g_S.roundWinner >= 0) {
+        if (arguments.find("v_roundsp1:") != std::string::npos && g_S.roundWinner >= 0) { // (a rematch's launch too)
             g_S.matchWinner = g_S.roundWinner; // the match's last round
             g_S.roundWinner = -1;
             LOG_INFO("Online: the match won by player %d", g_S.matchWinner + 1);
