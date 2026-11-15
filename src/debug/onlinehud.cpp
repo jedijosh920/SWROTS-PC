@@ -79,83 +79,23 @@ void Banner(const ImGuiViewport* vp, float u, float y, ImU32 colour, const std::
         Text(cx, top + h1 + pad * 0.6f, h2, kWhite, line, 0.5f);
 }
 
-// A point of the world on the screen (as Heroes vs Villains' screen does, hvvhud.cpp).
-bool OnScreen(const float p[3], const ImGuiViewport* vp, ImVec2& out, float& depth)
-{
-    float m[16], fov = 0;
-    float x, y, z;
-    if (game::GameRenderedView(m, fov) && fov > 0) {
-        x = p[0] * m[0] + p[1] * m[4] + p[2] * m[8] + m[12];
-        y = p[0] * m[1] + p[1] * m[5] + p[2] * m[9] + m[13];
-        z = p[0] * m[2] + p[1] * m[6] + p[2] * m[10] + m[14];
-    } else {
-        if (!game::GameCameraPlacement(m, fov) || fov <= 0)
-            return false;
-        const float d[3] = { p[0] - m[12], p[1] - m[13], p[2] - m[14] };
-        x = d[0] * m[0] + d[1] * m[1] + d[2] * m[2];
-        y = d[0] * m[4] + d[1] * m[5] + d[2] * m[6];
-        z = d[0] * m[8] + d[1] * m[9] + d[2] * m[10];
-    }
-    if (fov > 3.2f)
-        fov *= 3.14159265f / 180.0f;
-    if (z < 10.0f)
-        return false;
-    depth = z;
-    const float focal = (vp->Size.x / 2) / std::tan(fov / 2);
-    const float focalY = game::BootIsVersusDuel() ? (vp->Size.y / 2) / std::tan(fov / 2) : focal;
-    out = ImVec2(vp->Pos.x + vp->Size.x / 2 + x / z * focal, vp->Pos.y + vp->Size.y / 2 - y / z * focalY);
-    return true;
-}
-
-// Over the other player's character (the host's view: player 2's; the guest's: player 1's): their name and health.
-constexpr uint32_t kCharacterDead = 0x12C, kCharacterHealth = 0x130, kCharacterMaxHealth = 0x134,
-    kCharacterPosition = 0x150 + 48;
-constexpr ImU32 kAlly = IM_COL32(110, 175, 255, 255);
-
-void OtherPlayer(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u)
-{
-    uint8_t* other = s.host ? game::GamePlayer2() : game::GamePlayerSlot(0);
-    if (!other && !s.host)
-        other = game::PlayerObject();
-    if (!other || other[kCharacterDead])
-        return;
-    const float health = *reinterpret_cast<const float*>(other + kCharacterHealth);
-    const float maxHealth = *reinterpret_cast<const float*>(other + kCharacterMaxHealth);
-    if (health <= 0)
-        return;
-    const float* feet = reinterpret_cast<const float*>(other + kCharacterPosition);
-    const float head[3] = { feet[0], feet[1] + 86.0f, feet[2] };
-    ImVec2 at;
-    float depth = 0;
-    if (!OnScreen(head, vp, at, depth) || depth > 2500.0f)
-        return;
-    const float alpha = std::clamp((2500.0f - depth) / 700.0f, 0.0f, 1.0f) * 0.9f;
-    const float k = std::clamp(700.0f / std::max(depth, 1.0f), 0.65f, 1.0f);
-    const float w = 58 * u * k, bar = 4 * u * k, top = at.y - 14 * u * k;
-    const auto faded = [alpha](ImU32 c) { return (c & 0x00FFFFFF) | (ImU32(float(c >> 24) * alpha) << 24); };
-    const float x0 = at.x - w / 2;
-    const float part = maxHealth > 0 ? std::clamp(health / maxHealth, 0.0f, 1.0f) : 1.0f;
-    g_Draw->AddRectFilled(ImVec2(x0 - 1, top - 1), ImVec2(x0 + w + 1, top + bar + 1), IM_COL32(0, 0, 0, int(160 * alpha)));
-    g_Draw->AddRectFilled(ImVec2(x0, top), ImVec2(x0 + w * part, top + bar), faded(kAlly));
-    const float th = 12 * u * k;
-    Text(at.x, top - th - 3 * u, th, faded(kWhite), s.remoteName, 0.5f);
-}
-
-// A Versus duel: each player's name over their health bar (the game's own bars, at the bottom: player 1's on the
-// left, player 2's on the right), in the menus' font and the menus' colours (a title's light blue, a dark blue rim).
+// A level played by both (a Versus duel, a Cooperative mission): each player's name under their health and Force bars
+// (the game's own, at the bottom: player 1's on the left, player 2's on the right; under them, the subtitles' lines
+// over them stay clear), in the menus' font and the menus' colours (a title's light blue, a dark blue rim). Nothing is
+// drawn over a character's head.
 constexpr ImU32 kNameText = IM_COL32(153, 191, 243, 255);
 constexpr ImU32 kNameRim = IM_COL32(16, 30, 72, 235);
-void VersusNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u, float fade)
+void HudNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u, float fade)
 {
-    if (!game::GamePlayerSlot(0) || !game::GamePlayerSlot(1) || fade <= 0.01f)
+    if (!game::GamePlayerSlot(0) || !(game::GamePlayerSlot(1) || game::GamePlayer2()) || fade <= 0.01f)
         return;
     const std::string p1 = s.host ? s.localName : s.remoteName, p2 = s.host ? s.remoteName : s.localName;
-    // in the space above each bar (player 1's from 17% of the width, player 2's up to 83.6%)
-    const float h = 27 * u, y = vp->Pos.y + vp->Size.y * 0.806f;
+    // under each bar (player 1's from 18% of the width, player 2's up to 83.5%)
+    const float h = 21 * u, y = vp->Pos.y + vp->Size.y * 0.915f;
     const auto name = [&](float x, const std::string& text, float align) {
         const std::string t = Upper(text);
         const ImVec2 at(x - GameFontWidthOf(GameFont::Menu, h, t) * align, y);
-        const float r = 1.6f * u;
+        const float r = 1.4f * u;
         static const float kAround[8][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 }, { -0.7f, -0.7f }, { 0.7f, -0.7f },
             { -0.7f, 0.7f }, { 0.7f, 0.7f } };
         for (const auto& d : kAround)
@@ -164,8 +104,8 @@ void VersusNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float 
         if (!GameFontTextOf(GameFont::Menu, g_Draw, at, h, WithAlpha(kNameText, fade), t, false))
             Text(x, y, h, WithAlpha(kNameText, fade), text, align);
     };
-    name(vp->Pos.x + vp->Size.x * 0.170f, p1, 0.0f);
-    name(vp->Pos.x + vp->Size.x * 0.836f, p2, 1.0f);
+    name(vp->Pos.x + vp->Size.x * 0.180f, p1, 0.0f);
+    name(vp->Pos.x + vp->Size.x * 0.835f, p2, 1.0f);
 }
 
 // A Versus duel with a time limit (the room's): the round's time left at the bottom, between the two health bars, in
@@ -334,13 +274,13 @@ void DrawOnlineHud()
             Text(vp->Pos.x + vp->Size.x - 16 * u, vp->Pos.y + 10 * u, 14 * u, kDim, std::to_string(s.pingMs) + " ms", 1.0f);
         if (game::BootIsVersusDuel()) {
             const float fade = game::GameHudAlpha(); // the HUD's fades: the names and the clock with it
-            VersusNames(s, vp, u, fade);
+            HudNames(s, vp, u, fade);
             DuelClock(s, vp, u, fade);
         }
         else if (!s.remoteName.empty()) {
             float ry, qy, col, step, alpha;
             if (!game::CoopVoteRows(ry, qy, col, step, alpha))
-                OtherPlayer(s, vp, u); // (not over the pause screen's rows)
+                HudNames(s, vp, u, game::GameHudAlpha()); // (not over the pause screen's rows)
             CoopVote(s, vp, u);
         }
         if (s.desync)
