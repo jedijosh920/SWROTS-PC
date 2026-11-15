@@ -100,9 +100,11 @@ void MenuSpace(const ImGuiViewport* vp, float& left, float& top, float& sx, floa
 // A level played by both (a Versus duel, a Cooperative mission): each player's name under their portrait (the game's
 // own, at the bottom corners: player 1's on the left, player 2's on the right), centred on it as its number's badge is
 // above it: the subtitles' line over the bars and the rounds won under them stay clear. In the menus' font and the
-// menus' colours (a title's light blue, a dark blue rim). Nothing is drawn over a character's head.
-constexpr ImU32 kNameText = IM_COL32(153, 191, 243, 255);
-constexpr ImU32 kNameRim = IM_COL32(16, 30, 72, 235);
+// subtitles' look (the speaker's blue at the subtitles' size, with their dark drop shadow). Nothing is drawn over a
+// character's head.
+constexpr ImU32 kNameText = IM_COL32(108, 171, 247, 255);
+constexpr ImU32 kNameShadow = IM_COL32(8, 10, 18, 220);
+constexpr ImU32 kVoteText = IM_COL32(153, 191, 243, 255); // (a vote in the pause menu: the menus' title blue)
 void HudNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u, float fade)
 {
     if (!game::GamePlayerSlot(0) || !(game::GamePlayerSlot(1) || game::GamePlayer2()) || fade <= 0.01f)
@@ -114,19 +116,16 @@ void HudNames(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u, 
     MenuSpace(vp, left, top, sx, sy);
     const float pw = 640.0f * sx, ph = 480.0f * sy;
     u = std::max(0.5f, ph / 720.0f); // (the picture's scale: a window taller than it has bars above and below)
-    const float h = 16 * u, y = top + ph * 0.952f;
+    // (the subtitles' letters are about 30 pixels tall in a 1358 pixels tall picture: h 37 at the picture's scale)
+    const float h = 37 * u, y = top + ph * 0.928f;
     const auto name = [&](float x, const std::string& text, float align) {
         const std::string t = Upper(text.substr(0, size_t(net::kPlayerNameMax)));
         // (no wider than the portrait's corner: a name of wide letters smaller)
-        const float most = pw * 0.20f, wide = GameFontWidthOf(GameFont::Menu, h, t);
+        const float most = pw * 0.22f, wide = GameFontWidthOf(GameFont::Menu, h, t);
         const float hh = wide > most ? h * most / wide : h;
         const ImVec2 at(x - GameFontWidthOf(GameFont::Menu, hh, t) * align, y + (h - hh) * 0.5f);
-        const float r = 1.2f * u;
-        static const float kAround[8][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 }, { -0.7f, -0.7f }, { 0.7f, -0.7f },
-            { -0.7f, 0.7f }, { 0.7f, 0.7f } };
-        for (const auto& d : kAround)
-            GameFontTextOf(GameFont::Menu, g_Draw, ImVec2(at.x + d[0] * r, at.y + d[1] * r), hh, WithAlpha(kNameRim, fade),
-                t, false);
+        const float off = 1.6f * u * hh / h;
+        GameFontTextOf(GameFont::Menu, g_Draw, ImVec2(at.x + off, at.y + off), hh, WithAlpha(kNameShadow, fade), t, false);
         if (!GameFontTextOf(GameFont::Menu, g_Draw, at, hh, WithAlpha(kNameText, fade), t, false))
             Text(x, y, hh, WithAlpha(kNameText, fade), t, align);
     };
@@ -182,8 +181,8 @@ void CoopVote(const net::OnlineStatusInfo& s, const ImGuiViewport* vp, float u)
             continue;
         const float rowY = vote == uint8_t(net::CoopVote::Retry) ? restartY : quitY;
         const ImVec2 at(left + (column + step * float(p) + 26.0f) * sx, top + (rowY + 11.0f) * sy - h / 2);
-        if (!GameFontTextOf(GameFont::Menu, g_Draw, at, h, WithAlpha(kNameText, alpha), names[p], false))
-            Text(at.x, at.y, h, WithAlpha(kNameText, alpha), names[p], 0.0f);
+        if (!GameFontTextOf(GameFont::Menu, g_Draw, at, h, WithAlpha(kVoteText, alpha), names[p], false))
+            Text(at.x, at.y, h, WithAlpha(kVoteText, alpha), names[p], 0.0f);
     }
     if (s.coopVoteSeconds < 0)
         return;
