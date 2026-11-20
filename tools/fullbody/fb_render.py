@@ -6,14 +6,18 @@
 
 The input comes from the user's own copy of the game (the model, its textures, its hilts and its animation clips,
 unpacked from the level PAKs, see docs/modding/dumping-assets.md); nothing of the game is in this repository. The
-models are read by a Blender importer for the game's .msh files, given by its path in the job ("importer"); it is
-not part of this repository. yoda.json is the job used for Yoda's pictures (its paths are the author's: adapt them).
+models are read by a Blender importer for the game's .msh files ("importer"); it is not part of this repository.
+Every path of a job is taken from the job file's own folder unless it is absolute. yoda.json, the job for Yoda's
+two pictures, expects next to it: io_import_swe3_msh.py (the importer), yoda/yoda/ (yoda.msh and its textures, from
+meshes\\chars\\yoda of res_u113_cor_yoda.pak), yoda/lsaberyoda/ (his hilt, from meshes\\weapons) and yoda/anim/
+(his clips, from animation\\yoda: yoda_nav_stalkf.bnm, yoda_nav_run_out.bnm).
 
-job.json: {"mode": "probe" | "final", "out": dir, "work": dir, "importer": path, "stx": path,
+job.json: {"mode": "probe" | "final", "out": dir, "work": dir, "importer": path, "stx": path (optional),
            "chars": [{"tag", "mesh": dir (mods\\meshes\\chars\\<folder>), "duel": bool,
                       "hilts": [[dir, bone], ...], "clips": [bnm path, ...],
                       "saber": [r, g, b], "pose": [clip stem, fraction], "yaw": deg,
                       "blade": [base, length] (optional, game units; default 4.273, 45),
+                      "dark": brightness (optional: the dark side look, as Sith Yoda's),
                       "turns": [deg, ...] (optional), "fit": bool (optional), "center": "body" (optional),
                       "frame_units": the picture's height in game units (optional; 125 gives the game's own
                       pictures' scale, checked on Anakin's), "feet": share (optional; 0.19: the game's feet line),
@@ -36,7 +40,26 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Vector
 
-ARGS = json.load(open(sys.argv[sys.argv.index("--") + 1]))
+JOB = sys.argv[sys.argv.index("--") + 1]
+ARGS = json.load(open(JOB))
+BASE = os.path.dirname(os.path.abspath(JOB))
+
+
+def at(path):
+    """A path of the job: as given if absolute, else from the job file's own folder."""
+    return path if os.path.isabs(path) else os.path.normpath(os.path.join(BASE, path))
+
+
+for _key in ("out", "work", "importer", "stx"):
+    if _key in ARGS:
+        ARGS[_key] = at(ARGS[_key])
+for _c in ARGS["chars"]:
+    _c["mesh"] = at(_c["mesh"])
+    _c["hilts"] = [[at(d), bone] for d, bone in _c.get("hilts", [])]
+    _c["clips"] = [at(clip) for clip in _c.get("clips", [])]
+    if "candidates" in _c:
+        _c["candidates"] = [[at(clip), frac] for clip, frac in _c["candidates"]]
+os.makedirs(ARGS["out"], exist_ok=True)
 LOG = open(os.path.join(ARGS["out"], "fb_render.log"), "a", encoding="utf-8")
 
 
@@ -56,7 +79,7 @@ def load(name, path):
 
 
 imp = load("io_import_swe3_msh", ARGS["importer"])
-stx = load("stx_decode", ARGS["stx"])
+stx = load("stx_decode", ARGS["stx"]) if ARGS.get("stx") else None  # only for models whose textures are .stx
 imp._log = lambda m: log("  [imp]", m)
 
 SCALE = 0.05
@@ -184,6 +207,27 @@ def grip(rest, wrist):
     return Matrix.Translation(centre) @ rot
 
 
+def darken_folder(folder, level):
+    """The dark side look the port gives Sith Yoda (DarkColour, src/game/roster.cpp) on the staged textures (the copies
+    in the work folder, before the import): nearly grey, darkened and cooled; `level` its brightness (the port's 0.22
+    reads as black in a picture: 0.45)."""
+    for f in sorted(os.listdir(folder)):
+        if not f.lower().endswith(".tga"):
+            continue
+        path = os.path.join(folder, f)
+        img = bpy.data.images.load(path)
+        px = np.array(img.pixels[:], dtype=np.float32).reshape(-1, 4)
+        rgb = px[:, :3]
+        grey = (rgb * np.array([0.299, 0.587, 0.114], np.float32)).sum(1, keepdims=True)
+        px[:, :3] = np.clip((rgb + (grey - rgb) * 0.95) * level * np.array([0.95, 0.92, 1.08], np.float32), 0, 1)
+        img.pixels[:] = px.ravel()
+        img.filepath_raw = path
+        img.file_format = "TARGA"
+        img.save()
+        bpy.data.images.remove(img)
+        log(" dark", f)
+
+
 def import_character(c, work):
     global BLADE_BASE, BLADE_LEN
     BLADE_BASE, BLADE_LEN = c.get("blade", (4.273, 45.0))  # its hilt's ATT_saber_base and its blade's length
@@ -194,6 +238,8 @@ def import_character(c, work):
     folder = os.path.basename(c["mesh"].rstrip("\\/"))
     dst = os.path.join(root, "meshes", "chars", folder)
     stage_folder(c["mesh"], dst, c.get("duel", False))
+    if c.get("dark"):
+        darken_folder(dst, c["dark"])
     anim = os.path.join(root, "animation", "clips")
     os.makedirs(anim, exist_ok=True)
     for clip in c["clips"]:

@@ -1,17 +1,16 @@
 {
  "mode": "final",
- "out": "D:\\SWROTS-PC\\_fb\\out\\yoda",
- "work": "D:\\SWROTS-PC\\_fb\\work",
- "importer": "D:\\SWROTS-PC\\mods\\_work\\toolkit\\io_import_swe3_msh.py",
- "stx": "D:\\SWROTS-PC\\mods\\_work\\jk2-chars\\stx.py",
+ "out": "out/yoda",
+ "work": "work",
+ "importer": "io_import_swe3_msh.py",
  "chars": [
   {
    "tag": "yoda_v1",
-   "mesh": "D:\\SWROTS-PC\\_fb\\yoda\\v1\\yoda",
+   "mesh": "yoda/yoda",
    "duel": false,
    "hilts": [
     [
-     "D:\\SWROTS-PC\\_fb\\yoda\\hilts\\lsaberyoda",
+     "yoda/lsaberyoda",
      "wrist_R_g"
     ]
    ],
@@ -25,22 +24,20 @@
     22.0
    ],
    "clips": [
-    "D:\\SWROTS-PC\\_fb\\yoda\\anim\\yoda_nav_stalkf.bnm"
+    "yoda/anim/yoda_nav_stalkf.bnm"
    ],
-   "frac": 0,
-   "yaw": 25,
    "turn": 30,
    "candidates": [
     [
-     "D:\\SWROTS-PC\\_fb\\yoda\\anim\\yoda_nav_stalkf.bnm",
+     "yoda/anim/yoda_nav_stalkf.bnm",
      0.8
     ],
     [
-     "D:\\SWROTS-PC\\_fb\\yoda\\anim\\yoda_nav_stalkf.bnm",
+     "yoda/anim/yoda_nav_stalkf.bnm",
      0.75
     ],
     [
-     "D:\\SWROTS-PC\\_fb\\yoda\\anim\\yoda_nav_stalkf.bnm",
+     "yoda/anim/yoda_nav_stalkf.bnm",
      0.85
     ]
    ],
@@ -118,11 +115,11 @@
   },
   {
    "tag": "yoda_v2",
-   "mesh": "D:\\SWROTS-PC\\_fb\\yoda\\v2\\yoda",
+   "mesh": "yoda/yoda",
    "duel": false,
    "hilts": [
     [
-     "D:\\SWROTS-PC\\_fb\\yoda\\hilts\\lsaberyoda",
+     "yoda/lsaberyoda",
      "wrist_R_g"
     ]
    ],
@@ -136,22 +133,20 @@
     22.0
    ],
    "clips": [
-    "D:\\SWROTS-PC\\_fb\\yoda\\anim\\yoda_nav_run_out.bnm"
+    "yoda/anim/yoda_nav_run_out.bnm"
    ],
-   "frac": 0,
-   "yaw": -25,
    "turn": -30,
    "candidates": [
     [
-     "D:\\SWROTS-PC\\_fb\\yoda\\anim\\yoda_nav_run_out.bnm",
+     "yoda/anim/yoda_nav_run_out.bnm",
      0.2
     ],
     [
-     "D:\\SWROTS-PC\\_fb\\yoda\\anim\\yoda_nav_run_out.bnm",
+     "yoda/anim/yoda_nav_run_out.bnm",
      0.15
     ],
     [
-     "D:\\SWROTS-PC\\_fb\\yoda\\anim\\yoda_nav_run_out.bnm",
+     "yoda/anim/yoda_nav_run_out.bnm",
      0.25
     ]
    ],
@@ -191,7 +186,8 @@
    ],
    "center": "body",
    "frame_units": 125.0,
-   "feet": 0.19
+   "feet": 0.19,
+   "dark": 0.45
   }
  ]
 }
