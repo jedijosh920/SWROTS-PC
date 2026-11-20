@@ -33,7 +33,8 @@ namespace swrots::game {
 
 namespace {
 
-// Extra fighters show no full-body picture (the disc has none for them), as locked fighters do.
+// Extra fighters show no full-body picture (the disc has none for them), as locked fighters do, unless a mod has
+// their own (a custom character's s_selduel_fb_<costume>_v1/_v2, Yoda's s_selduel_fb_yoda_v1/_v2).
 struct ExtraFighter {
     const char* className;
     const char* head;    // interfc\front_end\<head>.stx, the grid cell (64x64)
@@ -719,6 +720,14 @@ void BuildExtras()
 {
     g_Extras.clear();
     g_Extras.push_back(kYoda);
+    // Yoda's full bodies (the disc has none): a mod's own, if it has them, as a custom character's
+    for (int player = 0; player < 2; ++player) {
+        const std::string body = std::string("interfc\\front_end\\s_selduel_fb_yoda") + (player ? "_v2" : "_v1");
+        if (ModFileExists(body + ".stx")) {
+            g_Extras.back().files[2 + player] = Keep(body);
+            LOG_INFO("Roster: Yoda's full body for player %d (%s.stx)", player + 1, body.c_str());
+        }
+    }
     for (const CustomCharacter& custom : CustomCharacters()) {
         if (int(g_Extras.size()) >= kMaxExtras) {
             LOG_WARN("Roster: no select-screen slot left for %s", custom.className.c_str());
