@@ -60,7 +60,9 @@ nine.
 - No full-body picture on the select screen (the disc has none for an added character); the arena
   screen shows its bust instead. A mod can give Yoda his: `mods\interfc\front_end\s_selduel_fb_yoda_v1.stx`
   (player 1's, 128x256 DXT5, as a custom character's) and `s_selduel_fb_yoda_v2.stx` (player 2's in Yoda against
-  Yoda, Sith Yoda); with them the select and arena screens show them, as the game's fighters' full bodies.
+  Yoda, Sith Yoda); with them the select and arena screens show them, as the game's fighters' full bodies. tools/fullbody
+  renders such pictures from a fighter's own model (from the user's copy of the game) in Blender: fb_render.py, then
+  fb_stx.py; yoda.json is Yoda's job.
 - The menus show the normal bust for player 2 in a mirror match, even when the fighter gets a
   darker look in the duel.
 - No intro or win animation of its own unless the disc has `animation\<name>\<name>_intro.bnm`.

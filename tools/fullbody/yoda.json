@@ -1,0 +1,197 @@
+{
+ "mode": "final",
+ "out": "D:\\SWROTS-PC\\_fb\\out\\yoda",
+ "work": "D:\\SWROTS-PC\\_fb\\work",
+ "importer": "D:\\SWROTS-PC\\mods\\_work\\toolkit\\io_import_swe3_msh.py",
+ "stx": "D:\\SWROTS-PC\\mods\\_work\\jk2-chars\\stx.py",
+ "chars": [
+  {
+   "tag": "yoda_v1",
+   "mesh": "D:\\SWROTS-PC\\_fb\\yoda\\v1\\yoda",
+   "duel": false,
+   "hilts": [
+    [
+     "D:\\SWROTS-PC\\_fb\\yoda\\hilts\\lsaberyoda",
+     "wrist_R_g"
+    ]
+   ],
+   "saber": [
+    0.15,
+    1.0,
+    0.1
+   ],
+   "blade": [
+    2.964,
+    22.0
+   ],
+   "clips": [
+    "D:\\SWROTS-PC\\_fb\\yoda\\anim\\yoda_nav_stalkf.bnm"
+   ],
+   "frac": 0,
+   "yaw": 25,
+   "turn": 30,
+   "candidates": [
+    [
+     "D:\\SWROTS-PC\\_fb\\yoda\\anim\\yoda_nav_stalkf.bnm",
+     0.8
+    ],
+    [
+     "D:\\SWROTS-PC\\_fb\\yoda\\anim\\yoda_nav_stalkf.bnm",
+     0.75
+    ],
+    [
+     "D:\\SWROTS-PC\\_fb\\yoda\\anim\\yoda_nav_stalkf.bnm",
+     0.85
+    ]
+   ],
+   "turns": [
+    0
+   ],
+   "edits": [
+    {
+     "edit": "turn",
+     "bone": "root_g",
+     "from": [
+      0,
+      1,
+      0
+     ],
+     "to": [
+      0,
+      0.766,
+      0.643
+     ]
+    },
+    {
+     "edit": "turn",
+     "bone": "neck_g",
+     "from": [
+      0,
+      0.766,
+      0.643
+     ],
+     "to": [
+      0,
+      1,
+      0
+     ]
+    },
+    {
+     "edit": "hang",
+     "bones": [
+      "ec_cape_FL_01_g",
+      "ec_cape_FR_01_g",
+      "ec_cape_BL_01_g",
+      "ec_cape_BR_01_g",
+      "ec_cape_FL_02_g",
+      "ec_cape_FR_02_g",
+      "ec_cape_BL_02_g",
+      "ec_cape_BR_02_g"
+     ],
+     "out": 0.45,
+     "back": 0.6
+    },
+    {
+     "edit": "point",
+     "bone": "shoulder_R_g",
+     "child": "wrist_R_g",
+     "from": "spine2_g",
+     "at": [
+      -5.0,
+      4.0,
+      8.0
+     ]
+    },
+    {
+     "edit": "aim",
+     "bone": "wrist_R_g",
+     "dir": [
+      1.0,
+      0.05,
+      0.6
+     ]
+    }
+   ],
+   "center": "body",
+   "frame_units": 125.0,
+   "feet": 0.3
+  },
+  {
+   "tag": "yoda_v2",
+   "mesh": "D:\\SWROTS-PC\\_fb\\yoda\\v2\\yoda",
+   "duel": false,
+   "hilts": [
+    [
+     "D:\\SWROTS-PC\\_fb\\yoda\\hilts\\lsaberyoda",
+     "wrist_R_g"
+    ]
+   ],
+   "saber": [
+    1,
+    0.05,
+    0.05
+   ],
+   "blade": [
+    2.964,
+    22.0
+   ],
+   "clips": [
+    "D:\\SWROTS-PC\\_fb\\yoda\\anim\\yoda_nav_run_out.bnm"
+   ],
+   "frac": 0,
+   "yaw": -25,
+   "turn": -30,
+   "candidates": [
+    [
+     "D:\\SWROTS-PC\\_fb\\yoda\\anim\\yoda_nav_run_out.bnm",
+     0.2
+    ],
+    [
+     "D:\\SWROTS-PC\\_fb\\yoda\\anim\\yoda_nav_run_out.bnm",
+     0.15
+    ],
+    [
+     "D:\\SWROTS-PC\\_fb\\yoda\\anim\\yoda_nav_run_out.bnm",
+     0.25
+    ]
+   ],
+   "turns": [
+    10,
+    5,
+    15,
+    20
+   ],
+   "edits": [
+    {
+     "edit": "point",
+     "bone": "shoulder_R_g",
+     "child": "wrist_R_g",
+     "from": "spine2_g",
+     "at": [
+      -3.0,
+      -3.0,
+      6.0
+     ]
+    },
+    {
+     "edit": "aim",
+     "bone": "wrist_R_g",
+     "dir": [
+      -0.2,
+      1.0,
+      0.1
+     ]
+    },
+    {
+     "edit": "grip",
+     "bone": "shoulder_L_g",
+     "child": "middle1_L_g",
+     "along": -2.0
+    }
+   ],
+   "center": "body",
+   "frame_units": 125.0,
+   "feet": 0.19
+  }
+ ]
+}
