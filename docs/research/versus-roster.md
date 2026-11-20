@@ -81,8 +81,15 @@ number: 0-8 are the fighters, 9 is Random.
   in a mirror (see below). The fighter keeps a pointer into the table, so it must stay put.
 - **Cameras.** The intro and win shots are `cinematics\introcamera\<Name>_Intro_Cam.cin` and the
   like. The disc has none for Yoda; `versus.cpp` hands him Anakin's (`cameras` in the fighter row).
-  An intro animation is `animation\<name>\<name>_intro.bnm`; Yoda has none, so he has no intro yet
-  (his bonus mission's cutscene `cinematics\u113\cin_u113_010.cin` is a candidate).
+  An intro animation is `animation\<name>\<name>_intro.bnm`; Yoda has none. The port makes his
+  (`yodaintro.cpp`): a cutscene keeps each actor's animation as a clip's memory image, and his bonus
+  mission's opening one (`cinematics\u113\cin_u113_010.cin`, actor `R1_Yoda_baseShape`) ends with
+  him reaching out with the Force and standing on guard; its last 2.4 s become `Yoda_Intro`
+  (without the cutscene's `origin` track; his cameras are Anakin's, scaled to his size), served as a
+  generated memory image and played as a custom character's own intro (`customchars.cpp`). His
+  line is "Touch me you cannot!" (YDA060), which only his mission's dialogue archive has: it is
+  added to the generic one, and asked for through one of his kill lines (he has no lines for the
+  "Versus" context, and his taunts need clones or droids).
 
 ## Custom characters
 

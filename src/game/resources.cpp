@@ -457,6 +457,14 @@ void WriteGeneratedFile(const std::string& lowerName, const std::vector<uint8_t>
     }
 }
 
+// Resources the engine reads as memory images (animations, cinematics and duel cameras): a generated one is handed to
+// its type's loader.
+bool IsImageName(const std::string& lowerName)
+{
+    return lowerName.size() > 4 &&
+        (lowerName.compare(lowerName.size() - 4, 4, ".bnm") == 0 || lowerName.compare(lowerName.size() - 4, 4, ".cin") == 0);
+}
+
 // Kept for the session.
 std::mutex g_GeneratorLock;
 std::vector<ResourceGenerator> g_Generators;
@@ -473,9 +481,9 @@ const std::vector<uint8_t>* Generated(const std::string& lowerName)
         if (generator(lowerName, data) && !data.empty()) {
             LOG_INFO("Generated: %s (%zu bytes)", lowerName.c_str(), data.size());
             // Textures must be loose files (above); menus are taken from memory (served as a loose file, a
-            // menu's screen was made empty).
+            // menu's screen was made empty), and so are animations (memory images, handed to their loader).
             const bool menu = lowerName.size() > 4 && lowerName.compare(lowerName.size() - 4, 4, ".xml") == 0;
-            if (!menu)
+            if (!menu && !IsImageName(lowerName))
                 WriteGeneratedFile(lowerName, data);
             return &(g_Generated[lowerName] = std::move(data));
         }
@@ -483,10 +491,24 @@ const std::vector<uint8_t>* Generated(const std::string& lowerName)
     return nullptr;
 }
 
-// Decodes a generated resource as a non-PAK read (t_Top set by the caller).
+// Decodes a generated resource as a non-PAK read (t_Top set by the caller); a memory image (IsImageName) is copied to
+// the engine's memory, kept for the rest of the level as a level's own image block is, and handed to its loader.
 int DecodeGenerated(uint8_t* packer, const std::vector<uint8_t>& data, EnginePath* path, int typeId, void* record,
-    int extra, int context)
+    int extra, int context, const std::string& lowerName)
 {
+    if (IsImageName(lowerName)) {
+        auto* loader = *reinterpret_cast<EngineObject**>(packer + kPackerImageLoaders + typeId * 4);
+        if (!loader) {
+            LOG_WARN("Generated: no memory-image loader for type %d (%s)", typeId, lowerName.c_str());
+            return 0;
+        }
+        void* image = EngineAlloc()(uint32_t(data.size()));
+        std::memcpy(image, data.data(), data.size());
+        VirtualAt<ImageLoadFn>(loader, kImageLoaderLoadSlot)(loader, nullptr, image, uint32_t(data.size()));
+        packer[kPackerLastWasImage] = 1;
+        LOG_INFO("Generated: %s loaded (memory image)", lowerName.c_str());
+        return int(reinterpret_cast<uintptr_t>(image));
+    }
     EngineObject* file = FileMemoryCtor(EngineAlloc()(kFileMemorySize), nullptr);
     VirtualAt<FileMemoryOpenFn>(file, kFileMemoryOpenSlot)(file, nullptr, const_cast<uint8_t*>(data.data()), uint32_t(data.size()));
     packer[kPackerLastWasImage] = 0;
@@ -620,7 +642,7 @@ int __fastcall ReadHook(void* packer, void* edx, DecodeFn decode, EnginePath* pa
                     return result;
             } else if (const std::vector<uint8_t>* generated = Generated(wanted)) {
                 t_Top = &pending;
-                int result = DecodeGenerated(p, *generated, path, typeId, record, extra, context);
+                int result = DecodeGenerated(p, *generated, path, typeId, record, extra, context, wanted);
                 t_Top = pending.outer;
                 return result;
             }
@@ -669,7 +691,7 @@ int __fastcall ReadHook(void* packer, void* edx, DecodeFn decode, EnginePath* pa
                             return result;
                     } else if (const std::vector<uint8_t>* generated = Generated(wanted)) {
                         t_Top = &pending;
-                        int result = DecodeGenerated(p, *generated, path, typeId, record, extra, context);
+                        int result = DecodeGenerated(p, *generated, path, typeId, record, extra, context, wanted);
                         t_Top = pending.outer;
                         return result;
                     } else {
@@ -920,8 +942,10 @@ bool Declare(uint8_t* scene, const EnginePath* path, int typeId, uint32_t size)
 bool IsCharacterContent(const std::string& path)
 {
     // Plus the characters' HUD portraits and select-screen heads (see characters.cpp).
+    // And the duel cameras (a Versus fighter's: Yoda's are made, yodaintro.h).
     static const char* const kFolders[] = { "meshes\\", "animation\\", "effects\\", "textures\\",
-        "interfc\\hud_b\\hud_face_", "interfc\\front_end\\s_selduel_" };
+        "interfc\\hud_b\\hud_face_", "interfc\\front_end\\s_selduel_", "cinematics\\introcamera\\",
+        "cinematics\\outrocamera\\" };
     for (const char* folder : kFolders)
         if (path.rfind(folder, 0) == 0)
             return true;
@@ -1308,6 +1332,52 @@ bool AnimationLookupResolved(void* self, void* edx, void* script, void* classInf
         }
         if (entry)
             continue;
+        // One the port makes (a generated animation: Yoda's Versus intro, yodaintro.h), in one of the folders of the
+        // class's animations (those it found, and the other missing ones found on the disc: a class takes some from
+        // shared folders, the grapples' for one).
+        bool generated = false;
+        std::vector<std::string> folders;
+        const auto tryFolderOf = [&](const char* sibling) {
+            if (generated || !sibling)
+                return;
+            std::string other = sibling;
+            for (char& c : other)
+                c = char(tolower(static_cast<unsigned char>(c)));
+            other += ".bnm";
+            if (other == file)
+                return;
+            const PakIndex* otherOwner = nullptr;
+            const PakIndex::Entry* at = FindElsewhere(g_LevelIndex,
+                [&](const PakIndex* index) { return index->FindFileWithData(other, kAnimationType); }, otherOwner);
+            if (!at)
+                return;
+            const std::string folder = at->name.substr(0, at->name.rfind('\\') + 1);
+            if (std::find(folders.begin(), folders.end(), folder) != folders.end())
+                return;
+            folders.push_back(folder);
+            const std::string own = folder + file;
+            if (Generated(own)) {
+                generated = true;
+                if (LoadGeneratedResource(own, kAnimationType)) {
+                    LOG_INFO("Declare: %s, generated", own.c_str());
+                    ++resolved;
+                } else {
+                    LOG_WARN("Declare: %s, generated, could not be loaded", own.c_str());
+                }
+            }
+        };
+        for (int k = 0; found && k < found->count; ++k)
+            tryFolderOf(found->data[k] ? static_cast<const char*>(found->data[k]) + 4 : nullptr);
+        for (int k = 0; k < missing->count; ++k)
+            tryFolderOf(missing->data[k]);
+        if (generated)
+            continue;
+        {
+            std::string tried;
+            for (const std::string& f : folders)
+                tried += (tried.empty() ? "" : ", ") + f;
+            LOG_INFO("Declare: %s is on no disc PAK nor made in %s", file.c_str(), tried.empty() ? "any folder" : tried.c_str());
+        }
         // Found nowhere: a stand-in, declared under the wanted name in the stand-in's folder.
         const std::string standIn = StandInAnimation(file);
         const PakIndex::Entry* standInEntry = standIn.empty() ? nullptr : FindElsewhere(g_LevelIndex,

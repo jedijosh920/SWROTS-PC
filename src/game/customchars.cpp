@@ -28,6 +28,7 @@
 #include "game/menus.h"
 #include "kernel/kernel.h"
 #include "game/resources.h"
+#include "game/yodaintro.h"
 
 namespace swrots::game {
 
@@ -312,6 +313,11 @@ struct VoiceLine {
     std::wstring text;    // its subtitle
 };
 std::vector<VoiceLine> g_VoiceLines;
+
+// Yoda's intro line (IntroSequences): his bonus mission's "Touch me you cannot!", added to the generic dialogue
+// archive (AddYodaIntroLine).
+constexpr const char* kYodaIntroLine = "YDA060";
+bool g_YodaIntroLine = false;
 
 uint32_t __cdecl SpeakerNameFor(uint8_t* character, uint32_t text)
 {
@@ -730,6 +736,9 @@ struct OwnIntro {
     float speed = 1.0f;
     bool outro = false;
     uint16_t handle = 0;
+    // the event its line is asked with, and in what context: by default "TNT" (intro) or "KIL" (outro) in "Versus"
+    const char* event = nullptr;
+    const char* context = "Versus";
 };
 constexpr int kMaxOwnIntros = 8;
 OwnIntro g_OwnIntros[kMaxOwnIntros];
@@ -753,14 +762,14 @@ template <int K> bool __fastcall OwnIntroFn(uint8_t* self, void*, uint32_t, uint
     // its line as it starts (0x1F6310: the event the Jedi Brute's twirl turns its spinning saber on at; 0x1F62D0's
     // came as the intro ended)
     if (reinterpret_cast<bool(__fastcall*)(uint8_t*, void*)>(uintptr_t(0x001F6310))(setup, nullptr)) {
-        const char* event = own.outro ? "KIL" : "TNT";
+        const char* event = own.event ? own.event : own.outro ? "KIL" : "TNT";
         LOG_INFO("Custom characters: %s plays", own.name.c_str());
         if (!own.line.empty()) {
             uint8_t* scripts = *reinterpret_cast<uint8_t**>(uintptr_t(0x006943CC));
             if (uint8_t* character = scripts ? *reinterpret_cast<uint8_t**>(scripts + 0x68) : nullptr)
                 ForceNextLine(character, event, own.line.c_str());
         }
-        reinterpret_cast<int(__cdecl*)(const char*, const char*, int, int, int)>(uintptr_t(kSayEvent))(event, "Versus", 1, 0, 0);
+        reinterpret_cast<int(__cdecl*)(const char*, const char*, int, int, int)>(uintptr_t(kSayEvent))(event, own.context, 1, 0, 0);
     }
     return reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, const char*, uint32_t)>(uintptr_t(0x001F6C00))(
         setup, nullptr, reinterpret_cast<const char*>(uintptr_t(0x0059C07C)), 0x7E00 + K);
@@ -785,6 +794,21 @@ int __cdecl IntroSequences(const char* shortName, ClassSequenceFn* fns, int max)
         return 0;
     int count = 0, owns = 0;
     bool added[std::size(kDuelists)][2] = {};
+    // Yoda (a Versus fighter of the port's, roster.cpp): his intro cut from his bonus mission's cutscene
+    // (yodaintro.h), when it can be made; his line "Touch me you cannot!" (AddYodaIntroLine) said as it starts. He has
+    // no lines for the "Versus" context, nor taunts a duelist passes the conditions of: one of his kill lines (said
+    // to anyone) is asked for, which says it.
+    if (_stricmp(shortName, "Yoda") == 0 && count < max && MakeGeneratedResource(yodaintro::kClipFile)) {
+        OwnIntro& own = g_OwnIntros[owns];
+        own = OwnIntro{};
+        own.name = "Yoda_Intro";
+        own.animation = yodaintro::kClipName;
+        own.line = g_YodaIntroLine ? kYodaIntroLine : "";
+        own.event = "KIL";
+        own.context = "";
+        fns[count++] = kOwnIntroFns[size_t(owns++)];
+        LOG_INFO("Custom characters: IYoda's duel intro is %s", own.animation.c_str());
+    }
     for (const CustomCharacter& c : g_Customs) {
         if ((c.intro < 0 && c.introAnimation.empty() && c.outroAnimation.empty()) || c.base.size() < 2 ||
             _stricmp(c.base.c_str() + 1, shortName) != 0)
@@ -794,6 +818,7 @@ int __cdecl IntroSequences(const char* shortName, ClassSequenceFn* fns, int max)
             if (animation.empty() || owns >= kMaxOwnIntros || count >= max)
                 continue;
             OwnIntro& own = g_OwnIntros[owns];
+            own = OwnIntro{};
             own.name = IntroPrefix(c) + (outro ? "_Outro" : "_Intro");
             own.animation = animation;
             own.speed = outro ? c.outroSpeed : c.introSpeed;
@@ -1353,6 +1378,79 @@ bool ReadWhole(const std::wstring& path, std::vector<uint8_t>& data)
     return ok;
 }
 
+// Yoda's intro line (kYodaIntroLine), which only his bonus mission's dialogue archive has (Dialogue\u113_dialogue.rpx,
+// the archive's layout below): its data copied to cache\voice\ (written again only when it differs, the archive
+// being rebuilt when a line's file changes) and added to the custom lines, its subtitle from the mission's strings
+// (gameinfo\strings\u113_dialogue.str: "[YDA060]text" lines).
+void AddYodaIntroLine(const std::wstring& gameData, const std::wstring& cache)
+{
+    g_YodaIntroLine = false;
+    std::vector<uint8_t> archive, strings;
+    if (cache.empty() || !ReadWhole(gameData + L"\\Dialogue\\u113_dialogue.rpx", archive) || archive.size() < 0x20 ||
+        !ReadWhole(gameData + L"\\gameinfo\\strings\\u113_dialogue.str", strings))
+        return;
+    std::string id = kYodaIntroLine;
+    for (char& ch : id)
+        ch = char(tolower(static_cast<unsigned char>(ch)));
+    uint32_t count;
+    std::memcpy(&count, archive.data() + 4, 4);
+    std::vector<uint8_t> line;
+    for (uint32_t i = 0; i < count && 0x20 + (i + 1) * 0x2C <= archive.size(); ++i) {
+        const uint8_t* r = archive.data() + 0x20 + i * 0x2C;
+        uint32_t offset, size;
+        std::memcpy(&offset, r + 0x20, 4);
+        std::memcpy(&size, r + 0x24, 4);
+        if (strnlen(reinterpret_cast<const char*>(r), 0x20) == id.size() && std::memcmp(r, id.data(), id.size()) == 0 &&
+            offset < archive.size() && size <= archive.size() - offset)
+            line.assign(archive.begin() + offset, archive.begin() + offset + size);
+    }
+    const std::string text(strings.begin(), strings.end());
+    const std::string key = std::string("[") + kYodaIntroLine + "]";
+    const size_t at = text.find(key);
+    if (line.empty() || at == std::string::npos) {
+        LOG_WARN("Custom characters: Yoda's intro line is not in his mission's dialogue; his intro is silent");
+        return;
+    }
+    const size_t from = at + key.size(), to = text.find_first_of("\r\n", from);
+    std::wstring subtitle;
+    for (char ch : text.substr(from, to == std::string::npos ? std::string::npos : to - from))
+        subtitle += wchar_t(static_cast<unsigned char>(ch)); // Latin-1
+    const std::wstring folder = cache + L"\\voice", file = folder + L"\\yoda_" + std::wstring(id.begin(), id.end()) + L".adpcm";
+    std::vector<uint8_t> old;
+    if (!(ReadWhole(file, old) && old == line)) {
+        CreateDirectoryW(folder.c_str(), nullptr);
+        HANDLE f = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+        DWORD written = 0;
+        const bool ok = f != INVALID_HANDLE_VALUE && WriteFile(f, line.data(), DWORD(line.size()), &written, nullptr) &&
+            written == line.size();
+        if (f != INVALID_HANDLE_VALUE)
+            CloseHandle(f);
+        if (!ok) {
+            LOG_WARN("Custom characters: Yoda's intro line could not be written to the cache");
+            return;
+        }
+    }
+    g_VoiceLines.push_back({ kYodaIntroLine, file, subtitle });
+    g_YodaIntroLine = true;
+}
+
+// Yoda's intro clip and duel cameras (yodaintro.h), made when the duel asks for them.
+bool YodaIntroGenerator(const std::string& lowerName, std::vector<uint8_t>& data)
+{
+    std::string report;
+    if (lowerName == yodaintro::kClipFile)
+        data = yodaintro::MakeIntroClip(&ReadDiscData, report);
+    else if (lowerName == yodaintro::kCameraFile)
+        data = yodaintro::MakeIntroCamera(&ReadDiscData, report);
+    else if (lowerName == yodaintro::kOutroCameraFile)
+        data = yodaintro::MakeOutroCamera(&ReadDiscData, report);
+    else
+        return false;
+    if (data.empty())
+        LOG_WARN("Custom characters: %s not made: %s", lowerName.c_str(), report.c_str());
+    return !data.empty();
+}
+
 // The game's generic dialogue archive (Dialogue\gen_dialogue.rpx, mounted in every level) with the custom lines
 // added, served in its place for this start. The archive: u32 1, u32 count, 0x18 bytes, then `count` 0x2C-byte
 // records {name[0x20] (lower case, sorted), u32 offset, u32 size, u32 (the same in all)}, free room up to the first
@@ -1470,6 +1568,8 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
     g_PictureCopies.clear();
     AddBuiltInCharacters();
     RegisterResourceGenerator(&CopyPicture);
+    RegisterResourceGenerator(&YodaIntroGenerator);
+    AddYodaIntroLine(gameData, cache);
     BuildVoiceArchive(gameData, cache);
     if (g_Customs.empty())
         return;
@@ -1608,8 +1708,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
         g_OriginalJediSetup = reinterpret_cast<JediSetupFn>(jediStub);
         PatchJump(kJediSetup, reinterpret_cast<const void*>(&JediSetupHook));
     }
-    if (std::any_of(g_Customs.begin(), g_Customs.end(),
-            [](const CustomCharacter& c) { return c.intro >= 0 || !c.introAnimation.empty() || !c.outroAnimation.empty(); })) {
+    { // Yoda's intro always (IntroSequences), the custom characters' when they have one
         if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kIntroName)), kIntroNameBytes, sizeof kIntroNameBytes) == 0) {
             AddClassSequences(&IntroSequences);
             PatchJump(kIntroName, reinterpret_cast<const void*>(&IntroNameEntry));
