@@ -1450,6 +1450,13 @@ bool ReadDiscResource(const std::string& lowerName, std::vector<uint8_t>& data)
     return entry && !(entry->imageOffset >= 0 && entry->imageSize > 0) && owner->ReadData(*entry, data) && !data.empty();
 }
 
+bool ReadDiscData(const std::string& lowerName, std::vector<uint8_t>& data)
+{
+    const PakIndex* owner = nullptr;
+    const PakIndex::Entry* entry = FindElsewhere(nullptr, lowerName, owner);
+    return entry && owner->ReadData(*entry, data) && !data.empty();
+}
+
 std::vector<std::string> DiscResourceNames(const std::string& lowerPrefix)
 {
     const PakIndex* owner = nullptr;

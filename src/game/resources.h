@@ -50,6 +50,8 @@ bool MakeGeneratedResource(const std::string& lowerName);
 
 // A resource's file contents from the disc's PAKs; false when none has it with its data.
 bool ReadDiscResource(const std::string& lowerName, std::vector<uint8_t>& data);
+// The same, memory-image resources (animations) included: their memory image.
+bool ReadDiscData(const std::string& lowerName, std::vector<uint8_t>& data);
 
 // The names of the resources on the disc's PAKs starting with `lowerPrefix`.
 std::vector<std::string> DiscResourceNames(const std::string& lowerPrefix);
