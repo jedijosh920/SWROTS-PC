@@ -3,18 +3,6 @@
 What changed in each release of SWROTS-PC, newest first. Downloads are on the
 [releases page](https://github.com/jedijosh920/SWROTS-PC/releases).
 
-## Unreleased
-
-### Added
-
-- **True widescreen** (experimental, `Widescreen=2` in `settings.ini`): any shape, 16:9, 21:9 (3440x1440, 2560x1080),
-  32:9..., without stretching. The game's 4:3 picture stays in the middle undistorted and the 3D scene continues at
-  the sides (Hor+). The HUD keeps its shape and its side pieces move to the screen's edges (`HudAnchor`), or within a
-  narrower area (`HudAspect`, e.g. 16:9 on a 32:9 screen); whole-screen effects cover the width; menus, loading
-  screens and movies stay 4:3 in the middle; the game's view is widened so nothing is left out at the sides.
-  `AspectRatio` picks the shape (automatic by default). See
-  [settings](docs/settings.md).
-
 ## [v0.6.0](https://github.com/jedijosh920/SWROTS-PC/releases/tag/v0.6.0) - 2026-11-06
 
 Missions of your own: scripted missions with cutscenes, dialogue and voices.
