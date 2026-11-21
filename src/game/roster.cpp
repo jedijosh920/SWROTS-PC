@@ -24,6 +24,7 @@
 #include "core/patch.h"
 #include "game/characters.h"
 #include "game/custommaps.h"
+#include "game/fullbody.h"
 #include "game/customchars.h"
 #include "game/game.h"
 #include "game/menus.h"
@@ -33,7 +34,9 @@ namespace swrots::game {
 
 namespace {
 
-// Extra fighters show no full-body picture (the disc has none for them), as locked fighters do.
+// Extra fighters show no full-body picture (the disc has none for them), as locked fighters do, unless a mod has
+// their own (a custom character's s_selduel_fb_<costume>_v1/_v2); Yoda's are the port's (made from his model, see
+// fullbody.h) unless a mod has its own s_selduel_fb_yoda_v1/_v2.
 struct ExtraFighter {
     const char* className;
     const char* head;    // interfc\front_end\<head>.stx, the grid cell (64x64)
@@ -54,6 +57,34 @@ struct ExtraFighter {
 // every language).
 constexpr ExtraFighter kYoda = { "IYoda", "s_selduel_yodahead", "s_selduel_yodabust", "IDS_SHELL_YODA",
     "IDS_SHELL_JEDI_MASTER", "Anakin", { { 0.0f, 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f } }, "meshes\\chars\\yoda\\" };
+// Yoda's full bodies, player 1's and player 2's (Sith Yoda in Yoda against Yoda): the port makes them (fullbody.h)
+constexpr const char* kYodaFullBodies[2] = { "interfc\\front_end\\s_selduel_fb_yoda_v1",
+    "interfc\\front_end\\s_selduel_fb_yoda_v2" };
+
+// Whether an extra has its picture of `kind` (ExtraFighter::files): its file, or for Yoda's full bodies a mod's or the
+// port's, made from his model on the disc the first time this is asked (YodaFullBodyGenerator); without them, his
+// bust is shown in their frame.
+bool HasPicture(const ExtraFighter& extra, int kind)
+{
+    const char* file = extra.files[kind];
+    if (!file)
+        return false;
+    for (int player = 0; player < 2; ++player) {
+        if (file != kYodaFullBodies[player])
+            continue;
+        static int s_Made[2] = {}; // 0: not asked yet, 1: there, -1: not
+        if (!s_Made[player]) {
+            const std::string name = std::string(file) + ".stx";
+            const bool mod = ModFileExists(name);
+            s_Made[player] = mod || MakeGeneratedResource(name) ? 1 : -1;
+            if (mod)
+                LOG_INFO("Roster: Yoda's full body for player %d from mods (%s)", player + 1, name.c_str());
+        }
+        return s_Made[player] > 0;
+    }
+    return true;
+}
+
 constexpr int kFighterCount = 9;
 constexpr int kRandomSlot = 9;
 constexpr int kFirstExtraSlot = 10;
@@ -192,7 +223,7 @@ std::vector<Picture> WithExtraBodies(const std::vector<Picture>& bodies, bool st
         // g_SlotCount + 1, a round 12 with one extra.
         newBodies.push_back(random);
         for (const ExtraFighter& extra : g_Extras)
-            newBodies.push_back(standIns && !extra.files[2 + block] ? Sized(Like(random, extra.bust), 256.0f, 128.0f)
+            newBodies.push_back(standIns && !HasPicture(extra, 2 + block) ? Sized(Like(random, extra.bust), 256.0f, 128.0f)
                 : random);
         newBodies.push_back(random);
     }
@@ -362,6 +393,26 @@ std::string DuelName(const std::string& texture) // meshes\x\y.stx -> meshes\x\y
     return texture.substr(0, texture.size() - 4) + kDuelSuffix + ".stx";
 }
 
+// Yoda's full bodies (kYodaFullBodies), made from his model, hilt and clips on the disc; a mod's own are used instead.
+bool YodaFullBodyGenerator(const std::string& lowerName, std::vector<uint8_t>& data)
+{
+    for (int player = 0; player < 2; ++player) {
+        if (lowerName != std::string(kYodaFullBodies[player]) + ".stx" || ModFileExists(lowerName))
+            continue;
+        const char* texture = player ? "S_selDuel_FB_yoda_V2" : "S_selDuel_FB_yoda_V1";
+        std::string report;
+        const DWORD start = GetTickCount();
+        data = fullbody::MakeYodaPicture(player, &ReadDiscData, texture, report);
+        if (data.empty())
+            LOG_WARN("Roster: Yoda's full body for player %d not made: %s", player + 1, report.c_str());
+        else
+            LOG_INFO("Roster: Yoda's full body for player %d made from his model (%lu ms)", player + 1,
+                static_cast<unsigned long>(GetTickCount() - start));
+        return !data.empty();
+    }
+    return false;
+}
+
 bool DarkLookGenerator(const std::string& lowerName, std::vector<uint8_t>& data)
 {
     const std::string tail = std::string(kDuelSuffix) + ".stx";
@@ -413,7 +464,7 @@ void __fastcall BodiesHook(uint8_t* screen, void* edx)
     g_OriginalSetBodies(screen, edx);
     for (int player = 0; player < 2; ++player) {
         const ExtraFighter* extra = Extra(*reinterpret_cast<int*>(screen + 0x2C + player * 4));
-        if (extra && !extra->files[2 + player])
+        if (extra && !HasPicture(*extra, 2 + player))
             *reinterpret_cast<void**>(*reinterpret_cast<uint8_t**>(screen + 0x70 + player * 4) + 0x1C) = nullptr;
     }
 }
@@ -721,6 +772,9 @@ void BuildExtras()
 {
     g_Extras.clear();
     g_Extras.push_back(kYoda);
+    // Yoda's full bodies (the disc has none): a mod's own if it has them, else the port's (HasPicture)
+    g_Extras.back().files[2] = kYodaFullBodies[0];
+    g_Extras.back().files[3] = kYodaFullBodies[1];
     for (const CustomCharacter& custom : CustomCharacters()) {
         if (int(g_Extras.size()) >= kMaxExtras) {
             LOG_WARN("Roster: no select-screen slot left for %s", custom.className.c_str());
@@ -878,7 +932,7 @@ void __fastcall TextureItemDrawHook(uint8_t* item, void*, void* context)
         return;
     }
     void* own = ExtraPicture(extra, kind);
-    const bool bustInFrame = kind >= 2 && !g_Extras[size_t(extra)].files[kind]; // (Yoda's: the disc's bust)
+    const bool bustInFrame = kind >= 2 && !HasPicture(g_Extras[size_t(extra)], kind); // (Yoda's: the disc's bust)
     if (bustInFrame)
         own = ExtraPicture(extra, 1);
     if (!own && !bustInFrame) {
@@ -1164,6 +1218,7 @@ void InstallRoster()
     RegisterResourcePatch("interfc\\front_end\\xml\\select_jedi.xml", &PatchSelectScreen);
     RegisterResourcePatch("interfc\\front_end\\xml\\select_arena.xml", &PatchArenaScreen);
     RegisterResourceGenerator(&DarkLookGenerator);
+    RegisterResourceGenerator(&YodaFullBodyGenerator);
     SyncRosterClasses();
     PatchDisplacement(kSelectClassSite, g_Classes);
 
