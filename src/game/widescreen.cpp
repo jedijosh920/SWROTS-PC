@@ -21,9 +21,10 @@
 // corners projected to the screen with the view's focal lengths and centre, 0x619430..0x61943C; the rectangle
 // they cover is cut by the portal it is seen through, the first ones by the screen's rectangle 0x78B4E0 (x, y,
 // width, height; push at 0x200DF6, cut by 0x58100): a portal outside it, and what is behind it, is not drawn).
-// With true widescreen the first cut is by the screen's rectangle grown by the margins (g_PortalScreen, the
+// With true widescreen the first cut is by the screen's rectangle grown at the sides (g_PortalScreen, the
 // push's address changed to it): a sector seen beside the 4:3 frame is drawn (the floor and walls there had
-// holes).
+// holes). The side planes and this cut reach three margins out (kCullScale): with one margin, pieces of the
+// level beside the 4:3 frame were still left out at times (seen in the first mission).
 //
 // The loading screen (an object of 0x48 bytes made as a level loads, 0x2156B0, its pictures set up by 0x42C40
 // and let go by 0x42FB0, thiscall (), from its destructor 0x214F70 too) is noted while it is up.
@@ -78,7 +79,8 @@ using CombineViewFn = void(__fastcall*)(void* renderer, void* edx);
 
 constexpr uint32_t kPortalScreenPush = 0x00200DF6;  // push 0x78B4E0 (the first portals' cut)
 constexpr uint8_t kPortalScreenPushBytes[] = { 0x68, 0xE0, 0xB4, 0x78, 0x00 };
-int g_PortalScreen[4] = { 0, 0, 640, 480 };         // x, y, width, height: the screen's, grown by the margins
+int g_PortalScreen[4] = { 0, 0, 640, 480 };         // x, y, width, height: the screen's, grown at the sides
+constexpr int kCullScale = 3;                       // the side planes and the portals' cut reach 3 margins out
 
 constexpr uint32_t kLoadingSetUp = 0x00042C40, kLoadingRelease = 0x00042FB0;
 constexpr uint8_t kLoadingSetUpPrologue[] = { 0x83, 0xEC, 0x74, 0x56, 0x57 };   // sub esp, 0x74; push esi; push edi
@@ -108,8 +110,11 @@ void Widen(void* renderer, bool planes)
     // Only the whole screen's view (not a part of it the game draws on its own).
     if (margin <= 0 || viewport[0] != 0 || viewport[2] != screen[0] || viewport[2] <= 0)
         return;
-    g_PortalScreen[0] -= margin;
-    g_PortalScreen[2] += 2 * margin;
+    // What is drawn is chosen from a wider view than the one shown: with the same width, pieces of the level
+    // beside the 4:3 frame were still left out at times (holes in the floor and walls at the sides).
+    const int cullMargin = margin * kCullScale;
+    g_PortalScreen[0] -= cullMargin;
+    g_PortalScreen[2] += 2 * cullMargin;
     const float inset = At<float>(kPixelInset), sx = At<float>(kPixelToViewX), ox = At<float>(kViewOffsetX);
     const float sy = At<float>(kPixelToViewY), oy = At<float>(kViewOffsetY);
     const float x0 = float(viewport[0] - margin), x1 = float(viewport[0] + viewport[2] + margin);
@@ -117,9 +122,11 @@ void Widen(void* renderer, bool planes)
     const float top = (float(viewport[1]) + inset) * sy + oy, bottom = (float(viewport[1] + viewport[3]) - inset) * sy + oy;
 
     if (planes) {
+        const float c0 = float(viewport[0] - cullMargin), c1 = float(viewport[0] + viewport[2] + cullMargin);
+        const float cl = (c0 + inset) * sx + ox, cr = (c1 - inset) * sx + ox;
         alignas(16) float eye[4] = {};
         alignas(16) float corners[4][4] = {
-            { left, top, 1.0f, 0.0f }, { left, bottom, 1.0f, 0.0f }, { right, bottom, 1.0f, 0.0f }, { right, top, 1.0f, 0.0f },
+            { cl, top, 1.0f, 0.0f }, { cl, bottom, 1.0f, 0.0f }, { cr, bottom, 1.0f, 0.0f }, { cr, top, 1.0f, 0.0f },
         };
         const auto through = reinterpret_cast<PlaneThroughFn>(uintptr_t(kPlaneThrough));
         for (int i = 0; i < 4; ++i)
