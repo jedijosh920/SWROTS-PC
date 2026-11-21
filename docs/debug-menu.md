@@ -42,6 +42,9 @@ Up/Down recall earlier commands.
 | `despawn` | removes the characters you spawned in this level (the Characters tab's Remove spawned) |
 | `restart` | restarts the running mission (as the pause menu's Restart Mission does) |
 | `versus <class> <class> [map <map>] [rounds <n>]` | a Versus duel, you against the computer, on the developer map or a [custom map](modding/custom-maps.md#in-versus) |
+| `mission [<id>]` | starts a [mission of `mods\missions`](modding/missions.md); without an id, lists them |
+| `kill` | your character falls at once, as by a killing blow: to see what a defeat does (a mission's Game Over, a mode's comeback) |
+| `mission next` | in a running mission: skips the cutscene playing, or ends the fight (wait) the script waits on, so its next part begins ([testing a script](modding/missions.md#testing-a-script)); F8 does the same while the debug menu is on |
 | `devmap [<map>]` | the game restarts into the developer map: an empty, lit, flat floor under the sky with nothing on it but you, to test anything (see the [Game tab](#game-tab)); with a map's name, a [custom map](modding/custom-maps.md) on it |
 | `hvv [<classes>] [heroes <n>] [player <n>] [lives <n>] [health <n>] [intro on\|off] [map <map>]` | Heroes vs Villains: heroes against villains (2 to 16 classes, half each unless `heroes` says) on the developer map or a custom map, with lives and a scoreboard ([how to play it](research/heroes-vs-villains.md#playing-it)) |
 | `autorestart [on\|off]` | whether a `player` change applies at once during a mission: live, or by restarting it (on by default) |
@@ -294,6 +297,8 @@ The buttons:
   that cannot be done, the mission restarts with it: see *When it applies* above).
 - **Back to normal** runs `player off`.
 - **Restart mission** restarts the running mission (greyed out outside a mission).
+- **Next part** (only in a `mods\missions` mission) is `mission next`: the cutscene is skipped, or the fight the
+  script waits on ends (F8 does the same).
 - **Apply at once** is `autorestart`: off, Apply only sets the character for the next level start.
 
 What a command printed (the choice, or why it was refused) is in the Console tab.
@@ -328,6 +333,11 @@ switches, in one place.
 - **Debug displays**: the engine's own displays (fps counter, frame profiler and memory display) and
   its fps counter, then a **memory** line: the Xbox memory the game uses (of 128 MiB the port gives
   it), other memory it allocated, and the characters spawned in this level.
+
+## Missions tab
+
+The [missions](modding/missions.md) installed in `mods\missions`: each with its name, description and map, and a
+**Start** button (the `mission <id>` command). The main menu has them too (Single Player > Custom Missions).
 
 ## Heroes vs Villains tab
 

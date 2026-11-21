@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -662,19 +663,22 @@ void* __cdecl PortraitForCharacter(uint8_t* manager, const char* name, int head,
                 return record.face;
             }
         }
-    if (!custom || custom->hudFace.empty() || head || !manager)
+    // its own portrait, or player 2's in a Versus mirror
+    static const std::string kNoFace;
+    const std::string& face = custom ? CustomFaceOf(character, *custom) : kNoFace;
+    if (!custom || face.empty() || head || !manager)
         return PortraitLookupHook(manager, nullptr, name, head);
-    if (void* found = g_OriginalPortraitLookup(manager, nullptr, custom->hudFace.c_str(), 0))
+    if (void* found = g_OriginalPortraitLookup(manager, nullptr, face.c_str(), 0))
         return found;
-    MakeGeneratedResource(custom->hudFace + ".stx"); // a built-in fighter's, a copy of a disc picture
-    PortraitRecord record = { LoadInterfaceTexture(custom->hudFace.c_str(), true), nullptr, custom->hudFace.c_str() };
+    MakeGeneratedResource(face + ".stx"); // a built-in fighter's, a copy of a disc picture
+    PortraitRecord record = { LoadInterfaceTexture(face.c_str(), true), nullptr, face.c_str() };
     if (!record.face) {
-        LOG_WARN("Characters: %s's HUD portrait %s did not load", custom->className.c_str(), custom->face.c_str());
+        LOG_WARN("Characters: %s's HUD portrait %s did not load", custom->className.c_str(), face.c_str());
         return PortraitLookupHook(manager, nullptr, name, head);
     }
     reinterpret_cast<void(__fastcall*)(void*, void*, const PortraitRecord*)>(uintptr_t(kPortraitListAdd))(
         manager + 0x260, nullptr, &record);
-    LOG_INFO("Characters: %s's HUD portrait %s loaded", custom->className.c_str(), custom->face.c_str());
+    LOG_INFO("Characters: %s's HUD portrait %s loaded", custom->className.c_str(), face.c_str());
     return record.face;
 }
 
@@ -717,7 +721,102 @@ __declspec(naked) void PortraitCallStub()
     }
 }
 
+// A character's tick (its vtable slot 0xB4: the base's 0x158790, or the saber users' 0x280790, which calls it first)
+// activates it once: while +0x1C2 is set, 0xF2A50 clears it and calls slot 0x218 (0xF1DC0), which while +0x110 is set
+// clears that and calls the activation (slot 0x214: 0x267350, under the saber users' 0x2815F0, or the base's own
+// 0x15ABF0), which starts the character's script implement (+0x438: 0x15ABF0 -> 0x16E140). The loader makes that
+// implement in the character's setup (slot 0x390, 0x155680: +0x438 near its end), while the game's thread already
+// ticks the level's objects: a character whose setup came late (bodies of mods' own read from loose files, behind a
+// custom map's big level) was activated without it and crashed writing its +0x228 (0x16E175), now and then. Such a
+// tick is now skipped (the loader waits on the game's thread meanwhile: that thread must go on), and since that first
+// tick is the only one the game gives (the activation's), CharactersFrame gives it again once the setup made the
+// implement.
+constexpr uint32_t kCharacterTick = 0x00158790, kCharacterTickContinue = 0x0015879A;
+constexpr uint8_t kCharacterTickBytes[] = { 0x51, 0x56, 0x8B, 0xF1, 0x8A, 0x86, 0xC2, 0x01, 0x00, 0x00 };
+constexpr uint32_t kSaberTick = 0x00280790, kSaberTickContinue = 0x00280799;
+constexpr uint8_t kSaberTickBytes[] = { 0x56, 0x57, 0x8B, 0xF1, 0xE8, 0xF7, 0x7F, 0xED, 0xFF }; // ... call 0x158790
+constexpr uint32_t kActivationSlot = 0x214, kTickSlot = 0xB4;
+constexpr uint32_t kScriptActivations[] = { 0x00267350, 0x0015ABF0, 0x002815F0, 0x002A0C00 }; // all start 0x15ABF0
+constexpr uint32_t kCharacterTickPending = 0x1C2, kCharacterActivationPending = 0x110, kCharacterScript = 0x438;
+std::unordered_set<const uint8_t*> g_WaitingSetup; // reported once
+SRWLOCK g_WaitingSetupLock = SRWLOCK_INIT;
+
+int __fastcall TickWaits(const uint8_t* character)
+{
+    if (!character[kCharacterTickPending] || !character[kCharacterActivationPending])
+        return 0;
+    const bool ready = *reinterpret_cast<const volatile uint32_t*>(character + kCharacterScript) != 0;
+    if (ready) {
+        AcquireSRWLockExclusive(&g_WaitingSetupLock);
+        const bool waited = g_WaitingSetup.erase(character) > 0;
+        ReleaseSRWLockExclusive(&g_WaitingSetupLock);
+        if (waited)
+            LOG_INFO("Characters: %p set up, its activation goes on", character);
+        return 0;
+    }
+    // only a character whose activation starts the script implement
+    const uintptr_t vtable = *reinterpret_cast<const uintptr_t*>(character);
+    const uint32_t activation = *reinterpret_cast<const uint32_t*>(vtable + kActivationSlot);
+    if (std::find(std::begin(kScriptActivations), std::end(kScriptActivations), activation) ==
+        std::end(kScriptActivations))
+        return 0;
+    AcquireSRWLockExclusive(&g_WaitingSetupLock);
+    const bool first = g_WaitingSetup.insert(character).second;
+    ReleaseSRWLockExclusive(&g_WaitingSetupLock);
+    if (first)
+        LOG_INFO("Characters: %p ticked before its setup was done; its activation waits for it", character);
+    return 1;
+}
+
+__declspec(naked) void CharacterTickStub()
+{
+    __asm {
+        push ecx
+        call TickWaits
+        pop ecx
+        test eax, eax
+        jz run
+        ret
+    run:
+        push ecx
+        push esi
+        mov esi, ecx
+        mov al, byte ptr [esi + 0x1C2]
+        push kCharacterTickContinue
+        ret
+    }
+}
+
+__declspec(naked) void SaberTickStub()
+{
+    __asm {
+        push ecx
+        call TickWaits
+        pop ecx
+        test eax, eax
+        jz run
+        ret
+    run:
+        push esi
+        push edi
+        mov esi, ecx
+        mov eax, kCharacterTick
+        call eax
+        push kSaberTickContinue
+        ret
+    }
+}
+
 } // namespace
+
+int DressMirrorPlayer2(uint8_t* fighter, int variant, const std::string& mesh)
+{
+    // Kept for the boot, as the spawns' (a duel may create player 2 more than once; an earlier one may still be there)
+    static std::list<OwnedList> owned;
+    owned.emplace_back();
+    std::string body = mesh;
+    return Dress(fighter, variant, "", "", body, owned.back(), "Versus player 2");
+}
 
 int VariantOnDisc(const void* character, int preferred)
 {
@@ -858,9 +957,14 @@ const uint8_t* HelperMaster(const uint8_t* character)
         it->second.master : nullptr;
 }
 
+// Script actors: the object and its instance id (+4), to tell it is still the same one.
+std::vector<std::pair<const uint8_t*, uint32_t>> g_ScriptActors;
+
 bool __fastcall IsEnemyHook(uint8_t* brain, void* edx, uint8_t* other, int flag)
 {
     const uint8_t* self = brain ? *reinterpret_cast<uint8_t* const*>(brain + 0x10) : nullptr;
+    if (!g_ScriptActors.empty() && ((self && IsScriptActor(self)) || (other && IsScriptActor(other))))
+        return false; // no one's enemy, no one's target
     if (self && other && self != other && !g_HelperMasters.empty()) {
         const uint8_t* selfMaster = HelperMaster(self);
         const uint8_t* otherMaster = HelperMaster(other);
@@ -891,10 +995,93 @@ bool __fastcall IsEnemyHook(uint8_t* brain, void* edx, uint8_t* other, int flag)
     return g_OriginalIsEnemy(brain, edx, other, flag);
 }
 
+// A character hit by the player (0x18FA00, thiscall on its AI controller (attacker), called by the reaction to a hit
+// at 0x1593F8): one that can be provoked (+0x2A6) turns on the player, and the player's teams become every team but
+// the character's (0x18FA8C), so the game's lock-on takes it for an enemy from then on. For a level character (a
+// neutral the player strikes) that is the game's way; for one the port put on the player's side (an ally, a mission's
+// companion caught by a swing) it is not: the ally stays an ally and the player's teams stay as they were.
+constexpr uint32_t kProvokeCall = 0x001593F8;
+constexpr uint32_t kProvoke = 0x0018FA00;
+using ProvokeFn = void(__fastcall*)(uint8_t*, void*, uint8_t*);
+
+void __fastcall ProvokeHook(uint8_t* brain, void*, uint8_t* attacker)
+{
+    const uint8_t* self = brain ? *reinterpret_cast<uint8_t* const*>(brain + 0x10) : nullptr;
+    if (attacker && attacker == g_Player && self && self != g_Player && (TeamsOf(self) & kPortPlayerTeam) &&
+        !IsEnemyHook(brain, nullptr, attacker, 0)) {
+        static uint32_t s_LoggedId = 0;
+        if (*reinterpret_cast<const uint32_t*>(self + 4) != s_LoggedId) {
+            s_LoggedId = *reinterpret_cast<const uint32_t*>(self + 4);
+            LOG_INFO("Characters: an ally struck by the player stays an ally");
+        }
+        return;
+    }
+    reinterpret_cast<ProvokeFn>(uintptr_t(kProvoke))(brain, nullptr, attacker);
+}
+
 void SetFriendlyFire(const uint8_t* a, const uint8_t* b)
 {
     g_FriendlyFireA = a && b ? a : nullptr;
     g_FriendlyFireB = a && b ? b : nullptr;
+}
+
+
+void SetScriptActor(uint8_t* character, bool actor)
+{
+    if (!character)
+        return;
+    g_ScriptActors.erase(std::remove_if(g_ScriptActors.begin(), g_ScriptActors.end(),
+                             [&](const auto& a) { return a.first == character; }),
+        g_ScriptActors.end());
+    if (actor)
+        g_ScriptActors.emplace_back(character, *reinterpret_cast<const uint32_t*>(character + 4));
+}
+
+bool IsScriptActor(const uint8_t* character)
+{
+    for (const auto& a : g_ScriptActors)
+        if (a.first == character)
+            return *reinterpret_cast<const uint32_t*>(character + 4) == a.second;
+    return false;
+}
+
+constexpr uint32_t kReactionCall = 0x00159E20;
+constexpr uint8_t kReactionCallBytes[] = { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0 }; // push ebp; mov ebp, esp; and esp, -16
+ReactionCallFn g_OriginalReactionCall = nullptr;
+ReactionWrapper g_ReactionWrapper = nullptr; // (kept across starts: a wrapper with nothing to do passes hits on)
+
+// true: the hit dealt with (the game's own way out when a hit is not taken: no damage, no reaction)
+bool __fastcall ReactionCallHook(uint8_t* character, void*, void* bump, void* collision, void* sequence)
+{
+    if (!g_ScriptActors.empty() && IsScriptActor(character))
+        return true;
+    if (g_ReactionWrapper)
+        return g_ReactionWrapper(character, bump, collision, sequence, g_OriginalReactionCall);
+    return g_OriginalReactionCall(character, nullptr, bump, collision, sequence);
+}
+
+void HookReactions(ReactionWrapper wrapper)
+{
+    if (wrapper)
+        g_ReactionWrapper = wrapper;
+    if (*reinterpret_cast<const uint8_t*>(uintptr_t(kReactionCall)) == 0xE9) // this start's image has the jump
+        return;
+    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kReactionCall)), kReactionCallBytes, sizeof kReactionCallBytes) != 0) {
+        LOG_WARN("Characters: unexpected code at the hit reaction; hits are not filtered");
+        return;
+    }
+    // the stub lives in the port's memory and survives reboots; the jump goes into every new image
+    static uint8_t* stub = [] {
+        uint8_t* s = AllocStub(sizeof kReactionCallBytes + 5);
+        std::memcpy(s, kReactionCallBytes, sizeof kReactionCallBytes);
+        s[sizeof kReactionCallBytes] = 0xE9;
+        const int32_t rel = int32_t(kReactionCall + sizeof kReactionCallBytes) -
+            int32_t(uintptr_t(s) + sizeof kReactionCallBytes + 5);
+        std::memcpy(s + sizeof kReactionCallBytes + 1, &rel, 4);
+        return s;
+    }();
+    g_OriginalReactionCall = reinterpret_cast<ReactionCallFn>(stub);
+    PatchJump(kReactionCall, reinterpret_cast<const void*>(&ReactionCallHook));
 }
 
 // Neutral spawns and the health they had: one that loses health was attacked, and riots.
@@ -905,10 +1092,57 @@ struct NeutralSpawn {
 };
 std::vector<NeutralSpawn> g_Neutrals;
 
+// The characters whose first tick (their activation) was skipped, waiting for their setup (TickWaits): given it once
+// the setup made their script implement (their tick, vtable slot 0xB4, through the hooks above: the activation goes on).
+namespace {
+// Its tick once its setup made the implement; 0 while not; -1 when it is gone (or not a character the hooks know).
+intptr_t ReadyTick(const uint8_t* c)
+{
+    __try {
+        if (!*reinterpret_cast<const volatile uint32_t*>(c + kCharacterScript))
+            return 0;
+        const uintptr_t tick = (*reinterpret_cast<const uintptr_t* const*>(c))[kTickSlot / 4];
+        return tick == kCharacterTick || tick == kSaberTick ? intptr_t(tick) : -1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+} // namespace
+
+void CharactersFrame()
+{
+    std::vector<const uint8_t*> waiting;
+    AcquireSRWLockExclusive(&g_WaitingSetupLock);
+    waiting.assign(g_WaitingSetup.begin(), g_WaitingSetup.end());
+    ReleaseSRWLockExclusive(&g_WaitingSetupLock);
+    for (const uint8_t* c : waiting) {
+        const intptr_t tick = ReadyTick(c);
+        if (tick == 0)
+            continue;
+        AcquireSRWLockExclusive(&g_WaitingSetupLock);
+        g_WaitingSetup.erase(c);
+        ReleaseSRWLockExclusive(&g_WaitingSetupLock);
+        if (tick < 0)
+            continue;
+        LOG_INFO("Characters: %p set up, its first tick given again", c);
+        reinterpret_cast<void(__fastcall*)(const uint8_t*, void*)>(tick)(c, nullptr); // through the hooks: activated
+    }
+}
+
 void InstallCharacters()
 {
     g_Neutrals.clear();
     g_HelperMasters.clear();
+    g_ScriptActors.clear();
+    g_WaitingSetup.clear();
+    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kCharacterTick)), kCharacterTickBytes,
+            sizeof(kCharacterTickBytes)) == 0 &&
+        std::memcmp(reinterpret_cast<const void*>(uintptr_t(kSaberTick)), kSaberTickBytes, sizeof(kSaberTickBytes)) == 0) {
+        PatchJump(kCharacterTick, reinterpret_cast<const void*>(&CharacterTickStub));
+        PatchJump(kSaberTick, reinterpret_cast<const void*>(&SaberTickStub));
+    } else {
+        LOG_WARN("Characters: unexpected code at the character ticks; activations unguarded");
+    }
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kIsEnemy)), kIsEnemyPrologue, sizeof(kIsEnemyPrologue)) == 0) {
         uint8_t* stub = AllocStub(16);
         std::memcpy(stub, kIsEnemyPrologue, sizeof(kIsEnemyPrologue));
@@ -917,6 +1151,11 @@ void InstallCharacters()
         std::memcpy(stub + 9, &back, 4);
         g_OriginalIsEnemy = reinterpret_cast<IsEnemyFn>(stub);
         PatchJump(kIsEnemy, reinterpret_cast<const void*>(&IsEnemyHook));
+        const uint8_t* call = reinterpret_cast<const uint8_t*>(uintptr_t(kProvokeCall));
+        if (call[0] == 0xE8 && kProvokeCall + 5 + *reinterpret_cast<const int32_t*>(call + 1) == kProvoke)
+            PatchCall(kProvokeCall, reinterpret_cast<const void*>(&ProvokeHook), 5);
+        else
+            LOG_WARN("Characters: unexpected code at the reaction's provoke call; a struck ally may turn on the player");
     } else {
         LOG_WARN("Characters: unexpected code at the enemy check; neutral and riot sides unavailable");
     }
@@ -2216,6 +2455,39 @@ bool ParseSaberColor(const std::string& spec, float* rgb)
     rgb[1] = g / 255.0f;
     rgb[2] = b / 255.0f;
     return true;
+}
+
+// Another character's saber colour (a mission's): its colour override (+0xF20) points at a colour kept here for the
+// boot, and its sabers take it now.
+std::list<std::pair<const uint8_t*, std::array<float, 3>>> g_OtherSaberColors;
+
+bool SetCharacterSaberColor(uint8_t* character, const float* rgb)
+{
+    if (!character || !rgb || !HasSaberColor(character))
+        return false;
+    auto kept = std::find_if(g_OtherSaberColors.begin(), g_OtherSaberColors.end(),
+        [&](const auto& c) { return c.first == character; });
+    if (kept == g_OtherSaberColors.end())
+        kept = g_OtherSaberColors.insert(g_OtherSaberColors.end(), { character, {} });
+    std::copy(rgb, rgb + 3, kept->second.begin());
+    *reinterpret_cast<const float**>(character + kCharacterSaberColor) = kept->second.data();
+    for (int i = 0; i < kWeaponSlots; ++i) {
+        uint8_t* weapon = *reinterpret_cast<uint8_t**>(character + kCharacterWeapons + i * 0x20);
+        if (!weapon)
+            continue;
+        const uint32_t vtable = *reinterpret_cast<uint32_t*>(weapon);
+        if (std::find(std::begin(kSaberVtables), std::end(kSaberVtables), vtable) == std::end(kSaberVtables))
+            continue;
+        reinterpret_cast<void(__fastcall*)(uint8_t*, void*, const float*)>(
+            reinterpret_cast<void* const*>(uintptr_t(vtable))[kSaberSetColor / 4])(weapon, nullptr, kept->second.data());
+    }
+    return true;
+}
+
+void ForgetCharacterSaberColors()
+{
+    // (only once the characters they belong to are gone: a level start)
+    g_OtherSaberColors.clear();
 }
 
 bool PlayerSaberColor(float* rgb)

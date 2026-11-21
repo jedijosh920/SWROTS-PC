@@ -23,9 +23,11 @@
 #include "game/devmap.h"
 #include "game/freecam.h"
 #include "game/hvv.h"
+#include "game/missions.h"
 #include "game/hvvmenu.h"
 #include "debug/gamefont.h"
 #include "debug/hvvhud.h"
+#include "debug/missionhud.h"
 #include "game/game.h"
 #include "imgui.h"
 #include "kernel/kernel.h"
@@ -480,6 +482,14 @@ void CharactersTab()
         Submit("restart");
     if (!game::PlayerInLevel())
         ImGui::EndDisabled();
+    if (game::MissionActive()) {
+        ImGui::SameLine();
+        if (ImGui::Button("Next part"))
+            Submit("mission next");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("A mods\\missions mission: skips the cutscene, or ends the fight the script waits on\n"
+                              "(its next part begins). F8 does the same.");
+    }
     ImGui::SameLine();
     bool autoRestart = game::RestartOnChange();
     if (ImGui::Checkbox("Apply at once", &autoRestart))
@@ -588,6 +598,30 @@ void SaberRow()
         ImGui::SetTooltip("Any colour for your saber only, at once (saber). Red, green, blue and purple are\n"
                           "the game's own tuned colours; other characters keep theirs, and power-ups no\n"
                           "longer change yours. Jedi-like characters only.");
+}
+
+// The missions installed in mods\missions (docs/modding/missions.md): each with its name, map and description, started
+// with one press (the console's `mission <id>`).
+void MissionsTab()
+{
+    const std::vector<game::MissionInfo>& missions = game::Missions();
+    if (missions.empty()) {
+        ImGui::TextWrapped("No missions installed. A mission is a folder in mods\\missions next to swrots.exe.");
+        return;
+    }
+    ImGui::TextDisabled("%zu mission(s) in mods\\missions", missions.size());
+    for (const game::MissionInfo& m : missions) {
+        ImGui::PushID(m.id.c_str());
+        ImGui::Separator();
+        if (ImGui::Button("Start"))
+            Submit("mission " + m.id);
+        ImGui::SameLine();
+        ImGui::TextUnformatted(m.name.empty() ? m.id.c_str() : m.name.c_str());
+        if (!m.description.empty())
+            ImGui::TextWrapped("%s", m.description.c_str());
+        ImGui::TextDisabled("%s%s%s", m.id.c_str(), m.map.empty() ? "" : "  -  map ", m.map.c_str());
+        ImGui::PopID();
+    }
 }
 
 void GameTab()
@@ -818,6 +852,10 @@ void BuildMenu()
                 GameTab();
                 ImGui::EndTabItem();
             }
+            if (ImGui::BeginTabItem("Missions")) {
+                MissionsTab();
+                ImGui::EndTabItem();
+            }
             if (ImGui::BeginTabItem("Heroes vs Villains")) {
                 HvvTab();
                 ImGui::EndTabItem();
@@ -898,6 +936,12 @@ bool MenuWindowMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, LRESUL
     }
     if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)
         g_SwallowChar = false;
+    if (msg == WM_KEYDOWN && wParam == VK_F8 && game::MissionActive()) { // a mission's next part, for testing it
+        if (!(lParam & (1 << 30)))
+            QueueConsoleCommand("mission next");
+        *result = 0;
+        return true;
+    }
     if (!g_Open)
         return false;
     if (msg == WM_SETCURSOR && LOWORD(lParam) == HTCLIENT) {
@@ -1057,7 +1101,8 @@ void HvvTab()
 
 bool OverlayShown()
 {
-    return g_Ready && (game::HvvActive() || !game::CodyHelpers().empty()); // HvV's screen, Cody's clones' marks
+    // HvV's screen, Cody's clones' marks, a mission's screen
+    return g_Ready && (game::HvvActive() || !game::CodyHelpers().empty() || game::MissionActive());
 }
 
 void RenderMenu()
@@ -1092,6 +1137,7 @@ void RenderMenu()
     }
     ImGui::NewFrame();
     DrawHvvHud();
+    DrawMissionHud();
     if (g_Open)
         BuildMenu();
     ImGui::Render();
@@ -1102,12 +1148,15 @@ void MenuAfterFrame()
 {
     RunQueuedConsoleCommands();
     game::GameTimeFrame();
+    game::CharactersFrame();
     game::CustomCharactersFrame();
     game::PlayerFrame();
     game::CoopFrame();
     game::CodyFrame();
     game::RevanFrame();
     game::HvvFrame();
+    game::MissionFrame();
+    game::DevMapFrame();
 }
 
 } // namespace swrots::debug

@@ -40,10 +40,13 @@ the human characters are 73-75 units tall):
 ```ini
 [Map]
 Name=Mos Eisley Cantina          ; as shown
+Modes=Versus HvV Battlefront     ; the modes that offer it (optional; all of them when left out)
 Music=mus_m13_templebattle01_lp  ; its music (optional): a music slot of the game, the track beside map.ini
 Model=maps\cantina\cantina       ; its model under meshes\, without .msh
 Vertices=10234                   ; the model's vertex count (all its parts)
+Sky=maps\cantina\cantina_sky     ; its sky's model (optional), about the sky's origin (see below)
 Floor=0                          ; the height (y) of its floor: it stands there on the dev map's floor
+KillHeight=-200                  ; a fighter below this height (y) dies, as in a fall into the void (optional)
 HeroesLine=0 -350                ; Heroes vs Villains: the middle of the heroes' line (x z)
 VillainsLine=0 350               ; and of the villains'; the lines run across the line between them
 LineGap=150                      ; between fighters in a line
@@ -53,14 +56,29 @@ Bounds=-900 -900 900 900         ; x0 z0 x1 z1: where fighters may come back
 [Collision]
 Box1=0 100 450 600 100 20 0      ; a box: its centre (x y z), half its size (x y z), its turn (degrees, about y)
 Box2=...                         ; numbered from 1, without gaps
+Brushes=cantina_brushes.bin      ; its own collision (optional): convex volumes, see below
 
 [Lighting]                       ; all optional; a colour is one number (grey) or three (red green blue)
 Ambient=0.10 0.09 0.08           ; the model's ambient light (the floor's is 0.8)
 Baked=cantina_light.bin          ; its baked light: a colour a vertex (u32 0xAARRGGBB, the model's vertex order)
 BakedScale=0.5                   ; the baked light dimmed (below 1) or brightened
 CharacterAmbient=0.26 0.23 0.20  ; the characters' ambient light (the dev map's is 0.55)
-Lights=0.6                       ; the level's point lights' intensity, scaled
+Lights=0.6                       ; the point lights' intensity, scaled
+PlayerAmbient=0.3                ; the player's ambient light (left out: CharacterAmbient's)
+FarClip=8000                     ; how far the camera sees (the dev map's is 5000): a long map's far end
+
+[PointLights]                    ; optional: lights of its own (they light the characters), in place of the level's
+Light1=0 120 300 600 1 0.9 0.8 1.5 ; x y z range red green blue intensity (y from its floor)
+Light2=...                       ; numbered from 1, without gaps
 ```
+
+The notes after `;` above explain each key. In a real map.ini, put a comment on a line of its own: text after a
+value is read as part of it.
+
+`Modes=` keeps a map to some modes: `Versus` (its row on the Select Arena screen), `HvV` (Heroes vs Villains' Map
+row) and `Battlefront` (its setup screen, for a map with command posts), separated by spaces or commas. A duel arena
+says `Modes=Versus`, a large map `Modes=HvV Battlefront`. The console's `devmap`, `hvv map` and `versus ... map` take
+any map.
 
 The map is turned and moved so that the middle between its two lines is the dev map's middle and the heroes face the
 villains along +z: the intro's camera, the line-up and the end are then the same as on the floor.
@@ -71,7 +89,7 @@ A map with command posts can host [Battlefront](../battlefront.md) (it is then o
 
 ```ini
 [Battlefront]
-CommandPosts=0 0; 300 250; -280 -160; 560 -480   ; the posts (x z, separated by ";"), named A, B, C... in this order
+CommandPosts=0 0; 300 250 140; -280 -160; 560 -480   ; the posts (x z, separated by ";"), named A, B, C... in this order
 CloneStart=700 245                               ; where the clones start (x z)
 DroidStart=-720 -120                             ; and the droids
 ```
@@ -79,12 +97,54 @@ DroidStart=-720 -120                             ; and the droids
 Without the starts, the clones start on the heroes' line and the droids on the villains'. Each side starts with the
 post nearest its start. Keep the posts on open floor, inside `Bounds=`, a few hundred units apart.
 
+A post on a floor of its own (a bridge, a landing pad) gives that floor's height after its x z, in the map's own y
+(as `Floor=`; without it, a post is on `Floor=`): its marker stands there, and only fighters on that floor (within
+180 units of its height) count for it, not those on a street under the bridge. The computer's troopers walk straight
+to a post, so one going for a raised post from a floor more than 100 units below is brought up onto it once within
+700 units, before it walks under that floor into whatever lies below. It is not brought up again within 8 seconds,
+and after three times in a row that did not keep it on that floor (it fell back to a lower one) it walks as the others
+do until it reaches a post: place a raised post where there is room around it, on a floor the game holds fighters on.
+
+## Collision of its own
+
+`Brushes=` names a file beside map.ini: the map's collision as convex volumes (floors, walls, steps, ramps), one
+after the other, each a BSP tree in the level file's format, in the map's own coordinates (the model's). Each
+volume is a tree with one hedron: its vertices, edges and faces (their planes and corner loops), its planes
+(outward normals, n . p = d) and a chain of nodes, two a plane and the solid leaf last. They are placed as the
+model is (turned and moved with it) and added to the level's brushes, each with its brush manager handle. Fighters
+then stand on the map's own floors at any height, and the dev map's floor goes down 1150 units, under the map's
+lower parts (a fall there ends on it).
+
+A converter writes these files from Jedi Knight II maps: the JK2 solid and player-clip brushes, one volume each
+(`convert_map.py` in the community JK2 pack, not in the port). Maps without `Brushes=` keep the dev map's floor where
+it is.
+
+The level's load stops in the game's error handler (in `IStaticManager`, as the static's meshes are set up) when
+the model is too large: a model of 19786 vertices loads, one of 30101 does not, whatever its textures.
+
+## Sky and pits
+
+Without `Sky=` a map of its own has no sky around it. With it, the level's sky backdrop (Utapau's `backdrop`, an
+`IStatic` drawn about the `ISectorSkybox` before the rest, lit by its ambient light alone) draws the map's sky model
+instead, turned as the map is; Utapau's cloud domes and its sky dome go. The model is a static one, as the map's,
+in the sky's own units: Utapau's backdrop is some 600 units across and the converter's sky box is 1000 units wide.
+
+`KillHeight=` kills a character that falls below it (the character's instant kill, as in the game's own falls into
+the void: in Heroes vs Villains the fighter comes back as after any defeat), once a fall: checked every frame, it
+kills a character again only after it has been above the line. In Heroes vs Villains and Battlefront it applies while
+the fight is on (not during the line-up or the intro).
+
 ## Light
 
 Without `[Lighting]` the model is lit by a bright ambient light alone, as the floor. With a baked light the level's
 static entry takes it per vertex (its "ambient lighting only" turned off): a converted map can keep the lighting its
 first game baked. Dim it all to taste: the cantina uses its Battlefront II light at half, a low ambient and dimmer
 characters.
+
+The walls take the baked light; the characters are lit by the level's point lights and ambient light. Without
+`[PointLights]` those are the dev map's own lights, gathered round the middle of the floor: on a large map, characters
+far from them are lit from one side (light them with lamps of their own where the map's lamps are; short ranges, as
+the game's levels use). The player has an ambient light of its own (`PlayerAmbient=`, else the characters').
 
 ## Music
 
@@ -172,6 +232,6 @@ Utapau one, with `devmap:1 versus:1 custommap:<map>`.
 
 ## Not yet
 
-- Collision other than boxes (a model's own shape: ramps, stairs); fighters stand on the dev map's floor.
+- The camera's line of sight (Versus) and the AI's moves (Heroes vs Villains) know the boxes only, not `Brushes=`.
 - Paths for the AI (a map's own navigation).
-- The map's own point lights and sky (its light so far: baked, ambient, and the level's lights scaled).
+- The map's own point lights (its light so far: baked, ambient, and the level's lights scaled).

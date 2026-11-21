@@ -25,6 +25,20 @@ struct DevMapCharacter {
     float x, z, yaw;
     std::string costume;   // its costume ("Mesh Choice", e.g. "hordeBattleDroid": the battle droid's first has no body)
 };
+// Any other object of the game placed in the level: its class, id, place (y from the floor) and its own properties
+// beside ID, Name and Transform (name, the property's bytes as the level file holds them), e.g. a mission's
+// objective (ITriggerObjective, "ID string").
+struct DevMapObject {
+    std::string className;
+    uint32_t id;
+    float x, y, z, yaw;
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> properties;
+    // A static's model (IStatic and its kinds, e.g. a force field): its static light record (white, per vertex) is
+    // added to the level, its handle given as the object's __lighthandle. The model's path under meshes\ without
+    // extension ("meshes\<folder>\<name>"), its vertex count per part as the model has them.
+    std::string lightMesh;
+    std::vector<uint16_t> lightParts;
+};
 // A box of collision (a box brush): its centre (y from the floor), half extents and turn about the up axis.
 struct DevMapBox {
     float cx, cy, cz, hx, hy, hz, yaw;
@@ -36,15 +50,30 @@ struct DevMapLayout {
     // A map of a mod's own (custommaps.h): its model under meshes\ (folder and name) in the place of the floor's,
     // where it stands on the floor, its vertex count (its baked light), and its collision boxes.
     std::string modelFolder, modelName;
+    std::string skyFolder, skyName; // its sky: the model the level's sky backdrop draws (the other sky parts go)
     uint32_t modelVertices = 0;
     float modelX = 0, modelY = 0, modelZ = 0, modelYaw = 0; // modelY: from the floor
     std::vector<DevMapBox> boxes;
+    // Its own brushes: BSP trees in the level file's format (convex volumes, their planes), in the model's
+    // coordinates, placed as the model is. With them the floor goes down under the map's lower parts.
+    std::vector<uint8_t> brushes;
     // Its light: the model's ambient (negative: the floor's), its baked light (one colour a vertex, 0xAARRGGBB; with
     // none, white), the characters' ambient (negative: the dev map's) and the point lights' intensity scale.
     float modelAmbient[3] = { -1, -1, -1 };
     std::vector<uint32_t> bakedLight;
     float characterAmbient[3] = { -1, -1, -1 };
     float lightScale = 1.0f;
+    // The player's own ambient (the level's "Player-only additional ambient": the player is lit by it and the point
+    // lights, not by the characters' ambient); negative: the level's.
+    float playerAmbient[3] = { -1, -1, -1 };
+    // Point lights of its own (world x, z; y from the floor) in the place of the level's (the cave's, moved to the
+    // middle); none: those.
+    struct Light {
+        float x, y, z, range, colour[3], intensity;
+    };
+    std::vector<Light> lights;
+    // How far the camera sees (the level's "Far Clip"); 0: the level's.
+    float farClip = 0;
     // Its music: a track of the game's sound table (e.g. "mus_m13_templebattle01_lp"), played from the start (one of
     // the level's music objects kept and pointed at it); empty: none.
     std::string music;
@@ -55,10 +84,12 @@ struct DevMapLayout {
     // The Versus arena's own level file: its duel camera (ICameraControl 'Rail Tracking', its helpers and trigger
     // bound) is taken from it, moved from the arena's fighters onto the duel's.
     std::vector<uint8_t> duelArena;
-    // Places the AI can be sent to (x, z on the floor): the level's own goto marker (ICharacterGoto) copied there,
+    // Places the AI can be sent to (x, z on the floor, or `markerLifts` above it): the level's own goto marker (ICharacterGoto) copied there,
     // one each, with ids from kDevMapFirstMarkerId on; arrived within `markerReach`.
     std::vector<std::pair<float, float>> markers;
+    std::vector<float> markerLifts; // each marker's height above the floor (none: on it)
     float markerReach = 175.0f;
+    std::vector<DevMapObject> objects;
 };
 // The ids of the objects the dev map adds for a duel.
 constexpr uint32_t kDevMapDuelId = 0x00300100;
@@ -66,6 +97,7 @@ constexpr uint32_t kDevMapDuelId = 0x00300100;
 constexpr uint32_t kDevMapFirstId = 0x00300001;
 constexpr uint32_t kDevMapFirstBoxId = 0x00380001; // the collision boxes' brush handles
 constexpr uint32_t kDevMapFirstMarkerId = 0x00390001; // the layout's goto markers
+constexpr uint32_t kDevMapFirstLightHandle = 0x0000F000; // the layout's statics' light records
 // The floor's middle and its height (the characters stand there).
 constexpr float kDevMapMiddleX = 12750.0f, kDevMapMiddleZ = 8100.0f, kDevMapFloorY = -2557.5f;
 

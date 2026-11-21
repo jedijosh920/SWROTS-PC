@@ -16,6 +16,8 @@ void InstallDevMap(const std::wstring& gameData, const std::wstring& mods);
 
 // True when this start of the game loads the dev map in place of Grievous Survival.
 bool DevMapActive();
+// Once a frame on the game thread: a custom map's falls (KillHeight=).
+void DevMapFrame();
 
 // The map of a mod's own this start's dev map is (launch argument `custommap:<id>`, custommaps.h), or null.
 struct CustomMap;
@@ -25,7 +27,8 @@ const CustomMap* DevMapCustomMap();
 bool BootArgument(const char* name, std::string& value);
 // Whether this start is a Versus duel (one of the game's duel arenas, or the dev map's duel).
 bool BootIsVersusDuel();
-// Whether this start is a match (a Versus duel or Heroes vs Villains): co-op is no part of it.
+// Whether this start is a match (a Versus duel, Heroes vs Villains or a mission of a mod's own): co-op is no part of
+// it, and duelists have their Versus moves (intros).
 bool BootIsMatch();
 
 // What a mode puts on this start's dev map (before the level loads).

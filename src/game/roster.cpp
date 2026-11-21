@@ -88,8 +88,10 @@ bool HasPicture(const ExtraFighter& extra, int kind)
 constexpr int kFighterCount = 9;
 constexpr int kRandomSlot = 9;
 constexpr int kFirstExtraSlot = 10;
-// Custom characters (customchars.h) with their select pictures join the extras, up to this many in all.
-constexpr int kMaxExtras = 8;
+// Custom characters (customchars.h) with their select pictures join the extras, up to this many in all (Yoda, the
+// packs' characters, Commander Cody and the Droid Commander). The bound is player 2's full-body offset, a signed 8-bit
+// displacement (see InstallRoster): (kFirstExtraSlot + kMaxExtras + 1) * 4 <= 0x7F.
+constexpr int kMaxExtras = 20;
 
 // This start's extras: Yoda, then the custom characters; their texts (owned here: the strings live for the session).
 std::vector<ExtraFighter> g_Extras;
@@ -275,7 +277,7 @@ void PatchArenaScreen(std::vector<uint8_t>& data)
     WriteSet(data, bodiesAt, bodiesEnd, WithExtraBodies(bodies, true));
     // the custom maps' entries (hvvmenu.cpp) take places after the game's own in both arena picture sets: copies of
     // a game arena's pictures, drawn with the map's own (DrawRecordWith)
-    const size_t maps = CustomMaps().size();
+    const size_t maps = CustomMapsFor(MapMode::Versus).size();
     if (!maps)
         return;
     if (!ReadSet(data, "LargeArenaTextSet", large, largeAt, largeEnd) || large.size() != 16 ||
@@ -880,6 +882,8 @@ void __fastcall TextureItemDrawHook(uint8_t* item, void*, void* context)
     for (auto& [own, picture] : g_RecordPictures) {
         if (own != record || !record)
             continue;
+        if (picture.file.empty())
+            return; // hidden (DrawRecordWith with no file)
         if (!picture.tried) {
             picture.tried = true;
             picture.texture = LoadPictureFile(picture.file.c_str());
@@ -1013,6 +1017,17 @@ float* ItemOffset(uint8_t* screen, uint32_t field)
 }
 
 } // namespace
+
+bool BothPlayersChose(const char* className)
+{
+    auto* launch = *reinterpret_cast<uint8_t**>(uintptr_t(kLaunchSettings));
+    for (int player = 0; launch && className && player < 2; ++player) {
+        const char* chosen = *reinterpret_cast<const char**>(launch + 4 + player * 4);
+        if (!chosen || _stricmp(chosen, className) != 0)
+            return false;
+    }
+    return launch != nullptr && className != nullptr;
+}
 
 bool DrawSelectStrip(uint8_t* screen, uint32_t context)
 {
@@ -1224,6 +1239,31 @@ void InstallRoster()
     PatchDisplacement(kSaberSites[1], &g_SaberColours[1]);
     PatchDisplacement(kSaberSites[2], &g_SaberColours[0]);
     PatchDisplacement(kSaberSites[3], &g_SaberColours[0]);
+}
+
+bool AddMissionPictures(std::vector<uint8_t>& data, const std::vector<std::string>& heads)
+{
+    struct Extension {
+        const char* set;
+        size_t count;  // the game's
+        size_t model;  // the picture copied
+    };
+    // each set read again before it is written (rewriting a set moves what follows it)
+    const Extension kSets[] = { { "PlanetSet", 5, 0 }, { "HeadSet", 6, 0 }, { "LargeArenaTextSet", 6, 1 },
+        { "SmallArenaTextSet", 5, 0 } };
+    for (const Extension& extension : kSets) {
+        std::vector<Picture> pictures;
+        size_t at, end;
+        if (!ReadSet(data, extension.set, pictures, at, end) || pictures.size() != extension.count) {
+            LOG_WARN("Roster: the bonus mission screen's %s is not as expected", extension.set);
+            return false;
+        }
+        const Picture model = pictures[extension.model];
+        for (const std::string& head : heads)
+            pictures.push_back(std::strcmp(extension.set, "HeadSet") == 0 && !head.empty() ? Like(model, head) : model);
+        WriteSet(data, at, end, pictures);
+    }
+    return true;
 }
 
 } // namespace swrots::game

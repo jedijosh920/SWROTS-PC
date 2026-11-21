@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sstream>
 
 #include "core/log.h"
 
@@ -87,6 +88,23 @@ bool ReadMap(const std::wstring& file, const std::string& id, CustomMap& m)
         m.name = id;
     for (char& c : m.name)
         c = char(toupper(static_cast<unsigned char>(c)));
+    // Modes=Versus HvV Battlefront (any of them, separated by spaces or commas): the modes that offer the map
+    if (std::string modes = Profile(file, L"Map", L"Modes"); !modes.empty()) {
+        for (char& c : modes)
+            c = char(c == ',' || c == ';' ? ' ' : tolower(static_cast<unsigned char>(c)));
+        m.versus = m.hvv = m.battlefront = false;
+        std::istringstream words(modes);
+        for (std::string word; words >> word;) {
+            if (word == "versus" || word == "duel")
+                m.versus = true;
+            else if (word == "hvv" || word == "heroesvsvillains")
+                m.hvv = true;
+            else if (word == "battlefront" || word == "bf")
+                m.battlefront = true;
+            else
+                LOG_WARN("Custom maps: %s: unknown mode %s in Modes (Versus, HvV, Battlefront)", id.c_str(), word.c_str());
+        }
+    }
     // Model=maps\cantina\cantina: its folder (with the last backslash) and its name
     const std::string model = Profile(file, L"Map", L"Model");
     const size_t slash = model.find_last_of('\\');
@@ -97,6 +115,16 @@ bool ReadMap(const std::wstring& file, const std::string& id, CustomMap& m)
     }
     m.modelFolder = model.substr(0, slash + 1);
     m.modelName = model.substr(slash + 1);
+    // Sky=maps\cantina\cantina_sky: a model about the sky's origin (the level's backdrop is some 600 units across)
+    const std::string sky = Profile(file, L"Map", L"Sky");
+    if (const size_t skySlash = sky.find_last_of('\\'); skySlash != std::string::npos && skySlash + 1 < sky.size()) {
+        m.skyFolder = sky.substr(0, skySlash + 1);
+        m.skyName = sky.substr(skySlash + 1);
+    }
+    if (const std::string kill = Profile(file, L"Map", L"KillHeight"); !kill.empty()) {
+        m.hasKillHeight = true;
+        m.killHeight = std::strtof(kill.c_str(), nullptr);
+    }
     m.vertices = uint32_t(std::strtoul(Profile(file, L"Map", L"Vertices").c_str(), nullptr, 10));
     if (!m.vertices) {
         LOG_WARN("Custom maps: %s needs Vertices (its model's vertex count)", id.c_str());
@@ -125,9 +153,16 @@ bool ReadMap(const std::wstring& file, const std::string& id, CustomMap& m)
     v = Numbers(Profile(file, L"Map", L"Spawns"));
     for (size_t i = 0; i + 1 < v.size(); i += 2)
         m.spawns.push_back({ v[i], v[i + 1] });
-    v = Numbers(Profile(file, L"Battlefront", L"CommandPosts"));
-    for (size_t i = 0; i + 1 < v.size(); i += 2)
-        m.commandPosts.push_back({ v[i], v[i + 1] });
+    // CommandPosts=x z; x z height; ...: a post on a floor of its own (a bridge, a pad) gives that floor's height
+    {
+        std::stringstream posts(Profile(file, L"Battlefront", L"CommandPosts"));
+        std::string one;
+        while (std::getline(posts, one, ';')) {
+            v = Numbers(one);
+            if (v.size() >= 2)
+                m.commandPosts.push_back({ v[0], v[1], v.size() >= 3 ? v[2] : m.floor });
+        }
+    }
     {
         const std::vector<float> clones = Numbers(Profile(file, L"Battlefront", L"CloneStart"));
         const std::vector<float> droids = Numbers(Profile(file, L"Battlefront", L"DroidStart"));
@@ -154,6 +189,13 @@ bool ReadMap(const std::wstring& file, const std::string& id, CustomMap& m)
             break;
         m.boxes.push_back({ v[0], v[1], v[2], v[3], v[4], v[5], v.size() > 6 ? v[6] * kPi / 180 : 0.0f });
     }
+    // Brushes=<file in the map's folder>: its collision as convex volumes (BSP trees in the level file's format)
+    const std::string brushes = Profile(file, L"Collision", L"Brushes");
+    if (!brushes.empty()) {
+        const std::wstring path = file.substr(0, file.find_last_of(L'\\') + 1) + std::wstring(brushes.begin(), brushes.end());
+        if (!ReadAll(path, m.brushes))
+            LOG_WARN("Custom maps: %s's brushes %s are missing", id.c_str(), brushes.c_str());
+    }
     // its light: one number (grey) or three (red, green, blue) each
     auto colour = [&](const wchar_t* key, float (&out)[3]) {
         const std::vector<float> c = Numbers(Profile(file, L"Lighting", key));
@@ -164,6 +206,22 @@ bool ReadMap(const std::wstring& file, const std::string& id, CustomMap& m)
     };
     colour(L"Ambient", m.ambient);
     colour(L"CharacterAmbient", m.characterAmbient);
+    // the player is lit by an ambient of its own (the level's "Player-only additional ambient"): the characters'
+    // unless PlayerAmbient= says otherwise
+    std::copy(std::begin(m.characterAmbient), std::end(m.characterAmbient), m.playerAmbient);
+    colour(L"PlayerAmbient", m.playerAmbient);
+    v = Numbers(Profile(file, L"Lighting", L"FarClip"));
+    if (!v.empty() && v[0] > 0)
+        m.farClip = v[0];
+    // its own point lights ([PointLights] LightN=x y z range r g b intensity, y from its floor): they light the
+    // characters (the walls have the baked light)
+    for (int i = 1;; ++i) {
+        const std::wstring key = L"Light" + std::to_wstring(i);
+        const std::vector<float> l = Numbers(Profile(file, L"PointLights", key.c_str()));
+        if (l.size() < 8)
+            break;
+        m.lights.push_back({ l[0], l[1], l[2], l[3], { l[4], l[5], l[6] }, l[7] });
+    }
     v = Numbers(Profile(file, L"Lighting", L"Lights"));
     if (!v.empty() && v[0] >= 0)
         m.lightScale = v[0];
@@ -247,14 +305,25 @@ void InstallCustomMaps(const std::wstring& mods)
         CustomMap m;
         if (!ReadMap(file, Narrow(found.cFileName), m))
             continue;
-        LOG_INFO("Custom maps: %s (%s), model meshes\\%s%s, %zu collision boxes, %zu spawns", m.id.c_str(),
-            m.name.c_str(), m.modelFolder.c_str(), m.modelName.c_str(), m.boxes.size(), m.spawns.size());
+        LOG_INFO("Custom maps: %s (%s), model meshes\\%s%s, %zu collision boxes, %zu bytes of brushes, %zu spawns; "
+            "in%s%s%s", m.id.c_str(), m.name.c_str(), m.modelFolder.c_str(), m.modelName.c_str(), m.boxes.size(),
+            m.brushes.size(), m.spawns.size(), m.versus ? " Versus" : "", m.hvv ? " HvV" : "",
+            m.battlefront ? (m.commandPosts.empty() ? " (Battlefront: no command posts)" : " Battlefront") : "");
         g_Maps.push_back(std::move(m));
     } while (FindNextFileW(find, &found));
     FindClose(find);
 }
 
 const std::vector<CustomMap>& CustomMaps() { return g_Maps; }
+
+std::vector<const CustomMap*> CustomMapsFor(MapMode mode)
+{
+    std::vector<const CustomMap*> maps;
+    for (const CustomMap& m : g_Maps)
+        if (mode == MapMode::Versus ? m.versus : mode == MapMode::HeroesVsVillains ? m.hvv : m.battlefront)
+            maps.push_back(&m);
+    return maps;
+}
 
 const CustomMap* FindCustomMap(const std::string& id)
 {
@@ -326,6 +395,8 @@ void ApplyCustomMap(const CustomMap& map, DevMapLayout& layout)
 {
     layout.modelFolder = map.modelFolder;
     layout.modelName = map.modelName;
+    layout.skyFolder = map.skyFolder;
+    layout.skyName = map.skyName;
     layout.modelVertices = map.vertices;
     CustomMapToWorld(map, 0, 0, layout.modelX, layout.modelZ);
     layout.modelY = -map.floor;
@@ -334,7 +405,19 @@ void ApplyCustomMap(const CustomMap& map, DevMapLayout& layout)
     std::copy(std::begin(map.characterAmbient), std::end(map.characterAmbient), layout.characterAmbient);
     layout.lightScale = map.lightScale;
     layout.bakedLight = map.bakedLight;
-    layout.music = map.music;
+    std::copy(std::begin(map.playerAmbient), std::end(map.playerAmbient), layout.playerAmbient);
+    layout.farClip = map.farClip;
+    layout.lights.clear();
+    for (const DevMapLayout::Light& l : map.lights) {
+        DevMapLayout::Light w = l;
+        CustomMapToWorld(map, l.x, l.z, w.x, w.z);
+        w.y = l.y - map.floor;
+        w.intensity = l.intensity * map.lightScale;
+        layout.lights.push_back(w);
+    }
+    if (layout.music.empty()) // (a mission's own music comes first)
+        layout.music = map.music;
+    layout.brushes = map.brushes;
     layout.boxes.clear();
     for (const DevMapBox& b : map.boxes) {
         DevMapBox w = b;

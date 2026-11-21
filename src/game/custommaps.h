@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -15,16 +16,24 @@ namespace swrots::game {
 struct CustomMap {
     std::string id;            // its folder's name, e.g. "cantina"
     std::string name;          // as shown, e.g. "MOS EISLEY CANTINA"
+    // the modes that offer it (Modes=, all when left out): Versus' Select Arena screen, Heroes vs Villains' map row,
+    // Battlefront's (which also needs its command posts)
+    bool versus = true, hvv = true, battlefront = true;
     std::string modelFolder;   // under meshes\, e.g. "maps\cantina\"
     std::string modelName;     // e.g. "cantina"
     uint32_t vertices = 0;     // the model's vertex count (its baked light has one entry per vertex)
+    std::string skyFolder, skyName; // its sky's model (Sky=), drawn as the level's sky backdrop; empty: none
     float floor = 0;           // the height of the model's floor (its own y)
+    bool hasKillHeight = false;
+    float killHeight = 0;      // a fighter below it (its own y) dies, as in a fall into the void (KillHeight=)
     float heroes[2] = {}, villains[2] = {}; // the lines' middles (x, z)
     float lineGap = 150;
     std::vector<DevMapBox> boxes;           // in the map's own coordinates (cy from its y 0), yaw in radians
+    std::vector<uint8_t> brushes;           // its Brushes file: BSP trees in the level's format, its own coordinates
     std::vector<std::pair<float, float>> spawns;
-    // Battlefront ([Battlefront]): its command posts and where each team starts (its own coordinates, x z)
-    std::vector<std::pair<float, float>> commandPosts;
+    // Battlefront ([Battlefront]): its command posts (x z, and the height of the floor they stand on: its own y,
+    // Floor= when not given) and where each team starts (its own coordinates, x z)
+    std::vector<std::array<float, 3>> commandPosts;
     bool hasStarts = false;
     float cloneStart[2] = {}, droidStart[2] = {};
     bool hasBounds = false;
@@ -32,6 +41,9 @@ struct CustomMap {
     // its light ([Lighting]): negative: the dev map's
     float ambient[3] = { -1, -1, -1 }, characterAmbient[3] = { -1, -1, -1 };
     float lightScale = 1.0f;
+    float playerAmbient[3] = { -1, -1, -1 }; // PlayerAmbient=, else CharacterAmbient's
+    float farClip = 0;                       // FarClip=; 0: the dev map's
+    std::vector<DevMapLayout::Light> lights; // [PointLights]: its own coordinates (y from its floor)
     std::vector<uint32_t> bakedLight; // a colour a vertex, from its Baked file
     std::string music;         // its track: a music slot of the game's (e.g. mus_m13_templebattle01_lp), empty: none
     std::wstring musicFile;    // the track's file (<map folder>\<slot>.hwx)
@@ -48,6 +60,9 @@ struct CustomMap {
 void InstallCustomMaps(const std::wstring& mods);
 
 const std::vector<CustomMap>& CustomMaps();
+// The maps a mode offers (Modes=), in CustomMaps' order.
+enum class MapMode { Versus, HeroesVsVillains, Battlefront };
+std::vector<const CustomMap*> CustomMapsFor(MapMode mode);
 // A map by its id (case-insensitive), or null.
 const CustomMap* FindCustomMap(const std::string& id);
 

@@ -2,12 +2,16 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace swrots::game {
 
 // The versus roster beyond the game's nine fighters: extra select-screen slots (from 10; 9 is the
 // game's Random) for characters on the disc that were never versus fighters. At every boot.
 void InstallRoster();
+
+// Versus: both players chose this class (a mirror duel).
+bool BothPlayersChose(const char* className);
 
 // Copies the game's nine fighter classes (kDuelistClasses) into the roster's table, which the duel
 // reads by slot; after every change to the game's table (the duelist command).
@@ -26,6 +30,14 @@ bool DrawSelectStrip(uint8_t* screen, uint32_t context);
 
 // A menu picture record (an entry of a screen's picture set, e.g. the arena screen's) drawn with a picture loaded
 // from its file instead (its path without .stx; loaded the first time it is drawn), for this start of the game.
+// An empty `file`: the record is not drawn at all.
 void DrawRecordWith(uint8_t* record, const std::string& file);
+
+// The bonus mission select screen's picture sets (select_bonus.xbl_xml, as `data`) with one more place each for every
+// entry of `heads` (the Custom Missions screen's missions, missionsmenu.cpp): SmallArenaTextSet from 5 (copies of its
+// first), LargeArenaTextSet from 6 (of its second), HeadSet from 6 (each named as the entry: a front-end picture the
+// shell has, e.g. s_selduel_macehead; empty: a copy of its first), PlanetSet from 5. False when the sets are not
+// as expected.
+bool AddMissionPictures(std::vector<uint8_t>& data, const std::vector<std::string>& heads);
 
 } // namespace swrots::game

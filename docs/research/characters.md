@@ -377,6 +377,80 @@ If a game thread does not stop within 4 seconds (a game stuck in its error handl
 back to starting the game process again; the character choice is handed to the new process as
 `SWROTS_PLAYER` (`kernel::SetBeforeRelaunch`), which it reads at its start.
 
+## Animation playback
+
+What a character plays is its `TCharState` (`[char+0x434]`, vtable 0x58EFB8; Indiana Jones' `TCharState_Game`):
+
+- `+0x30` the current sequence (record: `+0x8` speed, `+0xC` name, `+0x10` animation, `+0x1C` its function, `+0x28` end
+  code, `+0x50` next sequence or -1); `+0x50` the sequence's speed (the class scripts' SetAnimSpeed writes it), `+0x54`
+  the play's speed (0 freezes the pose: a sequence ends only *past* its last frame); `+0x78` transitions done, `+0xCC`
+  / `+0xD0` transitions waiting; `[+0xB8]` the range state: `+8` / `+0xA` first / last frame (int16), `+0x14` the
+  current frame (float, the animation's own frame number), `+0x24` rate.
+- Each tick of the character (TickScript, vtable +0x24, 0x49CD90) advances the frame by `+0x50 * +0x54 * rate`: 60
+  frames a second at speed 1 (seen in game). Past the last frame, in that same call: the linked next sequence, else the
+  sequence function with its end code (the class moves on, e.g. 0x38A140(instance, class object, -1, -1)), else it
+  loops from its first frame.
+- PlaySequence 0x150E30 is `thiscall(char, sequence, float blend seconds, int start frame, bool, float speed)`. Played
+  from outside the character's tick it is queued and starts at its next tick; the class sometimes queues its idle
+  right after (seen about every other play), which puts it away again.
+- Back to the class's own (its idle) from the port: set the script context for the character (`TCharState` vfunc +0xC
+  sets `[0x6943CC]`, `[0x69652C]`, `[0x6964C0]`, `[0x696528]`; save and restore them), then 0x38A140(`[0x6964C0]`,
+  `[0x69652C]`, -1, -1).
+
+The port's missions (`missions.cpp`, `play_anim`) hook TickScript to loop a range, hold a frame and put a play back.
+
+## Hits, targets and the dead
+
+- Every hit on a character goes through Reaction_Call 0x159E20 (`thiscall(char, bump, collision, sequence)` -> bool;
+  the classes' wrapper 0x26A960 calls it); returning true without calling it is the game's own "no hit taken" (no
+  damage, no reaction, no block). Its real handler Reaction_Handle starts at 0x158930 (vtable +0x300). The port has
+  one hook there (`characters.h` HookReactions): script actors take none; Cody's rolls dodge in it.
+- Targets: the AI's target check (0x19FFC0) skips the dead (`+0x12C`), characters whose AI is off, "Ignored By AI"
+  (`[+0xA00]+0x52`) and hidden ones; the player's lock-on, Force powers and grapples ask the candidate's brain
+  IsEnemy (0x18F3F0). IsEnemy false for a script actor (in the port's IsEnemy hook) keeps everyone off it.
+- Death: `+0x118` dying, `+0x12C` dead. An NPC's death (0xA3000) fades it out after `+0x5DC` seconds and removes it
+  (0xB5840), unless "Cinematic Death?" (`+0x5D4`) is set, which keeps the body. A mission's body that must never get
+  up is a script actor holding a death animation's last frame instead (no hit reaches it).
+- Bumping: HandleCharacterBumping (0x16AED0, from the character's tick) pushes the two characters of each contact
+  apart; a character with the byte `+0x7F4` ("character push", Phys_EnableCharacterPush; 1 from its constructor, the
+  script function 0x17A020(bool) sets it, e.g. off during ForceAction_2HandPush) at 0 takes no part: others pass
+  through it and it is never shoved. Missions: `pushable(c, false)`.
+- Provoking: the reaction to a hit (0x1593F8) calls 0x18FA00 (thiscall on the struck character's AI controller,
+  (attacker)), which acts only when the attacker is the player: a character that can be provoked (`[+0x9FC]+0x2A6`)
+  turns on the player, and the player's teams (`[+0xA00]+0x214`) become every team but the struck one's (0x18FA8C), so
+  the game's lock-on (which reads teams) takes it for an enemy. For a neutral of the level that is the game's way; an
+  ally the port put on the player's side (its team bit 0x8000) caught by the player's swing turned on the player
+  that way, and both then swung at each other without a hit (IsEnemy still said allies). The port skips the call for
+  such an ally (`characters.cpp` ProvokeHook).
+
+## Paired kills
+
+The kill moves are pairs: the attacker's half (`..._GB`, the grabber) and the victim's (`..._GR`, the grabbed), both
+from the moment of contact (the approach is a separate "attempt" animation). The reaction tables (`r_<class>.csv`,
+columns Reaction / AttackerReaction / Sound) start both halves when an attempt connects on a victim at critical
+health; e.g. Anakin's lunge: `Anakin_Kill_Lunge_Human_GB` (0x318B60, animation `anakin_atk_kill_lunge_humangb`) and
+the human's `Kill_Lunge_GR` (0x3D34C0, `anakin_atk_kill_lunge_humangr`).
+
+- The attacker's sequence, at its start: 0x2BC210(1, 0, 0) (its weapon), Grapple_Grab 0x172E00(x, y, z) (the
+  partner: the script's target, else `[+0x3D8]`, else `[attacker+0x5B0]` (an instance id), else in a cutscene the
+  nearest; ids stored both ways, victim `+0x5AC` / attacker `+0x5B0`; the victim's physics commit `+0x4E4` becomes a
+  TCommit_GrappleDefend (vtable 0x58EB38) that holds its root to the attacker's at that offset: the lunge's is
+  (0, 0, 0), the pair's animations made around one origin), slow motion 0x176BF0(0.5, 0, 9999, 0) (the scripts'
+  slow motion: it skips while the script effects are off, byte 0x6943D0, else 0xA20E0 sets the time manager's ramp;
+  the letterbox's tick cancels any slow motion every frame while its bars are up, 0x12E0B7 calling 0xA2110, so the
+  game's cinematics run at normal speed; missions call 0xA20E0 and keep their own through the bars). Frame code 6:
+  0x401F40 (IDS_FX_LIGHTSABER_Body_Impale at the saber's ATT_saber_middle); 20: slow motion off. At its end: release
+  0x172E20, 0x2BC1B0(0, 0). 0x174B40(name, 0, 0, 0, 0) plays a sequence on the grapple partner by name.
+- The victim's `Kill_Lunge_GR`: at its start IDS_FX_LIGHTSABER_IMPACT_HEAVY at its bone root_g and 1000 damage to
+  itself (0x2BB460: nothing to an invincible one); at frame code 49 the release and `Fall_StandingF`
+  (`Anakin_HitRe4_VSpin`), then `R_OnBack` (`Anakin_KD_B_OnGroundIdle`).
+- A sequence's events (0x1F6310 start, 0x1F6350 left, 0x1F62D0 end, 0x1F6390 frame code, 0x1728C0 = the code) are
+  registered by asking them while the class is set up (the setup object's `+4` set: each ask adds the event to the
+  sequence through 0x1F8A00); an event not asked then never comes.
+
+The port's missions play the pair from an `[Animations]` attacker's sequence (`play_anim` with `partner`): the same
+calls as 0x318B60, which itself cannot run on another class (it keeps its state in Anakin's class object).
+
 ## Open questions
 
 - **Carrying state over in a live change**: the new character starts with its class's health and

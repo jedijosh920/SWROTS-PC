@@ -75,6 +75,10 @@ bool ClassHasBody(const char* className);
 // unknown or cut class).
 // Neutral: attacks no one and no one attacks it, until it is hit: then it riots. Riot: everyone's enemy.
 enum class SpawnSide { Default, Ally, Enemy, Neutral, Riot };
+// Versus: a mirror duel's player 2 in another body (its custom character's Mesh2=), worn as `player <class> mesh`
+// wears one (its own copy of the class's costume list, the body in its costume's record). Called as the duel creates
+// the fighter, before its body loads; returns the costume to use.
+int DressMirrorPlayer2(uint8_t* fighter, int variant, const std::string& mesh);
 bool SpawnCharacter(const char* className, const std::string& costume, const std::string& skin,
     const std::string& mesh, SpawnSide side, std::string& error);
 // The same at a place (a character's transform: rows right, up, forward and position, 4 floats each; null: in
@@ -124,12 +128,26 @@ void SetInfiniteForce(bool on);
 bool InfiniteForce();
 // Once a frame, on the game thread: keeps up what the switches above ask for.
 void PlayerFrame();
+// Gives the characters whose activation waited for their setup their first tick once it is done (each frame).
+void CharactersFrame();
 // Gives the running level's player its maximum health back.
 void RefillPlayerHealth();
 
 // Friendly fire between two characters (co-op's players): their blows hurt each other while they stay allies
 // (no one else changes sides). Nulls end it.
 void SetFriendlyFire(const uint8_t* a, const uint8_t* b);
+
+// Characters a script directs alone (a mission's cutscene actors, its bodies): no hit reaches them (no damage, no
+// reaction, no block) and no one takes them for an enemy (AI targets, lock-on, Force powers, grapples). Every start
+// clears them.
+void SetScriptActor(uint8_t* character, bool actor);
+bool IsScriptActor(const uint8_t* character);
+
+// Every character's hit reaction (Reaction_Call 0x159E20) through the port: a script actor's is dropped, any other
+// goes to `wrapper` (one, e.g. Cody's rolls; null keeps the last) or the game's. Once per start of whoever needs it.
+using ReactionCallFn = bool(__fastcall*)(uint8_t* character, void*, void* bump, void* collision, void* sequence);
+using ReactionWrapper = bool (*)(uint8_t* character, void* bump, void* collision, void* sequence, ReactionCallFn original);
+void HookReactions(ReactionWrapper wrapper = nullptr);
 
 // The characters spawned in the running level.
 int SpawnedCount();
@@ -165,6 +183,10 @@ void SettleActivated(uint8_t* character);
 // (1,0,1) are the game's tuned red, green, blue and purple.
 void SetPlayerSaberColor(const float* rgb);
 bool PlayerSaberColor(float* rgb);
+// Any other Jedi-like character's saber colour, at once and from then on (its colour override); false when it has
+// none. The colours are kept until ForgetCharacterSaberColors (a level start: their characters are gone).
+bool SetCharacterSaberColor(uint8_t* character, const float* rgb);
+void ForgetCharacterSaberColors();
 // A colour as "red", "green", "blue", "purple" or "<r> <g> <b>" (0-255 each).
 bool ParseSaberColor(const std::string& spec, float* rgb);
 

@@ -37,6 +37,7 @@ Title=Jedi Knight
 Base=IAnakin             ; the class whose moves, AI and sounds it has
 Costume=Luke             ; its costume's name
 Mesh=luke\luke           ; its body, under meshes\chars, without .msh
+Mesh2=luke2\luke2        ; player 2's body when both Versus players pick it (optional; else its own)
 Saber=0 255 0            ; its saber's colour, 0-255 each (optional; 0 255 0 is the game's own green)
 Saber2=255 0 0           ; player 2's when both Versus players pick it (optional; else red for a hero, blue for a
                          ; villain, as the game's dark Anakin)
@@ -56,6 +57,7 @@ IntroSpeed=1.2           ; the Jedi Brute's twirl), at this speed (optional; 1)
 Lightning=1              ; on Serra Keto's class (Base=ISerra): Force lightning instead of her stun (optional)
 Grapples=IDooku          ; on Serra Keto's class: Count Dooku's grapple throws instead of hers (optional)
 ForceStorm=1             ; on Serra Keto's class: the Force Storm special (optional; see "Other duelists' moves")
+Breathing=0              ; on Darth Vader's class (Base=IVader): without his breathing (optional; 1)
 Side=Hero                ; Hero or Villain: its side in Heroes vs Villains by default
 Speaker=Luke             ; its name in subtitles (optional; the name's first word)
 Code=                    ; whose lines it says, a dialogue speaker code such as AKN or OBW (optional; the base's)
@@ -66,10 +68,17 @@ TNT=luk003 luk004        ; taunts
 KIL=luk008 luk009        ; after a kill
 INT=luk010               ; in its Versus intro (optional; else a TNT line)
 WIN=luk011               ; on winning a Versus round (optional; else a KIL line)
+EFF=luk012               ; efforts: jumps, falls (optional; said with HIT for its base's grunts)
+
+[Voice2]                 ; optional: player 2's lines when both Versus players pick it (the same events; else [Voice])
+TNT=luk101 luk102
 
 [Subtitles]              ; optional: the texts of its own lines
 LUK001=For the Rebellion!
 ```
+
+The notes after `;` above explain each key. In a real file, put a comment on a line of its own: text after a value
+is read as part of it.
 
 ## Player 2's look
 
@@ -78,6 +87,10 @@ character the texture suffix `_duel`, and each of its textures is then `<texture
 pack gives its character the same: `<texture>_duel.stx` next to each body texture (e.g. `luke_body_duel.stx`, its name
 inside `luke_body_duel`), declared with the body like its other textures. Without them player 2 looks like player 1;
 `Saber2=` (or the other side's colour) still tells them apart.
+Player 2 can also wear another body: `Mesh2=` (a body under `meshes\chars`, as `Mesh=`, on the same skeleton) is
+player 2's in a mirror duel, with its own textures (its `_duel` ones where it has them).
+Its HUD portrait for player 2 is `<portrait>_duel.stx` next to its own (e.g. `hud_face_luke01_duel.stx`), when the
+pack has one.
 
 ## The body
 
@@ -100,7 +113,10 @@ the texture, and black behind a cut-out shows as a dark fringe.
 `Saber=` sets the colour, `Blades=` the kind and `Hilt=` the hilt; all keep the base's when left out, and they work
 on any Jedi or Sith base. `Hilt=` names a weapon mesh: one of the game's (`LsaberObi\LsaberObi`, `LSaberDooku\LSaberDooku`,
 `LsaberMace\LsaberMace`, ...) or the pack's own under `mods\meshes\weapons\` ([replacing weapons](replacing-weapons.md)
-has the format); a double-bladed saber keeps the double hilt its blades need. The kinds:
+has the format); a double-bladed saber keeps the double hilt its blades need. A pack's own hilt needs, beside its mesh
+and textures, its attachment points and bounds under the mesh's name (`<name>.gat`, `<name>.gin`, e.g. a game saber's
+`.xbl_gat` and `.xbl_gin` renamed): the blade runs from `ATT_saber_base` to `ATT_sabertip`, and without them it comes
+out of the hand across the hilt and hits nothing. The kinds:
 
 - `single`: one blade (a base with a double-bladed saber gets the Jedi Knights' hilt);
 - `double`: the Jedi Brute's double-bladed saber (Darth Maul: `Base=IJDBrute`, whose moves are made for it, needs
@@ -196,8 +212,9 @@ mods\interfc\front_end\s_selduel_fb_<costume>_v2.stx     player 2's (optional)
 ```
 
 (`<costume>` in lower case, e.g. `s_selduel_lukehead.stx`.) Any number of custom characters get their slots (up to
-seven after Yoda). The full bodies show under the strip and on the arena screen, as the game's fighters'; without
-them the arena screen shows the bust in the full body's frame.
+nineteen after Yoda, Commander Cody and the Droid Commander among them; the strip scrolls). The full bodies show
+under the strip and on the arena screen, as the game's fighters'; without them the arena screen shows the bust in
+the full body's frame.
 
 The menus use only pictures read with the shared PAK (`res_null.pak`; a picture under `mods\` that no PAK has is
 refused: its pre-cache finds no image, 0x210B6B), so a custom character's entries in the screens' picture sets name
@@ -272,7 +289,13 @@ its own (`Speaker=`).
 With a `[Voice]` section it says its own lines for those events: the files `mods\characters\<name>\voice\<line>.xadpcm`
 (headerless Xbox ADPCM, mono, 22050 Hz, as the game's), their texts in `[Subtitles]`. The port serves the generic
 archive (`Dialogue\gen_dialogue.rpx`, mounted in every level) with the lines added (built in `cache\voice\` when
-they change) and, when the dialogue engine starts one of the character's entries for such an event (StartEntry,
+they change, from a pack's own `mods\Dialogue\gen_dialogue.rpx` when there is one, so the lines it replaces stay;
+any number of lines fit) and, when the dialogue engine starts one of the character's entries for such an event (StartEntry,
 0x90330), gives the entry the character's line for that call: the voice, the subtitle and the line's length follow
-it. Its other sounds (grunts) stay the base's. The lines take turns per event (a turn passes only when the
-engine starts or queues one). Subtitles show with the game's subtitles on (the Settings menu, or `set subtitles true`).
+it. For an event it has no lines for, it says those of a related one it has (KIL: WIN then TNT; WIN: KIL, TNT;
+INT: TNT, BAT; FSE: BAT, TNT; TNT: BAT, KIL; BAT: TNT, FSE), and for its base's efforts (lines numbered 900 and
+up: pains, grunts) its `EFF` lines (jumps, falls) or its `HIT` lines, a pain's `HIT` first; only what it has none
+of stays its base's (logged once per character and event each start). The lines take turns per event (a turn passes only when the
+engine starts or queues one). Player 2 of a Versus mirror (both players chose it: its look's texture suffix
+`_duel`) says its `[Voice2]` lines instead, when the file has that section (the same events and fallbacks; its files
+in the same `voice` folder). Subtitles show with the game's subtitles on (the Settings menu, or `set subtitles true`).

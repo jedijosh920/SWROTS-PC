@@ -20,6 +20,7 @@ struct CustomCharacter {
     std::string base;        // the class whose moves it has, e.g. "IAnakin"
     std::string costume;     // its costume's name, e.g. "Luke"
     std::string mesh;        // its body under meshes\chars ("folder\file"), e.g. "luke\luke"
+    std::string mesh2;       // player 2's body in a Versus mirror (Mesh2=), the same skeleton; empty: its own
     std::string code;        // its dialogue speaker code (three letters: whose lines it says, e.g. "AKN"); empty: the
                              // base's
     std::string speaker;     // its name in subtitles, e.g. "Luke"
@@ -27,6 +28,8 @@ struct CustomCharacter {
     // its own voice ([Voice]): for a dialogue event (BAT battle cry, TNT taunt, KIL kill, FSE first sight, HIT hit or
     // saber lock, ...), the lines it says instead of the base's (their ids, upper case, e.g. "LUK003")
     std::vector<std::pair<std::string, std::vector<std::string>>> voice;
+    // player 2's in a Versus mirror (both chose it; [Voice2], the same events), e.g. another JK2 Jedi's; empty: its own
+    std::vector<std::pair<std::string, std::vector<std::string>>> voice2;
     bool hasSaber = false;
     float saber[3] = {};     // its saber's colour (0-1), when it has one of its own
     bool hasSaber2 = false;
@@ -36,6 +39,7 @@ struct CustomCharacter {
     int blades = 0;          // its saber (Blades=): 0 the base's, 1 single, 2 double-bladed, 3 dual (two sabers)
     std::string hilt;        // its saber's hilt (Hilt=): a weapon mesh, "Meshes\Weapons\<folder>\<file>"; empty: the base's
     float scale = 1.0f;      // its size (Scale=), 1 the base's
+    bool breathing = true;   // on Vader's class: his breathing (Breathing=0: none)
     float force = -1.0f;     // its Force (Force=, the most it holds; Anakin's is 1000), negative: the base's
     float health = -1.0f;    // its health (Health=; Anakin's 1000, the Jedi Brute's 220), negative: the base's
     // Force powers on a base whose controls have none (ForceFrom=IVader: the Jedi's Force controls, as Vader's; the
@@ -59,6 +63,7 @@ struct CustomCharacter {
     bool forceStorm = false;
     std::string hudFace;     // the HUD portrait shown for it (a donor's path, its picture served: see customchars.cpp)
     std::string face;        // its HUD portrait's path (interfc\hud_b\hud_face_<costume>01), when the mod has one
+    std::string duelFace;    // player 2's HUD portrait in Versus (<face>_duel, beside its <texture>_duel look), if any
     std::string source;      // the file it came from
     // a fighter of the port's own, made from the game's assets (no files: Commander Cody): its Versus pictures are the
     // disc's (selectBust, a picture the menus' PAK has) and copies of disc pictures the port writes (generated)
@@ -92,10 +97,41 @@ void CustomCharactersFrame();
 
 // The custom character a character is (recognised by its costume list, the port's own), or null.
 const CustomCharacter* CustomCharacterOf(const uint8_t* character);
+// A custom character with the port's Force controls (ForceFrom=) gets these powers from now on instead of its file's
+// ForcePowers= ("Push Grip SaberThrow Lightning Heal", any of them; none for ""): a mission's choice, until the next
+// start. False for any other character.
+bool SetForcePowers(const uint8_t* character, const std::string& powers);
+// True for Versus player 2 when both players chose the same fighter (its look's texture suffix "_duel").
+bool IsMirrorPlayer2(const uint8_t* character);
+// The HUD portrait a custom character shows now (player 2's in a Versus mirror, else its own).
+const std::string& CustomFaceOf(const uint8_t* character, const CustomCharacter& custom);
 // The next line `speaker` starts for `event` (three letters, e.g. "TKE": an event its speaker code has entries for)
 // says `lineId` instead (a line of the mounted dialogue archives, e.g. "CLC013"), for the next few seconds; the event is
 // then asked as usual (the script's SayEvent, 0x17ACC0, in the character's script turn).
-void ForceNextLine(const uint8_t* speaker, const char* event, const char* lineId);
+void ForceNextLine(const uint8_t* speaker, const char* event, const char* lineId, unsigned milliseconds = 3000);
+// Lines of the port's own added to the generic dialogue archive (as the custom characters' voices): an id (letters
+// and digits, under 32), its voice (headerless Xbox ADPCM, mono, 22050 Hz) and its subtitle. The archive is rebuilt.
+struct VoiceLineSource {
+    std::string id;
+    std::wstring file;
+    std::wstring text;
+};
+void AddVoiceLines(const std::vector<VoiceLineSource>& lines);
+// The character says a line of the archives now (its subtitle "SPEAKER: text" and its voice, the game's own): 1; 2
+// when the dialogue engine queued it (another line still finishing: it starts a moment later, ForcedLineStarts then
+// counts it); 0 when the engine did not take it (another line playing); -1 when its speaker has no lines here at all.
+int SayLine(uint8_t* speaker, const char* lineId);
+// How many lines SayLine asked for have started playing (this boot).
+int ForcedLineStarts();
+// While quiet, the dialogue engine starts no line but the ones SayLine/ForceNextLine ask for (a mission's cutscene).
+void SetDialogueQuiet(bool quiet);
+// The lines being said now stop (fading out, their subtitles gone), as the dialogue engine interrupts a line for a more
+// important one; the number stopped.
+int StopDialogueLines();
+// A character kept quiet says no line of its own (battle cries, taunts, grunts): only the ones SayLine/ForceNextLine
+// ask for (a mission's say). Until the next start.
+void SetCharacterQuiet(const uint8_t* character, bool quiet);
+bool CharacterQuiet(const uint8_t* character);
 
 // The duel cameras' name of the duelist whose intro a custom character plays (Intro=), or null for the base's.
 const char* IntroCameras(const CustomCharacter& custom);

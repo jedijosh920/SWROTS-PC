@@ -24,7 +24,8 @@ and hold, tickets, and heroes for points. It is in the game's own main menu: **M
 - **Tickets**: every trooper that comes back costs its side one. A side holding fewer posts than the other loses a
   ticket every 5 seconds (every 2 seconds holding none while the other holds all). A side out of tickets loses.
 - **Coming back**: after a fall you come back at one of your side's posts or its start, one with no enemy near
-  (picked at random among those).
+  (picked at random among those). On a custom map, at one of the map's own clear places (`Spawns=`) near it, the
+  nearest when none is within 350 units, set down just above the floor (its ceilings may be low).
 - **The computer's troopers** have a job: about one in three of a side defends one of its posts, the others attack
   the nearest post their side does not hold. They fight any enemy that comes near, then go back to their post.
   Heroes hunt the enemy.

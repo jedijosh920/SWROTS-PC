@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <array>
 #include <memory>
@@ -43,6 +44,7 @@ constexpr size_t kInfoCopy = 0x200;     // bytes of the base's class info copied
 constexpr size_t kVtableCopy = 96;      // slots of its vtable copied
 constexpr uint32_t kCharacterSaberColor = 0xF20;
 constexpr uint32_t kCharacterTextureSet = 0x1EC; // its texture set, 1-based (0: the plain one)
+constexpr uint32_t kCharacterTextureSuffix = 0x1F4; // a suffix its textures are asked with (Versus player 2's "_duel")
 
 // A custom character's saber colour now: the one its pointer (+0xF20) gives when something chose one for it (a Versus
 // mirror's player 2: Saber2=, the duel's colour table), else its own.
@@ -52,6 +54,13 @@ const float* SaberColourOf(const uint8_t* character, const CustomCharacter& cust
     if (chosen && chosen != custom.saber && (chosen[0] != 0 || chosen[1] != 0 || chosen[2] != 0))
         return chosen;
     return custom.saber;
+}
+
+// The lines a custom character says: player 2's in a Versus mirror ([Voice2]) when it has them, else its own.
+const std::vector<std::pair<std::string, std::vector<std::string>>>& VoiceOf(const uint8_t* character,
+    const CustomCharacter& custom)
+{
+    return !custom.voice2.empty() && IsMirrorPlayer2(character) ? custom.voice2 : custom.voice;
 }
 
 // A Jedi's sabers: the class's Init fills up to 4 weapon records (+0x1064, 0x20 bytes each: +0 double-bladed flag, +4
@@ -67,7 +76,7 @@ constexpr char kSingleHilt[] = "Meshes\\Weapons\\LsaberKnight\\LsaberKnight";
 constexpr char kDoubleHilt[] = "Meshes\\Weapons\\Lsaberjdbrute\\Lsaberjdbrute";
 
 std::vector<CustomCharacter> g_Customs;
-std::wstring g_Mods;
+std::wstring g_Mods, g_GameData, g_Cache;
 
 // A custom class's info, for this start's base info.
 struct Proxy {
@@ -176,6 +185,7 @@ StartEntryFn g_StartEntry = nullptr;
 // BuildVoiceArchive) and the line's length all follow it. The entries: engine +0x118, 0x3C bytes each, +0x14 the
 // entry's name, its first three letters the event ("BATAKN___005GEN").
 constexpr uint32_t kDialogueEntries = 0x118;
+constexpr uint32_t kDialoguePlayingCount = 0x120; // the lines playing now ({capacity +0x11C, count, slots +0x124})
 constexpr uint32_t kDialogueEntrySize = 0x3C;
 bool g_VoiceServed = false; // this start serves the archive with the custom lines
 
@@ -227,29 +237,102 @@ struct ForcedLine {
     char event[4] = {};
     const char* id = nullptr; // pooled
     ULONGLONG until = 0;
+    // the entry given the line: it keeps it until the time is up (a queued entry is started later, reading its line
+    // then), then gets its own back
+    const char** swapped = nullptr;
+    const char* own = nullptr;
+    bool said = false; // started (or queued): it is said once; the speaker's next line is its own again
 };
 ForcedLine g_Forced;
 
+void EndForcedLine()
+{
+    if (g_Forced.swapped)
+        *g_Forced.swapped = g_Forced.own;
+    g_Forced = {};
+}
+
+bool g_OnlyForced = false; // a mission's cutscene: no line but the ones it asks for (SetDialogueQuiet)
+int g_ForcedStarts = 0;     // the forced lines that started playing
+int g_ForcedAsked = 0;      // the dialogue engine's starts of an entry for the forced speaker's event (SayLine)
+
+// The lines logged this start, by character and line (or event, for its base's): each once, or a long fight's grunts
+// and pains would flood the log (cleared at every start).
+std::vector<std::pair<const CustomCharacter*, std::string>> g_LoggedLines;
+
+bool FirstLog(const CustomCharacter* custom, const char* key)
+{
+    const std::string k = key ? key : "?";
+    for (const auto& l : g_LoggedLines)
+        if (l.first == custom && _stricmp(l.second.c_str(), k.c_str()) == 0)
+            return false;
+    g_LoggedLines.push_back({ custom, k });
+    return true;
+}
+
+// For an event a custom character has no lines for, the lines of related events it may have (else its base's line).
+// Its base's efforts (grunts, pain: line numbers 900 and up) take its EFF or HIT lines.
+constexpr const char* kVoiceFallbacks[][3] = {
+    { "KIL", "WIN", "TNT" }, { "WIN", "KIL", "TNT" }, { "INT", "TNT", "BAT" }, { "FSE", "BAT", "TNT" },
+    { "TNT", "BAT", "KIL" }, { "BAT", "TNT", "FSE" },
+};
+
+// Characters a mission keeps quiet (SetCharacterQuiet): the object and its instance id (+4).
+std::vector<std::pair<const uint8_t*, uint32_t>> g_QuietCharacters;
+
+bool IsQuietCharacter(const uint8_t* speaker)
+{
+    for (const auto& q : g_QuietCharacters)
+        if (q.first == speaker && *reinterpret_cast<const uint32_t*>(speaker + 4) == q.second)
+            return true;
+    return false;
+}
+
+// The level's dialogue engine (TDialogueEngine), as its StartEntry last saw it (none started yet: nothing to stop).
+uint8_t* g_DialogueEngine = nullptr;
+
 int __fastcall StartEntryHook(uint8_t* engine, void*, uint8_t* speaker, int entry, int a, int b, int c)
 {
+    g_DialogueEngine = engine;
+    // A forced line is said once: the speaker's next start (its own taunt a moment later) and any start after its
+    // time get the entry's own line back (else a player's custom character repeated a mission's line with its next
+    // taunt, and an entry kept the mission's line after its time)
+    if (g_Forced.swapped && ((g_Forced.said && speaker == g_Forced.speaker) || GetTickCount64() >= g_Forced.until))
+        EndForcedLine();
+    const bool forced = speaker && speaker == g_Forced.speaker && g_Forced.id && GetTickCount64() < g_Forced.until;
+    if ((g_OnlyForced || (speaker && !g_QuietCharacters.empty() && IsQuietCharacter(speaker))) && !forced)
+        return 0;
     if (speaker && speaker == g_Forced.speaker && entry >= 0 && g_Forced.id && GetTickCount64() < g_Forced.until) {
         uint8_t* e = *reinterpret_cast<uint8_t**>(engine + kDialogueEntries) + size_t(entry) * kDialogueEntrySize;
         const char* name = *reinterpret_cast<const char**>(e + 0x14);
         if (name && _strnicmp(name, g_Forced.event, 3) == 0) {
-            const char*& id = *reinterpret_cast<const char**>(e + 0x10);
-            const char* own = id;
-            id = g_Forced.id;
+            ++g_ForcedAsked;
+            const char** id = reinterpret_cast<const char**>(e + 0x10);
+            if (g_Forced.swapped != id) {
+                if (g_Forced.swapped) // another entry of the event: the first one's line back
+                    *g_Forced.swapped = g_Forced.own;
+                g_Forced.swapped = id;
+                g_Forced.own = *id;
+                *id = g_Forced.id;
+            }
+            // (said once it plays: the playing list, +0x120, grew. A line taken while another is still on is queued and
+            // started later, through here again: the entry keeps the forced line until then)
+            const int playing = *reinterpret_cast<const int*>(engine + kDialoguePlayingCount);
             const int result = g_StartEntry(engine, nullptr, speaker, entry, a, b, c);
-            id = own;
             if (result) {
-                LOG_INFO("Custom characters: says %s (%s)", g_Forced.id, name);
-                g_Forced = {};
+                const bool started = *reinterpret_cast<const int*>(engine + kDialoguePlayingCount) > playing;
+                LOG_INFO("Custom characters: %s %s (%s)", started ? "says" : "queues", g_Forced.id, name);
+                if (started) {
+                    g_Forced.said = true;
+                    ++g_ForcedStarts;
+                }
             }
             return result;
         }
     }
     const CustomCharacter* custom = speaker && g_VoiceServed ? CustomCharacterOf(speaker) : nullptr;
-    if (!custom || custom->voice.empty() || entry < 0)
+    const auto* voice = custom ? &VoiceOf(speaker, *custom) : nullptr;
+    if (!custom || voice->empty() || entry < 0)
         return g_StartEntry(engine, nullptr, speaker, entry, a, b, c);
     uint8_t* e = *reinterpret_cast<uint8_t**>(engine + kDialogueEntries) + size_t(entry) * kDialogueEntrySize;
     const char* name = *reinterpret_cast<const char**>(e + 0x14);
@@ -257,9 +340,25 @@ int __fastcall StartEntryHook(uint8_t* engine, void*, uint8_t* speaker, int entr
     if (g_DuelLine.speaker == speaker && name && GetTickCount64() < g_DuelLine.until &&
         _strnicmp(name, g_DuelLine.event, 3) == 0)
         duel = g_DuelLine.own;
-    for (int pass = duel ? 0 : 1; pass < 2; ++pass)
-    for (const auto& event : custom->voice) {
-        if (!name || event.second.empty() || _strnicmp(pass == 0 ? duel : name, event.first.c_str(), 3) != 0)
+    // the events whose lines it says: the duel's (INT / WIN), the entry's own, else a related one it has lines for (a
+    // custom character without kills says its victory or taunt lines rather than its base's kill lines)
+    const char* wanted[6] = { duel, name, nullptr, nullptr, nullptr, nullptr };
+    for (const auto& f : kVoiceFallbacks)
+        if (name && _strnicmp(name, f[0], 3) == 0) {
+            wanted[2] = f[1];
+            wanted[3] = f[2];
+        }
+    // its base's efforts (line numbers 900 and up: PHR, PHH pain, PGH, EHG...): its own efforts (EFF: jumps, falls)
+    // or pain (HIT), the pains first for a pain
+    const char* baseLine = *reinterpret_cast<const char* const*>(e + 0x10);
+    if (baseLine && strlen(baseLine) >= 6 && atoi(baseLine + 3) >= 900) {
+        const bool pain = name && (name[0] == 'P' || name[0] == 'p');
+        wanted[4] = pain ? "HIT" : "EFF";
+        wanted[5] = pain ? "EFF" : "HIT";
+    }
+    for (const char* key : wanted)
+    for (const auto& event : *voice) {
+        if (!key || event.second.empty() || _strnicmp(key, event.first.c_str(), 3) != 0)
             continue;
         size_t& turn = LineTurn(&event.second);
         const char* line = PooledString(event.second[turn % event.second.size()]);
@@ -274,11 +373,18 @@ int __fastcall StartEntryHook(uint8_t* engine, void*, uint8_t* speaker, int entr
             ++turn;
             if (duel)
                 g_DuelLine = {};
-            LOG_INFO("Custom characters: %s says %s (%s)", custom->className.c_str(), line, name);
+            if (FirstLog(custom, line))
+                LOG_INFO("Custom characters: %s says %s (%s)", custom->className.c_str(), line, name);
         }
         return result;
     }
-    return g_StartEntry(engine, nullptr, speaker, entry, a, b, c);
+    const int result = g_StartEntry(engine, nullptr, speaker, entry, a, b, c);
+    if (result && FirstLog(custom, (std::string("base:") + (name ? name : "?")).c_str())) {
+        const char* id = *reinterpret_cast<const char* const*>(e + 0x10);
+        LOG_INFO("Custom characters: %s says its base's %s (%s): no line of its own for it", custom->className.c_str(),
+            id ? id : "?", name ? name : "?");
+    }
+    return result;
 }
 
 // The duel's say (0x17ACC0, cdecl (event, context, ...): the current script's character says a line of the event;
@@ -489,7 +595,38 @@ void Offer(bool condition, uint8_t* classObject, uint32_t handleAt)
         3, 3, 1, 1.0f);
 }
 
-void ForceRules(uint8_t* inst, uint8_t* classObject, const CustomCharacter& custom)
+// A mission's choice of a character's Force powers (SetForcePowers): the character, its instance id (+4), the powers.
+struct ForcePowersChoice {
+    const uint8_t* character;
+    uint32_t id;
+    int powers;
+};
+std::vector<ForcePowersChoice> g_ForcePowersChosen;
+
+int ForcePowersFrom(const std::string& text) // "Push Grip SaberThrow Lightning Heal": bits 1, 2, 4, 8, 16
+{
+    std::string powers = text;
+    for (char& c : powers)
+        c = char(toupper(static_cast<unsigned char>(c)));
+    static const struct { const char* name; int bit; } kPowers[] = { { "PUSH", 1 }, { "GRIP", 2 }, { "GRASP", 2 },
+        { "SABERTHROW", 4 }, { "THROW", 4 }, { "LIGHTNING", 8 }, { "HEAL", 16 } };
+    int bits = 0;
+    for (const auto& p : kPowers)
+        if (powers.find(p.name) != std::string::npos)
+            bits |= p.bit;
+    return bits;
+}
+
+void SetPowerFlags(uint8_t* inst, int powers)
+{
+    inst[0x2DC] = powers & 1 ? 1 : 0;
+    inst[0x2DB] = powers & 2 ? 1 : 0;
+    inst[0x2DF] = powers & 4 ? 1 : 0;
+    inst[0x2DD] = powers & 8 ? 1 : 0;
+    inst[0x2D9] = powers & 16 ? 1 : 0;
+}
+
+void ForceRules(uint8_t* inst, uint8_t* classObject, const CustomCharacter& custom, const uint8_t* character)
 {
     const auto call = [](uint32_t f) { return reinterpret_cast<bool(__cdecl*)()>(uintptr_t(f))(); };
     // what the Jedi set-up 0x400EE0 does and the Jedi Brute's Init leaves out: the powers' costs (lightning, throw,
@@ -500,14 +637,12 @@ void ForceRules(uint8_t* inst, uint8_t* classObject, const CustomCharacter& cust
         costs[2] = 150;
         costs[3] = 250;
         costs[4] = 100;
-        if (custom.forcePowers >= 0) {
-            inst[0x2DC] = custom.forcePowers & 1 ? 1 : 0;
-            inst[0x2DB] = custom.forcePowers & 2 ? 1 : 0;
-            inst[0x2DF] = custom.forcePowers & 4 ? 1 : 0;
-            inst[0x2DD] = custom.forcePowers & 8 ? 1 : 0;
-            inst[0x2D9] = custom.forcePowers & 16 ? 1 : 0;
-        }
+        if (custom.forcePowers >= 0)
+            SetPowerFlags(inst, custom.forcePowers);
     }
+    for (const ForcePowersChoice& chosen : g_ForcePowersChosen) // a mission's choice, over the file's
+        if (chosen.character == character && *reinterpret_cast<const uint32_t*>(character + 4) == chosen.id)
+            SetPowerFlags(inst, chosen.powers);
     // the computer's character (0x176E30) offers every power it can pay for; its attack table's rows (the Force
     // class's, added to the base's: ForceRows) choose among them by range and facing, its conditions are not asked
     const bool ai = call(0x00176E30);
@@ -682,7 +817,7 @@ void __cdecl BruteRulesHook(uint8_t* inst, uint8_t* classObject)
         uint8_t* character = scripts ? *reinterpret_cast<uint8_t**>(scripts + 0x68) : nullptr;
         const CustomCharacter* custom = character ? CustomCharacterOf(character) : nullptr;
         if (custom && custom->forceControls && inst && classObject)
-            ForceRules(inst, classObject, *custom);
+            ForceRules(inst, classObject, *custom, character);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
 }
@@ -1030,6 +1165,8 @@ void PruneMade()
 
 void CustomCharactersFrame()
 {
+    if (g_Forced.id && GetTickCount64() >= g_Forced.until) // a forced line's time is up: its entry's own line back
+        EndForcedLine();
     PruneMade(); // those taken away (a match's fighters after a respawn) out
     if (!g_SabersOff.empty())
         LightSabers();
@@ -1215,6 +1352,7 @@ void ReadCharacters(const std::wstring& mods)
         c.className = Profile(file, L"Class");
         c.base = Profile(file, L"Base");
         c.mesh = Profile(file, L"Mesh");
+        c.mesh2 = Profile(file, L"Mesh2");
         if (c.className.empty() || c.base.empty() || c.mesh.empty() || _stricmp(c.className.c_str(), c.base.c_str()) == 0) {
             LOG_WARN("Custom characters: %ls needs Class, Base and Mesh", found.cFileName);
             continue;
@@ -1261,6 +1399,7 @@ void ReadCharacters(const std::wstring& mods)
         c.forceStorm = std::atoi(Profile(file, L"ForceStorm").c_str()) != 0;
         c.side = _stricmp(Profile(file, L"Side", L"Hero").c_str(), "villain") == 0 ? 1 : 0;
         c.scale = std::clamp(float(atof(Profile(file, L"Scale", L"1").c_str())), 0.5f, 2.0f);
+        c.breathing = std::atoi(Profile(file, L"Breathing", L"1").c_str()) != 0;
         const std::string force = Profile(file, L"Force");
         c.force = force.empty() ? -1.0f : std::clamp(float(atof(force.c_str())), 0.0f, 10000.0f);
         const std::string health = Profile(file, L"Health");
@@ -1268,15 +1407,9 @@ void ReadCharacters(const std::wstring& mods)
         c.forceFrom = Profile(file, L"ForceFrom");
         c.forceControls = !c.forceFrom.empty();
         {
-            const std::string powers = Upper(Profile(file, L"ForcePowers"));
-            if (!powers.empty()) {
-                c.forcePowers = 0;
-                static const struct { const char* name; int bit; } kPowers[] = { { "PUSH", 1 }, { "GRIP", 2 },
-                    { "GRASP", 2 }, { "SABERTHROW", 4 }, { "LIGHTNING", 8 }, { "HEAL", 16 } };
-                for (const auto& p : kPowers)
-                    if (powers.find(p.name) != std::string::npos)
-                        c.forcePowers |= p.bit;
-            }
+            const std::string powers = Profile(file, L"ForcePowers");
+            if (!powers.empty())
+                c.forcePowers = ForcePowersFrom(powers);
         }
         c.introAnimation = Profile(file, L"IntroAnimation");
         if (const std::string speed = Profile(file, L"IntroSpeed"); !speed.empty() && std::atof(speed.c_str()) > 0)
@@ -1310,47 +1443,53 @@ void ReadCharacters(const std::wstring& mods)
         if (ModFileExists(face + ".stx")) { // loaded from its file by the HUD (characters.cpp)
             c.face = face;
             c.hudFace = face;
+            if (ModFileExists(face + "_duel.stx"))
+                c.duelFace = face + "_duel";
         }
         std::string source;
         for (const wchar_t* ch = found.cFileName; *ch; ++ch)
             source += char(*ch < 128 ? *ch : '?');
         c.source = source;
         // its voice: [Voice] EVENT=line line ..., the lines in characters\<name>\voice\<line>.xadpcm, their
-        // texts in [Subtitles] LINE=text
+        // texts in [Subtitles] LINE=text; player 2's in a Versus mirror likewise in [Voice2], if it has one
         {
             const std::wstring stem = file.substr(0, file.size() - 4);
-            wchar_t keys[4096] = {};
-            GetPrivateProfileStringW(L"Voice", nullptr, L"", keys, 4096, file.c_str());
-            for (const wchar_t* k = keys; *k; k += wcslen(k) + 1) {
-                std::string event;
-                for (const wchar_t* ch = k; *ch; ++ch)
-                    event += char(toupper(*ch < 128 ? *ch : '?'));
-                std::vector<std::string> ids;
-                std::istringstream words(ProfileIn(file, L"Voice", k));
-                std::string id;
-                while (words >> id) {
-                    for (char& ch : id)
-                        ch = char(toupper(static_cast<unsigned char>(ch)));
-                    std::string lower = id;
-                    for (char& ch : lower)
-                        ch = char(tolower(static_cast<unsigned char>(ch)));
-                    const std::wstring path = stem + L"\\voice\\" + std::wstring(lower.begin(), lower.end()) + L".xadpcm";
-                    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
-                        LOG_WARN("Custom characters: %s's line %s has no file", c.className.c_str(), id.c_str());
-                        continue;
+            auto readVoice = [&](const wchar_t* section, std::vector<std::pair<std::string, std::vector<std::string>>>& out) {
+                wchar_t keys[4096] = {};
+                GetPrivateProfileStringW(section, nullptr, L"", keys, 4096, file.c_str());
+                for (const wchar_t* k = keys; *k; k += wcslen(k) + 1) {
+                    std::string event;
+                    for (const wchar_t* ch = k; *ch; ++ch)
+                        event += char(toupper(*ch < 128 ? *ch : '?'));
+                    std::vector<std::string> ids;
+                    std::istringstream words(ProfileIn(file, section, k));
+                    std::string id;
+                    while (words >> id) {
+                        for (char& ch : id)
+                            ch = char(toupper(static_cast<unsigned char>(ch)));
+                        std::string lower = id;
+                        for (char& ch : lower)
+                            ch = char(tolower(static_cast<unsigned char>(ch)));
+                        const std::wstring path = stem + L"\\voice\\" + std::wstring(lower.begin(), lower.end()) + L".xadpcm";
+                        if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                            LOG_WARN("Custom characters: %s's line %s has no file", c.className.c_str(), id.c_str());
+                            continue;
+                        }
+                        ids.push_back(id);
+                        bool known = false;
+                        for (const VoiceLine& v : g_VoiceLines)
+                            known |= v.id == id;
+                        if (!known) {
+                            const std::string text = ProfileIn(file, L"Subtitles", std::wstring(id.begin(), id.end()).c_str());
+                            g_VoiceLines.push_back({ id, path, std::wstring(text.begin(), text.end()) });
+                        }
                     }
-                    ids.push_back(id);
-                    bool known = false;
-                    for (const VoiceLine& v : g_VoiceLines)
-                        known |= v.id == id;
-                    if (!known) {
-                        const std::string text = ProfileIn(file, L"Subtitles", std::wstring(id.begin(), id.end()).c_str());
-                        g_VoiceLines.push_back({ id, path, std::wstring(text.begin(), text.end()) });
-                    }
+                    if (!ids.empty())
+                        out.push_back({ event, ids });
                 }
-                if (!ids.empty())
-                    c.voice.push_back({ event, ids });
-            }
+            };
+            readVoice(L"Voice", c.voice);
+            readVoice(L"Voice2", c.voice2);
         }
         LOG_INFO("Custom characters: %s (%s, from %s), from characters\\%s", c.className.c_str(), c.name.c_str(),
             c.base.c_str(), source.c_str());
@@ -1462,6 +1601,22 @@ void AddBuiltInCharacters()
     g_PictureCopies.push_back({ "interfc\\hud_b\\hud_face_codyport01.stx", "interfc\\hud_b\\hud_face_unlock_cody01.stx" });
     g_Customs.push_back(c);
     LOG_INFO("Custom characters: ICody (COMMANDER CODY, from ICloneTrooper), built in");
+}
+
+// Vader's script (its VaderBreath state, 0x48D4B0) breathes in and out through the script's sound call (0x17AD20,
+// cdecl (sound, near, 1, far, -1, 0)) at these four places; a custom character on his class with Breathing=0 does not.
+constexpr uint32_t kScriptPlaySound = 0x0017AD20;
+constexpr uint32_t kBreathCalls[] = { 0x0048D547, 0x0048D577, 0x0048D5BE, 0x0048D5EE };
+
+int __cdecl BreathSoundHook(int sound, int nearDistance, int one, int farDistance, int loop, int zero)
+{
+    uint8_t* scripts = *reinterpret_cast<uint8_t**>(uintptr_t(kScriptCharacter));
+    const uint8_t* character = scripts ? *reinterpret_cast<uint8_t**>(scripts + 0x68) : nullptr;
+    const CustomCharacter* custom = character ? CustomCharacterOf(character) : nullptr;
+    if (custom && !custom->breathing)
+        return 0;
+    return reinterpret_cast<int(__cdecl*)(int, int, int, int, int, int)>(uintptr_t(kScriptPlaySound))(
+        sound, nearDistance, one, farDistance, loop, zero);
 }
 
 // A clone's Init sets its health (0x35B36D: 0x177AC0 (50, 1)); a custom character on it gets its own, and its meter
@@ -1625,19 +1780,24 @@ bool YodaIntroGenerator(const std::string& lowerName, std::vector<uint8_t>& data
 // The game's generic dialogue archive (Dialogue\gen_dialogue.rpx, mounted in every level) with the custom lines
 // added, served in its place for this start. The archive: u32 1, u32 count, 0x18 bytes, then `count` 0x2C-byte
 // records {name[0x20] (lower case, sorted), u32 offset, u32 size, u32 (the same in all)}, free room up to the first
-// line's data, the lines (2048-aligned). The new records go in their sorted places (the offsets are absolute: no
-// line moves), their lines at the end. Rebuilt in cache\voice\ when its inputs change.
-void BuildVoiceArchive(const std::wstring& gameData, const std::wstring& cache)
+// line's data, the lines (2048-aligned). The new records go in their sorted places, their lines at the end; when the
+// room before the first line is too small for the records (the game's archive has room for some 20 more), every line
+// moves down by whole sectors (the offsets are absolute). Made from a mod's own archive when there is one
+// (mods\Dialogue\gen_dialogue.rpx: its replaced lines stay), and rebuilt in cache\voice\ when its inputs change.
+void BuildVoiceArchive(const std::wstring& mods, const std::wstring& gameData, const std::wstring& cache)
 {
     static const std::string kArchive = "\\dialogue\\gen_dialogue.rpx";
     kernel::SetDiscFileOverride(kArchive, L"");
     g_VoiceServed = false;
     if (g_VoiceLines.empty())
         return;
-    const std::wstring source = gameData + L"\\Dialogue\\gen_dialogue.rpx";
+    std::wstring source = mods + L"\\Dialogue\\gen_dialogue.rpx";
+    const bool modsArchive = GetFileAttributesW(source.c_str()) != INVALID_FILE_ATTRIBUTES;
+    if (!modsArchive)
+        source = gameData + L"\\Dialogue\\gen_dialogue.rpx";
     const std::wstring folder = cache + L"\\voice", target = folder + L"\\gen_dialogue.rpx";
     // its inputs: the archive's size and every line's file and size
-    std::string stamp;
+    std::string stamp = modsArchive ? "mods;" : "game;";
     WIN32_FILE_ATTRIBUTE_DATA info;
     auto describe = [&](const std::wstring& path) {
         if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &info))
@@ -1688,9 +1848,12 @@ void BuildVoiceArchive(const std::wstring& gameData, const std::wstring& cache)
             archive.insert(archive.end(), line.begin(), line.end());
             ++added;
         }
-        if (0x20 + records.size() * 0x2C > firstData) {
-            LOG_WARN("Custom characters: the dialogue archive has no room for %zu more lines", added);
-            return;
+        const size_t table = 0x20 + records.size() * 0x2C;
+        if (table > firstData) {
+            const uint32_t shift = uint32_t((table - firstData + 2047) & ~size_t(2047));
+            archive.insert(archive.begin() + firstData, shift, 0);
+            for (Record& r : records)
+                r.offset += shift;
         }
         archive.resize((archive.size() + 2047) & ~size_t(2047), 0);
         std::sort(records.begin(), records.end(), [](const Record& a, const Record& b) { return _stricmp(a.name.c_str(), b.name.c_str()) < 0; });
@@ -1733,13 +1896,49 @@ void ForgetStaleBindings(const std::wstring& cache)
     ForgetStaleYodaBindings(cache);
 }
 
+bool CharacterQuiet(const uint8_t* character)
+{
+    return character && IsQuietCharacter(character);
+}
+
+void SetCharacterQuiet(const uint8_t* character, bool quiet)
+{
+    if (!character)
+        return;
+    g_QuietCharacters.erase(std::remove_if(g_QuietCharacters.begin(), g_QuietCharacters.end(),
+                                [&](const auto& q) { return q.first == character; }),
+        g_QuietCharacters.end());
+    if (quiet)
+        g_QuietCharacters.emplace_back(character, *reinterpret_cast<const uint32_t*>(character + 4));
+}
+
+bool SetForcePowers(const uint8_t* character, const std::string& powers)
+{
+    const CustomCharacter* custom = character ? CustomCharacterOf(character) : nullptr;
+    if (!custom || !custom->forceControls)
+        return false;
+    const uint32_t id = *reinterpret_cast<const uint32_t*>(character + 4);
+    g_ForcePowersChosen.erase(std::remove_if(g_ForcePowersChosen.begin(), g_ForcePowersChosen.end(),
+                                  [&](const ForcePowersChoice& c) { return c.character == character; }),
+        g_ForcePowersChosen.end());
+    g_ForcePowersChosen.push_back({ character, id, ForcePowersFrom(powers) });
+    return true;
+}
+
 void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameData, const std::wstring& cache)
 {
     g_Proxies.clear(); // class infos are made anew at every start
     g_PooledLines.clear();
     g_LineTurns.clear();
     g_SpeakerTexts.clear();
+    g_LoggedLines.clear();
+    g_ForcePowersChosen.clear();
+    g_QuietCharacters.clear();
+    g_DialogueEngine = nullptr;
+    g_Forced = {}; // (a line the last start forced: its entry went with that start's memory, nothing to give back)
     g_Mods = mods;
+    g_GameData = gameData;
+    g_Cache = cache;
     ReadCharacters(mods);
     g_PictureCopies.clear();
     AddBuiltInCharacters();
@@ -1747,7 +1946,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
     RegisterResourceGenerator(&YodaIntroGenerator);
     AddYodaLines(gameData, cache);
     RegisterResourcePatch("dialogue\\gen_dialogue.ddb", &PatchYodaDialogue);
-    BuildVoiceArchive(gameData, cache);
+    BuildVoiceArchive(mods, gameData, cache);
     if (g_Customs.empty())
         return;
     if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kClassLookup)), kClassLookupBytes, sizeof(kClassLookupBytes)) != 0) {
@@ -1827,6 +2026,15 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
         if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kBruteSetHealthCall)), call, 5) == 0)
             PatchCall(kBruteSetHealthCall, reinterpret_cast<const void*>(&BruteSetHealthHook), 5);
     }
+    if (std::any_of(g_Customs.begin(), g_Customs.end(), [](const CustomCharacter& c) { return !c.breathing; })) {
+        for (uint32_t site : kBreathCalls) {
+            uint8_t call[5] = { 0xE8 };
+            const int32_t rel = int32_t(kScriptPlaySound) - int32_t(site + 5);
+            std::memcpy(call + 1, &rel, 4);
+            if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(site)), call, 5) == 0)
+                PatchCall(site, reinterpret_cast<const void*>(&BreathSoundHook), 5);
+        }
+    }
     {
         uint8_t call[5] = { 0xE8 };
         const int32_t rel = int32_t(kSetHealth) - int32_t(kCloneSetHealthCall + 5);
@@ -1901,15 +2109,100 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
         LOG_WARN("Custom characters: the subtitles' speaker name is not as expected; custom characters keep the base's");
 }
 
-void ForceNextLine(const uint8_t* speaker, const char* event, const char* lineId)
+void AddVoiceLines(const std::vector<VoiceLineSource>& lines)
+{
+    if (lines.empty())
+        return;
+    for (const VoiceLineSource& line : lines) {
+        std::string id = line.id;
+        for (char& ch : id)
+            ch = char(toupper(static_cast<unsigned char>(ch)));
+        bool known = false;
+        for (const VoiceLine& v : g_VoiceLines)
+            known |= v.id == id;
+        if (!known)
+            g_VoiceLines.push_back({ id, line.file, line.text });
+    }
+    BuildVoiceArchive(g_Mods, g_GameData, g_Cache);
+}
+
+// A character says a line of the dialogue archives now: the line forced on the next entry of an event its speaker
+// has lines for, and the event asked of the character (its vfunc +0x458, what the scripts' SayEvent 0x17ACC0 calls).
+int SayLine(uint8_t* speaker, const char* lineId)
+{
+    if (!speaker || !lineId)
+        return 0;
+    static const char* const kEvents[] = { "FSE", "TNT", "BAT", "KIL", "TKE", "HIT", "SCM" };
+    int asked = 0;
+    for (const char* event : kEvents) {
+        ForceNextLine(speaker, event, lineId, 8000);
+        g_ForcedAsked = 0;
+        using SayFn = int(__fastcall*)(uint8_t*, void*, const char*, const char*, int, int, int);
+        const int result = (*reinterpret_cast<SayFn* const*>(speaker))[0x458 / 4](speaker, nullptr, event, "", 1, 0, 0);
+        asked += g_ForcedAsked;
+        if (result) // the line was said, or queued (the forced line stays until it starts, or for its time)
+            return g_Forced.said ? 1 : 2;
+    }
+    EndForcedLine();
+    return asked ? 0 : -1; // refused (another line on), or none of these events has an entry for its speaker
+}
+
+// The lines being said stop (their voices fade out, their subtitles go), as the engine itself interrupts a line for a
+// more important one (in StartEntry, 0x90502): its StopLine (0x8FE40, thiscall (slot, fade): Indiana Jones'
+// TDialogueEngine::StopLine), the entry's thread count (0x8CF10, thiscall (entry's first dword, -1)), and the slot
+// out of the playing list (+0x11C: {capacity, count +0x120, slots +0x124}, 0x20 bytes each; remove-range 0x1E58E0,
+// thiscall (list, first, end)).
+constexpr uint32_t kDialogueStopLine = 0x0008FE40;
+constexpr uint32_t kDialogueEntryThreads = 0x0008CF10;
+constexpr uint32_t kDialogueRemoveSlots = 0x001E58E0;
+constexpr uint32_t kDialoguePlaying = 0x11C;
+constexpr uint32_t kDialogueLastStopped = 0x8C;
+
+int StopDialogueLines()
+{
+    uint8_t* engine = g_DialogueEngine;
+    if (!engine)
+        return 0;
+    int stopped = 0;
+    __try {
+        for (int i = *reinterpret_cast<int*>(engine + kDialoguePlaying + 4) - 1; i >= 0; --i) {
+            reinterpret_cast<void(__fastcall*)(uint8_t*, void*, int, int)>(uintptr_t(kDialogueStopLine))(engine, nullptr, i, 1);
+            uint8_t* slot = *reinterpret_cast<uint8_t**>(engine + kDialoguePlaying + 8) + size_t(i) * 0x20;
+            *reinterpret_cast<int*>(engine + kDialogueLastStopped) = i;
+            reinterpret_cast<void(__fastcall*)(uint8_t*, void*, uint32_t, int)>(uintptr_t(kDialogueEntryThreads))(
+                engine, nullptr, *reinterpret_cast<uint32_t*>(slot), -1);
+            slot = *reinterpret_cast<uint8_t**>(engine + kDialoguePlaying + 8) + size_t(i) * 0x20;
+            reinterpret_cast<void(__fastcall*)(uint8_t*, void*, uint8_t*, uint8_t*)>(uintptr_t(kDialogueRemoveSlots))(
+                engine + kDialoguePlaying, nullptr, slot, slot + 0x20);
+            ++stopped;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        LOG_WARN("Custom characters: stopping the dialogue's lines faulted");
+    }
+    EndForcedLine();
+    return stopped;
+}
+
+int ForcedLineStarts()
+{
+    return g_ForcedStarts;
+}
+
+void SetDialogueQuiet(bool quiet)
+{
+    g_OnlyForced = quiet;
+}
+
+void ForceNextLine(const uint8_t* speaker, const char* event, const char* lineId, unsigned milliseconds)
 {
     const char* id = PooledString(lineId);
     if (!speaker || !event || !id)
         return;
+    EndForcedLine();
     g_Forced.speaker = speaker;
     strncpy_s(g_Forced.event, event, 3);
     g_Forced.id = id;
-    g_Forced.until = GetTickCount64() + 3000;
+    g_Forced.until = GetTickCount64() + milliseconds;
 }
 
 const char* IntroCameras(const CustomCharacter& custom)
@@ -1927,10 +2220,39 @@ const CustomCharacter* CustomCharacterOf(const uint8_t* character)
     if (!character)
         return nullptr;
     const uint8_t* list = *reinterpret_cast<const uint8_t* const*>(character + kCharacterVariants);
+    if (!list)
+        return nullptr;
     for (auto& p : g_Proxies)
         if (!p->list.empty() && p->list.data() == list)
             return p->custom;
+    // a character in another body (`player <class> mesh`, `spawn ... mesh`) wears its own copy of its class's list
+    // (characters.cpp, Dress): the copy keeps the records' names, so its first one is the custom costume's own string
+    __try {
+        const char* first = *reinterpret_cast<const char* const*>(list + kVariantRecords);
+        for (auto& p : g_Proxies)
+            if (!p->list.empty() && first == p->costumeName.c_str())
+                return p->custom;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
     return nullptr;
+}
+
+bool IsMirrorPlayer2(const uint8_t* character)
+{
+    __try {
+        // player 2 in Versus: the duel gives it the texture suffix "_duel" (character +0x1F4, 0x27B88D)
+        const char* suffix = *reinterpret_cast<const char* const*>(character + kCharacterTextureSuffix);
+        return suffix && _stricmp(suffix, "_duel") == 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return false;
+}
+
+const std::string& CustomFaceOf(const uint8_t* character, const CustomCharacter& custom)
+{
+    if (!custom.duelFace.empty() && IsMirrorPlayer2(character))
+        return custom.duelFace;
+    return custom.hudFace;
 }
 
 bool ModFileExists(const std::string& relative)

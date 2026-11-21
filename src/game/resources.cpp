@@ -25,6 +25,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -379,6 +380,7 @@ const PakIndex::Entry* FindElsewhere(const PakIndex* level, Find find, const Pak
 // StandInAnimation), under its own name: the engine finds animations by name.
 std::mutex g_AliasLock;
 std::unordered_map<std::string, std::string> g_Aliases;
+std::vector<std::string> g_Borrowed; // SetBorrowedAnimations' files
 
 std::string AliasOf(const std::string& wanted)
 {
@@ -795,9 +797,11 @@ EngineObject* __fastcall OpenManualHook(uint8_t* packer, void* edx, EnginePath* 
     for (char& c : wanted)
         c = char(tolower(static_cast<unsigned char>(c)));
     if (!reader || *reinterpret_cast<uint32_t*>(packer + 0x1D0) != 2) {
-        // Not streaming (a character spawned once the level has loaded): the engine opens the disc file,
-        // which for a PAK-only binding does not exist (its file reader then crashes, 0x232190). Those
-        // are served from a copy like the ones the stream lacks.
+        // Not streaming (a character spawned once the level has loaded): the engine parses an entry
+        // header from the packer's reader (0x51600), gone with the level's stream, and faults in its
+        // file reader (0x232190) without end. Those are served from a copy like the ones the stream
+        // lacks; with none (a mod's body never worn yet: no binding rebuilt in cache\disc\) the answer
+        // is the engine's own "not there" (null), and the caller (0x4B0BD) has the binding rebuilt.
         std::wstring onDisc = g_GameData;
         for (const char* c = full + 2; *c; ++c)
             onDisc += wchar_t(static_cast<unsigned char>(*c));
@@ -805,7 +809,8 @@ EngineObject* __fastcall OpenManualHook(uint8_t* packer, void* edx, EnginePath* 
             return g_OriginalOpenManual(packer, edx, path);
         if (EngineObject* copy = OpenManualCopy(full, wanted, g_LevelIndex))
             return copy;
-        return g_OriginalOpenManual(packer, edx, path);
+        LOG_INFO("PAK: %s (manual) is nowhere yet: built by the engine", wanted.c_str());
+        return nullptr;
     }
     char pakPath[512] = {};
     BuildPath(reinterpret_cast<EnginePath*>(packer + 0x174), nullptr, pakPath, 0);
@@ -953,24 +958,33 @@ bool IsCharacterContent(const std::string& path)
 }
 
 // The loose textures (.stx) of a folder under mods\ (e.g. "meshes\chars\luke\"), declared to the level when it has
-// not: a mod's new character's.
+// not: a mod's new character's. With them its attachment points (.gat) and bounds (.gin): a weapon's loader asks
+// only for declared ones, and a saber without its .gat draws its blade from the hand, across the hilt.
 constexpr int kTextureType = 0;
+constexpr int kAttachmentType = 33;
+constexpr int kBoundsType = 34;
 
 void DeclareLooseTextures(uint8_t* scene, const std::string& folder)
 {
-    for (const std::string& texture : LooseResourceNames(folder)) {
-        if (texture.size() < 4 || texture.compare(texture.size() - 4, 4, ".stx") != 0)
+    static const struct { const char* extension; int typeId; } kCompanions[] = {
+        { ".stx", kTextureType }, { ".gat", kAttachmentType }, { ".gin", kBoundsType } };
+    for (const std::string& file : LooseResourceNames(folder)) {
+        if (file.size() < 4)
+            continue;
+        const auto companion = std::find_if(std::begin(kCompanions), std::end(kCompanions),
+            [&](const auto& c) { return file.compare(file.size() - 4, 4, c.extension) == 0; });
+        if (companion == std::end(kCompanions))
             continue;
         alignas(4) uint8_t path[0x100] = {};
-        PathFromText(path, nullptr, texture.c_str(), 1);
+        PathFromText(path, nullptr, file.c_str(), 1);
         auto* enginePath = reinterpret_cast<const EnginePath*>(path);
-        if (SceneIsDeclared(scene, nullptr, enginePath, kTextureType))
+        if (SceneIsDeclared(scene, nullptr, enginePath, companion->typeId))
             continue;
-        const std::string full = "d:\\" + texture;
+        const std::string full = "d:\\" + file;
         WIN32_FILE_ATTRIBUTE_DATA loose{};
         if (GetFileAttributesExW(LooseHostPath(full.c_str()).c_str(), GetFileExInfoStandard, &loose) &&
-            Declare(scene, enginePath, kTextureType, loose.nFileSizeLow))
-            LOG_INFO("Declare: %s (type 0), loose, with its mesh", full.c_str());
+            Declare(scene, enginePath, companion->typeId, loose.nFileSizeLow))
+            LOG_INFO("Declare: %s (type %d), loose, with its mesh", full.c_str(), companion->typeId);
     }
 }
 
@@ -1301,15 +1315,17 @@ bool AnimationLookupResolved(void* self, void* edx, void* script, void* classInf
             const size_t n = strlen(tail);
             return file.size() > n && file.compare(file.size() - n, n, tail) == 0;
         };
-        const bool duelAnimation = endsWith("_intro.bnm") || endsWith("_outro.bnm");
+        const bool duelAnimation = endsWith("_intro.bnm") || endsWith("_outro.bnm") ||
+            std::find(g_Borrowed.begin(), g_Borrowed.end(), file) != g_Borrowed.end();
         if (entry && !duelAnimation && LoadUndeclared(g_LevelScene, entry->name, *entry)) {
             ++resolved;
             continue;
         }
         if (entry && duelAnimation && found && found->count > 0 && found->data[0]) {
             // Another duelist's Versus intro or outro, asked for by a class a custom character plays it on (Intro=,
-            // customchars.cpp): the class finds animations only in its own folder, that of the animations it found
-            // (declared in the duelist's own folder, it would not be found; the level may hold it there already).
+            // customchars.cpp), or one a mission borrows ([Animations], missions.cpp): the class finds animations only
+            // in its own folder, that of the animations it found (declared in the owner's own folder, it would not be
+            // found; the level may hold it there already).
             std::string other = static_cast<const char*>(found->data[0]) + 4;
             for (char& c : other)
                 c = char(tolower(static_cast<unsigned char>(c)));
@@ -1499,6 +1515,11 @@ void RegisterResourcePatch(const std::string& lowerName, ResourcePatch patch)
 {
     std::lock_guard<std::mutex> lock(g_PatchLock);
     g_Patches[lowerName] = patch;
+}
+
+void SetBorrowedAnimations(std::vector<std::string> lowerFiles)
+{
+    g_Borrowed = std::move(lowerFiles);
 }
 
 void RegisterResourceGenerator(ResourceGenerator generator)

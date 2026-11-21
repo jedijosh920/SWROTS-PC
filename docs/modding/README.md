@@ -17,6 +17,8 @@ No PAK rebuilding or disc image editing is needed.
   name and side; another class's moves), dropped into `mods\characters\`
 - [Custom maps](custom-maps.md): a map of a mod's own (a model and collision boxes) on the developer map, for
   Heroes vs Villains or walking around, dropped into `mods\maps\`
+- [Missions and modes](missions.md): a mission or game mode of a mod's own, a Lua script with cutscenes, camera
+  shots, dialogue, objectives and timers, dropped into `mods\missions\`
 - [How loading works](how-loading-works.md): level PAKs, load order and what the port does to allow overrides
 - [File formats](file-formats.md): what is known about the PAK, STX and MSH formats (weapon and character
   models; `tools/meshes/charmsh.py` reads and writes character models) and the character table

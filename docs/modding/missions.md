@@ -1,0 +1,381 @@
+# Missions and modes
+
+Missions, bonus missions, game modes and scripted scenes of your own, written as a small text script in
+[Lua](https://www.lua.org/manual/5.4/) and shared as one folder. A mission plays on the developer map or on a
+[custom map](custom-maps.md), with the game's characters or [custom characters](custom-characters.md), and can have
+cutscenes, dialogue, objectives, timers and its own ending.
+
+The game's own missions are not written this way: their levels wire the game's objects together (trigger volumes,
+cinematic players, objective markers) in a binary level file made with the developers' editor, and their cutscenes
+are pre-made cinematic files. A mission of a mod's own runs on the port's script instead, with functions that use the
+game's own pieces where they can (its characters, moves, camera, HUD font, death and mission flow).
+
+## Installing and playing one
+
+Copy the mission's folder into `mods\missions\`, next to `swrots.exe`:
+
+```
+mods\missions\<id>\mission.ini     its name, map, player and cast
+mods\missions\<id>\mission.lua     its script
+mods\missions\<id>\lines.ini       its dialogue (optional)
+mods\missions\<id>\picture_small.stx  its pictures on the Select Custom Mission screen (optional): the row's, 128x32
+mods\missions\<id>\picture_large.stx  and the large one, 256x128 (as the game's bonus mission pictures)
+mods\missions\<id>\planet.stx         its location's picture there (optional), 128x128 (as the game's planets)
+```
+
+Every installed mission, whoever made it, is in the main menu under **Single Player > Custom Missions** (below Bonus
+Missions; the row is only there when a mission is installed). It opens the game's own mission select screen, **Select
+Custom Mission**: the missions in a row of pictures, and for the one under the cursor its name, the character you
+play (with its head picture), the location (its map's name, or Developer Map) and its description (one line; about
+55 characters fit). **A** starts it, **B** goes back to the main menu. A mission without pictures of its own shows its
+map's (`mods\maps\<map>\arena_small.stx`, `arena_large.stx` and `planet.stx`, see [custom maps](custom-maps.md)),
+else none. The character's head is the game's select-screen head for the Versus fighters and Yoda, and a custom
+character's own (its `s_selduel_<costume>head.stx`).
+
+With the debug menu on (`DebugMenu=1` in `settings.ini`), its **Missions** tab lists them too, each with its
+description and a **Start** button, and the debug console starts one with `mission <id>` (`mission` alone lists
+the installed ones). A mission that needs a custom map or custom characters needs those installed too.
+
+## mission.ini
+
+```ini
+[Mission]
+Name=Duel of the Fates           ; as shown
+Description=Obi-Wan and a Jedi Master against Darth Maul
+Map=                             ; a custom map's id (mods\maps\<id>); empty or left out: the developer map's floor
+Player=IObiwan                   ; the player's character (a class: the game's or a custom character's)
+PlayerAt=0 -300 0                ; where the player starts: x z (the map's coordinates) and the heading (degrees)
+Music=mus_ingamebattle28_lp      ; its music (optional): one of the game's music slots; mus_<slot>.hwx in the
+                                 ; mission's folder plays in its place (see replacing-music.md); else the map's
+
+[Cast]
+; name=Class, x z heading, side[, costume]
+master=ICinDrallig, -150 -300 0, ally
+maul=IMaul, 0 300 180, enemy
+```
+
+The objectives are the game's own (the HUD's "NEW OBJECTIVE:", the pause screen's Objectives), named in
+`[Objectives]` as `name=text` (at most 49):
+
+```ini
+[Objectives]
+maul=Defeat Darth Maul
+survive=Survive the waves
+```
+
+Tips are the game's own too (its tip box, shown after an objective's banner), in `[Tips]` as `name=text`, with
+`| seconds` for how long it shows (default 6):
+
+```ini
+[Tips]
+block=Hold the block button to deflect Maul's attacks | 6
+```
+
+Places characters can be sent to (see `walk` below) are named in `[Markers]`, as `name=x z`:
+
+```ini
+[Markers]
+gate=0 120
+pit=0 600
+```
+
+Force fields (the game's own laser door field from the Jedi Temple: drawn from both sides, it blocks characters while
+on) are named in `[Fields]`, as `name=x z heading [scale] [off]`: at heading 0 the field stands across the z axis
+(closing the way along z), 50 units wide and 100 high at scale 1 (2.75 is a wide door); `off` makes it start switched
+off. `field(name, on)` switches it (below). Their colour is the game's blue unless `[Mission]` names another as
+`FieldColour=r g b` (0-255, e.g. `255 25 15` for red lasers): the field's textures are recoloured for that mission.
+
+```ini
+[Fields]
+gate=0 0 0 2.75
+```
+
+Animations of other characters a character plays (`play_anim`, below) are named in `[Animations]`, as
+`<cast name, player or class>=<animation>, <animation>...`, the animations' file names without `.bnm` (any character's,
+from any level: the port loads them with the mission):
+
+```ini
+[Animations]
+maul=anakin_atk_kill_lunge_humangb
+quigon=dooku_death
+```
+
+A character's own animations need no entry. The animations go to the character's class (its base's, for a custom
+character): every character of that class can play them.
+
+The cast are placed in the level before it loads, so they come with their classes' sounds, as Heroes vs Villains'
+fighters do (characters spawned later by the script have none). The script finds them with `cast("<name>")`. A side
+is `ally` (on the player's side), `enemy`, `neutral` (attacks no one until hit) or `riot` (everyone's enemy); left
+out, the class's own.
+
+Coordinates are the map's own (the ones its `map.ini` uses; on the developer map, units from the middle of the floor),
+`x` and `z` across the floor, heights (`y`) from the floor up. A character is about 90 units tall (its chest about 50, its eyes about 75).
+
+## lines.ini
+
+```ini
+[Lines]
+qg_mindful=quigon|Be mindful of your feelings, Obi-Wan.   ; speaker|text
+obi_handle=player|We'll handle this.
+
+[Seconds]
+qg_mindful=2.5          ; how long the line lasts (optional: its voice's length, else from the text's)
+
+[Voice]
+obi_handle=obi_handle.wav   ; its voice: a WAV in the mission's folder (16-bit PCM; any rate, mono or stereo)
+```
+
+A line's speaker is a character of the cast (by its `[Cast]` name) or `player`. The line is then the game's own
+dialogue: `say("qg_mindful")` has that character say it, with the game's subtitle (its speaker name and the text,
+"QUI-GON: Be mindful...", shown with the game's subtitles on: a mission turns them on while it runs) and its voice in
+the game's mix (the port adds the mission's lines to the game's dialogue archive, the voices made into its format in
+`cache\voice\missions\`). A line without a voice is silent and shows for as long as `[Seconds]` (or its text) says.
+During a cutscene the characters say nothing but the mission's lines. A speaker with no lines of its own in the level
+(Palpatine's are his own levels') says it through another character's dialogue, under its own name. A line whose speaker is no character (any other
+name) shows as the port's own subtitle. `say(id, c)` has another character say it.
+
+## mission.lua
+
+The script defines `main()`, which the port runs once the level is ready. Waiting functions (`wait`, `wait_until`,
+`say`, ...) pause the script while the game goes on; everything else returns at once.
+
+```lua
+function main()
+  local maul = cast("maul")
+  cutscene(function()                 -- bars, everyone holds still, the player can skip it
+    camera_orbit(maul, 200, 55, -40, 40, 4)
+    title("DUEL OF THE FATES", "Theed, Naboo", 3)
+    play(maul, "Maul_Intro")
+    wait(4)
+    say("qg_mindful")
+  end)
+  objective("maul")
+  wait_until(function() return not alive(maul) end)
+  complete("The Sith is defeated")
+end
+```
+
+A mode is the same: a survival mode, for example, is a loop that spawns waves, counts them with `counter()` and ends
+with `fail()` when the player falls:
+
+```lua
+function main()
+  objective("survive")
+  timer("TIME")                                   -- counts up
+  for wave = 1, 10 do
+    counter("WAVE", wave)
+    local enemies = {}
+    for i = 1, wave + 1 do
+      enemies[i] = spawn("ICloneTrooper", math.random(-600, 600), math.random(-600, 600), 0, "enemy")
+    end
+    wait_until(function()
+      for _, e in ipairs(enemies) do if alive(e) then return false end end
+      return true
+    end)
+    notice("WAVE " .. wave .. " CLEARED", 3)
+    wait(3)
+  end
+  complete("All waves survived in " .. math.floor(timer_value()) .. " seconds")
+end
+```
+
+## The functions
+
+Characters are handles (numbers) from `player()`, `cast()` or `spawn()`. A handle of a character that has left the
+level is safe to use: functions on it do nothing, `alive()` and `exists()` are false.
+
+### Flow
+
+| Function | |
+|---|---|
+| `wait(seconds)` | pauses the script (the game's time: a pause of the game pauses it) |
+| `wait_until(fn [, timeout])` | pauses until `fn()` returns true; false if the timeout (seconds) came first |
+| `thread(fn)` | runs `fn` alongside `main` (e.g. a timer's check, a second objective) |
+| `time()` | the game's time in seconds (stops while the game is paused) |
+| `paused()` | true while the game is paused |
+| `complete([text])` | the mission is complete: the end shows, then the main menu. The end's words show over the scene as it stands (a cutscene's last shot stays up: nothing after `complete` or `fail` runs), then it fades to black |
+| `fail([text])` | the mission is failed: the end shows, then the mission starts again |
+| `on_player_defeated()` | define it to decide what the player's defeat does (it runs once, the player kept standing with 1 health); without it the player's defeat is the game's own (its Game Over screen: Restart or Quit) |
+| `log(text)` | writes to the game's log (`logs\swrots.log`), for testing |
+
+### Characters
+
+| Function | |
+|---|---|
+| `player()` | the player's character |
+| `cast(name)` | a character of `mission.ini`'s `[Cast]` |
+| `spawn(class, x, z [, heading, side, costume])` | a new character; returns it (nil when it cannot) |
+| `remove(c)` | takes a character away |
+| `alive(c)`, `exists(c)` | standing (health above 0); in the level |
+| `health(c)` / `set_health(c, f)` | its health as a fraction of its most (0 to 1) |
+| `max_health(c [, value])` | its most health (and sets it) |
+| `invincible(c, on)` | no damage while on |
+| `position(c)` | x, z, height |
+| `distance(a, b)` | between two characters, across the floor |
+| `place(c, x, z [, heading, height])` | moves it there; with a height above the floor it falls from there (below it, it falls away: a pit). A `go`/`walk` it was on is over |
+| `face(c, other)` | turns it toward another |
+| `side(c, "ally" / "enemy" / "neutral" / "riot")` | changes its side |
+| `ai(c, on)` | its AI on or off (off: it stands still); a `go` it is on no longer switches its AI off when it gets there |
+| `attack(c, target)` | its AI goes after that target |
+| `force_powers(c, powers)` | the Force powers a custom character with the port's Force (`ForceFrom=`) uses from now on, any of `"Push Grip SaberThrow Lightning Heal"` (`""`: none), e.g. a boss who does not heal himself; false for any other character |
+| `quiet(c [, on])` | it says no line of its own (battle cries, taunts, grunts), only the script's (`say`); `quiet(c, false)`: as before |
+| `walk(c, marker [, timeout])` | it runs to a marker of `[Markers]` its own way (as the game's AI goes to places) and the script waits until it is there (true) or `timeout` seconds (default 20) passed (false); works in cutscenes too, and for characters whose AI is off (actors): their AI is on for the way, off again once there |
+| `go(c, marker [, fight])` / `going(c, marker)` | the same without waiting (with `fight`, it fights what it meets on the way); whether it is still on its way |
+| `marker(name)` | a marker's x, z |
+| `field(name, on)` | a force field of `[Fields]` on (it lights up and blocks) or off (it fades away and lets through); a character the field stopped gives up its `go`/`walk`: send it again |
+| `hold(on)` | everyone holds still and the player's controls are held (as in cutscenes) |
+| `kill(c)` | defeats it at once |
+| `boss(c)` | it is the mission's boss, as a story duel's: its health bar with its portrait on the HUD (the game's player 2); `boss(nil)`: none |
+| `set_player(c)` | the player becomes that character where it stands (its class and health); the character itself leaves, and the character the player was stays where it stood, on the player's side: returns true and that character (e.g. `local _, master = set_player(padawan)`) |
+| `class_of(c)` | its class's name |
+
+### Moves
+
+| Function | |
+|---|---|
+| `play(c, move [, speed])` | plays one of its moves by name: intros (`<Name>_Intro`), idles (`Idle_Flavor_v1`), falls (`Death`), reactions; false when it has none of that name |
+| `play_anim(c, animation [, options])` | plays an animation: one of its moves (by its name or its animation's), or one of `[Animations]`. Options: `from` / `to` (the animation's own frame numbers, 60 a second; left out, its first / last), `loop` (`from`..`to` again and again until `stop_anim`; it jumps from `to` back to `from`, so pick two frames alike), `bounce` (a loop that plays `to` back to `from` and on again, never jumping: a breathing or idle pose), `hold` (stops on `to` and keeps that pose, e.g. a body that stays down), `speed` (1 normal; 0 holds the pose at `from`), `blend` (seconds to blend in from the pose it was in; default 0, at once), `partner` + `partner_anim` (a paired kill, see below). Neither `loop` nor `hold`: it plays to `to` (or its end) and the character carries on as before. A hit, its death or its own AI can still end it, except on an actor (`actor`). False when it has no such animation |
+| `actor(c [, on])` | makes it a cutscene actor (`actor(c, false)`: as it was): it does only what the script says (moves, walks, sabers, lines): its AI is off, no hit reaches it (no damage, no reaction, no block), no one attacks or targets it, and an animation `play_anim` gives it stays on (put back if anything puts it away). A body that never gets up: `actor(c)`, then `play_anim(c, "dooku_death", {hold = true})` |
+| `hide(c [, on])` | takes it out of sight where it stands, as the game's own cinematics hide a character (`hide(c, false)`: back at once, in the pose it had): meanwhile an actor (see `actor`), quiet, and no one bumps into it. For a cutscene's stand-ins (see [Cutscenes with stand-ins](#cutscenes-with-stand-ins)) |
+| `keep_body(c [, on])` | when it dies, its body stays where it fell (the game's own "cinematic death": no fade, not taken away). With `actor(c)` once it has fallen, nothing wakes it |
+| `pushable(c, on)` | whether characters walking into it push it aside (and it them): off, they pass through it and it stays put (a body lying in the way) |
+| `stop_anim(c)` | ends `play_anim`'s loop or held pose: the character goes back to what it does (its idle) |
+| `anim_frames(c)` | its current animation's frame, first and last frames and name (`log(anim_frames(c))`), to find `from` / `to` |
+| `moves(c)` | the names of its moves, as a table (`log(table.concat(moves(c), ","))` lists them) |
+| `saber(c, on [, seconds])` | its sabers lit or put away, as the game's cinematics do: the blade grows or shrinks over `seconds` (default 0.4) with the saber's sound; 0 at once, silent. A saber put away stays away (also while it fights) until `saber(c, true)`; false when it has none |
+| `saber(c)` | whether one of its sabers is lit |
+| `saber_color(c, colour)` | its saber colour from now on: `"red"`, `"green"`, `"blue"`, `"purple"` or `"r g b"` (0-255 each), e.g. a Padawan who takes up his Master's saber; any character with a lightsaber (false for one without). The colour the player had comes back when the mission ends or starts again |
+
+### Camera
+
+Heights are from the floor; `look` is the height on the character the camera looks at (default 50, the chest). A cutscene uses a 35 degree lens (the levels' own is about 80): a close shot is a narrow lens from a little way off, e.g. `camera_fov(25)` and `camera_move(c, 20, 70, 150, 15, 68, 130, 2, 62)` for a head-and-shoulders shot.
+
+| Function | |
+|---|---|
+| `camera_orbit(c, radius, height, from, to, seconds [, look])` | circles the character from `from` to `to` degrees (0: in front of it) |
+| `camera_move(c, x1, y1, z1 [, x2, y2, z2, seconds, look])` | from one place by the character to another, in its own frame at the start: `x` to its right, `y` up, `z` ahead of it |
+| `camera_track(x, y, z, c [, look])` | stands at a point of the map and follows the character |
+| `camera_fixed(x, y, z, tx, ty, tz)` | stands at a point of the map and looks at another |
+| `camera_fov(degrees)` | the lens (field of view) until `camera_game()`; without a number, the game's |
+| `camera_game()` | the game's own camera and lens again (cutscenes end with it) |
+
+### Screen
+
+| Function | |
+|---|---|
+| `cutscene(fn)` | runs `fn` as a cutscene: bars, the game's HUD hidden, everyone held; the player skips it by pressing A or Start twice (the first press asks; its `wait`s and `say`s then end at once; `wait_until` does not). A line someone is saying as it starts (a fighter's taunt) stops, and no one says a line of their own during it: only its own. Skipped, its lines stop and it says no more |
+| `letterbox(on [, seconds])` | the game's own cutscene bars slide in or out (0.5 s); while they are in, the game counts it a cutscene (its HUD hidden) |
+| `tip(name)` | a tip of `[Tips]` shows |
+| `fade_out(seconds)` / `fade_in(seconds)` | to black and back |
+| `say(id [, c])` | a line of `lines.ini` said by its speaker (or `c`), waiting until it is over (and, while another line is being said, until that one ends) |
+| `stop_lines()` | the lines being said stop at once (their voices fade out, their subtitles go), as the game interrupts a line for a more important one; `cutscene` does it as it starts |
+| `speak(speaker, text [, seconds])` | a line written in the script, waiting until it is over |
+| `subtitle(speaker, text [, seconds])` / `line(id)` | the same without waiting (they return the line's length) |
+| `objective(name)` | an objective of `[Objectives]` becomes the new one: the game's own "NEW OBJECTIVE:" and the pause screen's Objectives list |
+| `objective_done(name)` | it is completed |
+| `title(text [, smaller, seconds])` | a big title in the middle |
+| `notice(text [, seconds])` | a notice, upper middle |
+| `timer(label [, seconds])` | a timer at the top: counting down from `seconds`, or up |
+| `timer_value()` / `timer_stop([hide])` | its seconds; stops it (and hides it) |
+| `counter(label, value)` / `counter(label)` | a counter, top right (e.g. `counter("WAVE", 3)`); without a value: removed |
+| `hud(on)` | the game's own HUD (health, Force) shown or hidden |
+| `skipping()` | true while a cutscene is being skipped |
+
+### Sound
+
+| Function | |
+|---|---|
+| `sound(file [, volume])` | plays a WAV of the mission's folder (16-bit PCM, mono or stereo) over the game's sound; returns its length in seconds |
+| `stop_sounds()` | stops the mission's sounds |
+| `music_volume(f)` | the music at `f` times the player's own music volume (0 silent, 1 as set), e.g. under a dramatic moment; put back at the mission's end |
+
+A line of `lines.ini` with a `[Voice]` file is said with it (see lines.ini above).
+
+### The game
+
+| Function | |
+|---|---|
+| `slow_motion(scale [, ramp])` | the game's own slow motion (as its kill moves use): everything at `scale` of its speed (0.3: a third), easing in over `ramp` seconds (default 0.15), also in cutscenes; `slow_motion(1)` back to normal. The script's waits run on real time. Back to normal when the mission ends |
+| `set_var(name, value)` | sets a game variable, as the console's `set` |
+| `get_var(name)` | a game variable's value (text), or nil |
+| `command(text)` | runs a debug console command |
+
+The script has Lua's base functions, `string`, `table`, `math` and `coroutine`; no files, no loading of other code.
+
+### Paired kills
+
+The game's kill moves come in two halves, played together: the attacker's (`..._gb`, the grabber) and the victim's
+(`..._gr`, the grabbed), made around one shared spot. `play_anim` plays one as the game does when an attacker's
+animation of `[Animations]` is given a partner:
+
+```lua
+-- [Animations] maul=anakin_atk_kill_lunge_humangb
+play_anim(maul, "anakin_atk_kill_lunge_humangb", {partner = quigon, partner_anim = "Kill_Lunge_GR"})
+```
+
+As the attacker's half starts, the partner is grabbed (held to the attacker: the blade goes where it should, wherever
+the two stood) and plays its half, a move of its own by name (`Kill_Lunge_GR` is every human's: the saber's heavy
+impact, then the fall, `Fall_StandingF`, and lying on its back, `R_OnBack`). The attacker's half shows the blade's
+impale at its frame code 6, in slow motion until its frame code 20 (as Anakin's own lunge kill, at half speed). The
+option `slow` sets a slower one that lasts until the script's `slow_motion(1)` or the move's end, for a kill that
+lands with weight: `{partner = quigon, partner_anim = "Kill_Lunge_GR", slow = 0.35}`. A partner that is an
+actor (`actor`) takes no damage from it and stays alive; `play_anim(c, "R_OnBack", {bounce = true, speed = 0.5})` then
+keeps it lying there, breathing, and `pushable(c, false)` keeps it from being pushed about. The pairs on the disc are
+the `*_kill_*` animations in `animation\grapple\` (e.g. `anakin_atk_kill_lunge_humangb` / `..._humangr`); the victim's
+move for a pair is the one the game's reaction tables give it (`Kill_Lunge_GR` for the lunge).
+
+### Cutscenes with stand-ins
+
+A cutscene played by the fighters themselves inherits whatever the fight left them in: a hit's reaction, a knockdown,
+the spot they were knocked to, the player's own move. For a scene that must play the same every time, let doubles
+play it: a character of the same class for each part, made once (`spawn`, `actor`, `quiet`, `pushable(d, false)`),
+then hidden until its scene. The scene shows its doubles where it wants them and hides the fighters; at its end the
+fighters come back where their doubles stand, and the doubles are hidden again:
+
+```lua
+local d = spawn("IMaul", x, z, 0, "neutral")          -- once, under the mission's opening black
+actor(d); quiet(d); pushable(d, false)
+wait(0.2); hide(d)                                    -- (a character's first frames come late: drawn a moment first)
+
+cutscene(function()
+  hide(d, false); place(d, 0, 210, 0); hide(maul)     -- the double takes the part, on the scene's first cut
+  -- ... the scene, with d ...
+  local x, z = position(d)
+  hide(maul, false); place(maul, x, z, 0); hide(d)    -- the fighter back, before the scene ends
+end)
+```
+
+The swap is not seen when it happens on a cut (the camera and the characters change on the same frame) or under a
+fade. The player's own character is best back a moment before the scene ends (on its last cut, or under black): the
+game's camera then has found it when the scene hands over. A double that ends a scene in a pose of its own (kneeling,
+lying) is best not used again: a later scene that needs that character standing has a double of its own. Lines a
+hidden character says go through its double: `say(id, d)`.
+
+## Testing a script
+
+A mission is read when the game starts it, so a change takes effect at the next `mission <id>`. Errors in the script
+show at the bottom of the screen and in `logs\swrots.log` (`Mission: script error: ...`); `log()` writes there too.
+
+To get to a later part quickly, `mission next` in the console (or F8, or the debug menu's **Next part**, with the debug
+menu on) skips the cutscene playing, or, outside one, ends the script's current `wait_until` or `wait` at once (it
+returns true): a fight the script waits on is over and the next part begins. Code after the wait still runs, so a
+fight's wait followed by `set_health(boss, 0.5)` leaves the boss as the story expects. Only the story's own waits
+(`main`'s) end: a `thread`'s wait (one watching for a death, say) goes on, so a script that skips ahead has to bring
+about what its threads wait for, e.g. `kill(jedi)` for one waiting on `not alive(jedi)`.
+
+## How it works (for developers)
+
+`src/game/missions.cpp`: the mission's folder is read at each start of the game image; a start with the launch
+argument `mission:<id>` (on the developer map, `custommap:<id>` for its map) lays out the level (the cast placed as the
+dev map's characters, `devmapbuild.h`), sets the player's class and start and loads the script. Once the level runs, its
+cast is woken and `main` runs as a Lua 5.4 coroutine (`third_party/lua`), resumed once a frame while the game is not
+paused; the prelude's waits are loops of yields. The player's fatal hit goes to the mission (coop.h's fatal-hit guard),
+so the game never shows its own Game Over. Cameras are the port's director over the game's camera (freecam.h), the
+screen is drawn in the game's font (`src/debug/missionhud.cpp`). `[Animations]` are sequences added to the classes' scripts (`classsetup.h`)
+playing the animations, which the class finds in its own folder (`resources.cpp` declares them there); `play_anim`'s
+ranges, loops and holds are kept by a hook on the character's animation tick (its `TCharState`, vtable 0x58EFB8 +0x24),
+before the sequence's end is reached. `actor` marks script actors (`characters.h`): the hit reaction and the enemy
+check leave them out (see docs/research/characters.md, "Hits, targets and the dead"). A paired kill is the
+`[Animations]` sequence doing what the game's own attacker sequences do (docs/research/characters.md, "Paired
+kills"). A walk (`go`) is the game's AI goto; `place` and `actor(c, false)` call it off (the goto controllers let go
+of the marker), so a walk a cut interrupted does not carry on once the character's AI is back.
