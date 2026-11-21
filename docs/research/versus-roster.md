@@ -85,11 +85,24 @@ number: 0-8 are the fighters, 9 is Random.
   (`yodaintro.cpp`): a cutscene keeps each actor's animation as a clip's memory image, and his bonus
   mission's opening one (`cinematics\u113\cin_u113_010.cin`, actor `R1_Yoda_baseShape`) ends with
   him reaching out with the Force and standing on guard; its last 2.4 s become `Yoda_Intro`
-  (without the cutscene's `origin` track; his cameras are Anakin's, scaled to his size), served as a
-  generated memory image and played as a custom character's own intro (`customchars.cpp`). His
-  line is "Touch me you cannot!" (YDA060), which only his mission's dialogue archive has: it is
-  added to the generic one, and asked for through one of his kill lines (he has no lines for the
-  "Versus" context, and his taunts need clones or droids).
+  (without the cutscene's `origin` track and his face's tracks, his root turned to face +z as the
+  duelists' intros do; his intro camera is a fixed shot of him, his win camera Anakin's scaled to his
+  size), served as a generated memory image and played as a custom character's own intro
+  (`customchars.cpp`). A character's weapons follow its clip's tracks by their place (his saber the 23rd,
+  his right wrist in his own clips), and the engine keeps the binding it rebuilt for his body in
+  `cache\disc\` whatever the clip has become since: the port drops it when the clip changes
+  (`cache\yoda_intro.stamp`). His saber is as the cutscene's events have it: away as the intro starts
+  (on his belt), back in his hand as he catches it, lit then (`CinEvent_ToggleSaber`). The intro has no
+  line: the game has none for him in the "Versus" context.
+- **Yoda's lines.** The generic dialogue database (`dialogue\gen_dialogue.ddb`) has his kill lines, but
+  his taunts need clones, droids or a Sith; his mission's database (`u113_dialogue.ddb`, the generic one
+  with its own entries added) has more taunts and kill lines of his (category U11). The port adds those
+  to the generic database as generic entries said against anyone (`yodalines.h`: YDA058 and YDA060 as
+  taunts, YDA066, YDA067, YDA068 and YDA072 as kill lines), their voices taken from his mission's
+  dialogue archive into the generic one. The database: entries sorted by name, each numbered (its index)
+  and counted twice before them; an entry is its kind, index, a row number, the entry answering it, its
+  event's code, its line, its name (event, speaker, number, category), its context and its condition
+  (`EnemyIsA( Clone )`).
 
 ## Custom characters
 

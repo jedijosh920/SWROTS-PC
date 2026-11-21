@@ -12,12 +12,22 @@ namespace swrots::game::yodaintro {
 // reaches out with the Force and stands on guard), as an animation of his own (Yoda_Intro). The cutscene keeps
 // each actor's animation as the game's own clips are kept (a .bnm memory image per actor); his is cut from
 // kStartTime on, its keys moved to start at 0 (the first one made at the cut), without its "origin" track (the
-// cutscene's world position). He faces the duel camera as he faces the cutscene's.
+// cutscene's world position). His root is turned half a turn: the cutscene's faces -z, a duelist's intro +z (the
+// round's way, where the intro cameras are).
 constexpr const char* kCutscene = "cinematics\\u113\\cin_u113_010.cin";
 constexpr const char* kClipName = "Yoda_Intro";
 constexpr const char* kClipFile = "animation\\yoda\\yoda_intro.bnm";
 constexpr double kLift = 14; // his root raised (game units): the cutscene's stands 14 lower than his own clips
 constexpr int kStartTime = 300; // in the clip's time units (1/60 s): 5.0 s into the cutscene, 2.4 s before its end
+
+// His saber, as the cutscene has it: on his belt, pulled to his hand (it leaves the belt at 304 and is in his hand at
+// 326: its own actor, R1_LSaberYodaShape), off until 355 and lit then, the blade grown in 0.8 s (cin_u113_010.xml:
+// CinEvent_ToggleSaber). His intro starts with it away, brings it back in his hand as he catches it and lights it at
+// the cutscene's time.
+constexpr int kSaberCaughtTime = 326, kSaberOnTime = 355; // the cutscene's time units
+constexpr unsigned kSaberCaughtAfterMs = (kSaberCaughtTime - kStartTime) * 1000 / 60; // into his intro
+constexpr unsigned kSaberOnAfterMs = (kSaberOnTime - kStartTime) * 1000 / 60;
+constexpr float kSaberGrow = 0.8f;
 
 // His duel cameras (the duel asks for both): the intro a fixed shot of him (MakeIntroCamera); the outro Anakin's
 // (whose slot he took), brought down to his size (kCameraScale: his height over Anakin's). Memory images, as the game's (their pointers relocated by the loader through the table

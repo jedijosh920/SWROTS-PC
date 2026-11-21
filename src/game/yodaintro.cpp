@@ -164,6 +164,31 @@ Quat MixQuat(const Quat& a, Quat b, double f)
     return q;
 }
 
+// A rotation bounds' bytes (the low end and the span of each axis, in 1/127.5 from -1) holding these keys.
+void FitRotBounds(const std::vector<Quat>& keys, uint8_t bb[6])
+{
+    for (int i = 0; i < 3; ++i) {
+        double lo = 1, hi = -1;
+        for (Quat q : keys) {
+            if (q[3] < 0) // as EncodeRot keeps them
+                for (double& c : q)
+                    c = -c;
+            lo = std::min(lo, q[size_t(i)]);
+            hi = std::max(hi, q[size_t(i)]);
+        }
+        if (lo > hi)
+            lo = hi = 0;
+        const int qmin = std::clamp(int(std::floor((lo + 1) / 0.007843138)), 0, 255);
+        const int qspan = std::clamp(int(std::ceil((hi - Low(qmin)) / 0.007843138)) + 1, 1, 255);
+        bb[i * 2] = uint8_t(qmin);
+        bb[i * 2 + 1] = uint8_t(qspan);
+    }
+}
+
+// Turned half a turn about the vertical: a bone's key q is its local rotation's conjugate, so the turn (0, 1, 0, 0)
+// before it is q * (0, 1, 0, 0): (x, y, z, w) to (-z, w, x, -y).
+Quat HalfTurn(const Quat& q) { return { -q[2], q[3], q[0], -q[1] }; }
+
 Vec MixVec(const Vec& a, const Vec& b, double f)
 {
     return { a[0] * (1 - f) + b[0] * f, a[1] * (1 - f) + b[1] * f, a[2] * (1 - f) + b[2] * f };
@@ -231,10 +256,13 @@ std::vector<uint8_t> MakeIntroClip(const fullbody::ReadResource& read, std::stri
     const std::vector<uint8_t> extra(model.begin() + U32(model.data() + 0x38),
         model.begin() + U32(model.data() + 0x38) + U32(model.data() + U32(model.data() + 0x38)));
     uint32_t modelLowest = 0xFFFFFFFF;
+    std::vector<int> ownBones; // the bones his own clips animate
     for (uint32_t i = 0; i < U32(model.data() + 0x2C) && U32(model.data() + 0x30) + i * 4 + 4 <= model.size(); ++i) {
         const uint32_t th = U32(model.data() + U32(model.data() + 0x30) + i * 4);
-        if (th + 12 <= model.size())
+        if (th + 0x20 <= model.size()) {
             modelLowest = std::min(modelLowest, U32(model.data() + th + 8));
+            ownBones.push_back(U16(model.data() + th + 0x1C));
+        }
     }
     const std::vector<std::string> bones = BoneNames(boneText);
     const int origin = BoneIndex(bones, "origin"), root = BoneIndex(bones, "root_g");
@@ -297,6 +325,10 @@ std::vector<uint8_t> MakeIntroClip(const fullbody::ReadResource& read, std::stri
         const int cid = U16(th + 0x1C);
         if (cid == origin)
             continue; // the cutscene's position in its level
+        // only the bones his own clips animate (not his face's and ears'): a character's weapons follow its clip's
+        // tracks by their place (his saber the 23rd, his right wrist in his clips), not by their bones
+        if (std::find(ownBones.begin(), ownBones.end(), cid) == ownBones.end())
+            continue;
         if (th[0x12] != kFormat) {
             report = "a track of the cutscene's animation has another key format";
             return {};
@@ -321,6 +353,15 @@ std::vector<uint8_t> MakeIntroClip(const fullbody::ReadResource& read, std::stri
             transKeys = CutKeys<Vec>(trans, tk, kTransStride, kStartTime,
                 [&](const uint8_t* k) { return DecodeTrans(k, mm); }, [&](const Vec& v, uint8_t* k) { EncodeTrans(v, mm, k); },
                 &MixVec);
+        // the root turned to face the duel's intro camera (and the round's way, +z, as the duelists' intros)
+        if (cid == root && !rotKeys.empty()) {
+            std::vector<Quat> turned;
+            for (size_t k = 0; k + kRotStride <= rotKeys.size(); k += kRotStride)
+                turned.push_back(HalfTurn(DecodeRot(rotKeys.data() + k, bb)));
+            FitRotBounds(turned, bb);
+            for (size_t k = 0; k < turned.size(); ++k)
+                EncodeRot(turned[k], bb, rotKeys.data() + k * kRotStride);
+        }
         // the second bounds widened (liftedB): its keys written again in them
         if (second)
             for (size_t k = 0; k + kTransStride <= transKeys.size(); k += kTransStride)

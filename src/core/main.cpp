@@ -194,6 +194,7 @@ static void StartGame(const void* launchData)
     game::InstallHvvMenu();
     game::InstallResourceHooks(g_Boot.paths.gameData, g_Boot.paths.mods, g_Boot.paths.cache, g_Boot.dumpDir,
         g_Boot.logResources);
+    game::ForgetStaleBindings(g_Boot.paths.cache);
     game::InstallFreeCamera();
     audio::InitXboxGlobals();
 
