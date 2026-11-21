@@ -43,6 +43,7 @@
 #include "game/resources.h"
 #include "game/roster.h"
 #include "game/versus.h"
+#include "game/widescreen.h"
 #include "d3d/d3d.h"
 #include "input/controls.h"
 #include "kernel/kernel.h"
@@ -199,6 +200,7 @@ static void StartGame(const void* launchData)
     game::InstallResourceHooks(g_Boot.paths.gameData, g_Boot.paths.mods, g_Boot.paths.cache, g_Boot.dumpDir,
         g_Boot.logResources);
     game::InstallFreeCamera();
+    game::InstallWidescreen();
     audio::InitXboxGlobals();
 
     const XbeHeader& h = g_Xbe.Header();

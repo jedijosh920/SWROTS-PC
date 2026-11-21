@@ -83,7 +83,7 @@ void KeepAspect(HWND hwnd, WPARAM edge, RECT* r)
     AdjustWindowRectExForDpi(&frame, DWORD(GetWindowLongW(hwnd, GWL_STYLE)), FALSE,
         DWORD(GetWindowLongW(hwnd, GWL_EXSTYLE)), GetDpiForWindow(hwnd));
     const LONG fw = frame.right - frame.left, fh = frame.bottom - frame.top;
-    const double aspect = GetSettings().widescreen ? 16.0 / 9.0 : 4.0 / 3.0;
+    const double aspect = PictureAspect();
     LONG cw = r->right - r->left - fw, ch = r->bottom - r->top - fh;
     if (edge == WMSZ_LEFT || edge == WMSZ_RIGHT) {
         ch = LONG(cw / aspect + 0.5);

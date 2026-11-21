@@ -3,6 +3,7 @@
 #include "d3d/d3d.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 #include "core/crash.h"
@@ -11,6 +12,7 @@
 #include "debug/menu.h"
 #include "game/devoptions.h"
 #include "game/game.h"
+#include "game/menus.h"
 #include "core/window.h"
 #include "d3d/recorder.h"
 #include "kernel/kernel.h"
@@ -56,6 +58,114 @@ static const uint32_t kDeviceRefCount = 0x938;
 XboxState& State() { return g_State; }
 UINT RenderScale() { return g_RenderScale; }
 IDirect3DDevice9* Device() { return g_Device; }
+
+// ---------------------------------------------------------------------------
+// True widescreen (see d3d.h)
+// ---------------------------------------------------------------------------
+// A render target is widened when it has the back buffer's shape (the frame itself, its depth
+// buffer, and the copies and reduced copies post effects make of it), so that drawing between
+// them keeps one layout. Square or otherwise shaped targets (shadows, glows) are left alone.
+static bool IsWideSize(UINT width, UINT height)
+{
+    const UINT bw = g_State.pp.BackBufferWidth, bh = g_State.pp.BackBufferHeight;
+    return TrueWidescreen() && bw && bh && width * bh == height * bw && width * 8 >= bw;
+}
+
+UINT HostWidthFor(UINT xboxWidth, UINT xboxHeight)
+{
+    const UINT k = g_RenderScale, narrow = xboxWidth * k;
+    if (!IsWideSize(xboxWidth, xboxHeight))
+        return narrow;
+    // As wide as the picture's shape at this height, with a margin of whole Xbox pixels on each side,
+    // so the centred frame starts on a whole pixel and the game's widened view (WideMargin) fits exactly.
+    const UINT wide = UINT(float(xboxHeight * k) * PictureAspect() + 0.5f);
+    if (wide <= narrow)
+        return narrow;
+    const UINT margin = UINT(float(wide - narrow) / float(2 * k) + 0.5f);
+    return narrow + 2 * margin * k;
+}
+
+int WideMargin()
+{
+    const SurfaceMap m = MapFor(g_State.backBuffer);
+    return m.wide ? int(m.centre) / int(g_RenderScale) : 0;
+}
+
+SurfaceMap MapFor(const PixelContainer* surface)
+{
+    SurfaceMap m;
+    if (!surface)
+        return m;
+    XboxSurfaceSize(surface, m.xboxWidth, m.xboxHeight);
+    const UINT k = g_RenderScale, narrow = m.xboxWidth * k;
+    m.hostWidth = HostWidthFor(m.xboxWidth, m.xboxHeight);
+    m.hostHeight = m.xboxHeight * k;
+    m.wide = m.hostWidth > narrow;
+    if (!m.wide)
+        return m;
+    m.centre = float((m.hostWidth - narrow) / 2);
+    // The HUD's room: the whole width, or a narrower shape (HudAspect) in the middle.
+    float hud = float(m.hostWidth);
+    if (GetSettings().hudAspect > 0.0f)
+        hud = std::clamp(float(m.hostHeight) * GetSettings().hudAspect, float(narrow), float(m.hostWidth));
+    m.left = std::floor((float(m.hostWidth) - hud) * 0.5f);
+    m.right = m.left + std::floor(hud - float(narrow));
+    return m;
+}
+
+float MapScreenX(const SurfaceMap& m, float x, Placement placement)
+{
+    // Xbox pixel i covers host pixels i*k .. i*k+k-1: a position x becomes x*k + (k-1)/2.
+    const float k = float(g_RenderScale);
+    if (!m.wide)
+        return x * k + (k - 1.0f) * 0.5f;
+    switch (placement) {
+    case Placement::Stretch:
+    case Placement::Cover:
+        return (x + 0.5f) * float(m.hostWidth) / float(m.xboxWidth) - 0.5f;
+    case Placement::Left:
+        return x * k + (k - 1.0f) * 0.5f + m.left;
+    case Placement::Right:
+        return x * k + (k - 1.0f) * 0.5f + m.right;
+    case Placement::Centre:
+        break;
+    }
+    return x * k + (k - 1.0f) * 0.5f + m.centre;
+}
+
+float MapScreenY(const SurfaceMap& m, float y, Placement placement)
+{
+    const float k = float(g_RenderScale);
+    if (!m.wide || placement != Placement::Cover)
+        return y * k + (k - 1.0f) * 0.5f;
+    // The width's scale (host pixels per Xbox pixel) for the height too, about the middle.
+    const float scale = float(m.hostWidth) / float(m.xboxWidth);
+    return (y + 0.5f - float(m.xboxHeight) * 0.5f) * scale + float(m.hostHeight) * 0.5f - 0.5f;
+}
+
+RECT CoverSource(const SurfaceMap& m)
+{
+    RECT r = { 0, 0, LONG(m.xboxWidth), LONG(m.xboxHeight) };
+    if (!m.wide)
+        return r;
+    const float shown = float(m.xboxHeight) * float(m.xboxWidth * g_RenderScale) / float(m.hostWidth);
+    r.top = LONG((float(m.xboxHeight) - shown) * 0.5f + 0.5f);
+    r.bottom = LONG(m.xboxHeight) - r.top;
+    return r;
+}
+
+void MapRangeX(const SurfaceMap& m, LONG x1, LONG x2, LONG& h1, LONG& h2)
+{
+    const LONG k = LONG(g_RenderScale);
+    if (m.wide && x1 <= 0 && x2 >= LONG(m.xboxWidth)) {
+        h1 = 0;
+        h2 = LONG(m.hostWidth);
+        return;
+    }
+    const LONG c = LONG(m.centre);
+    h1 = x1 * k + c;
+    h2 = x2 * k + c;
+}
 
 static void ResetPushBuffer()
 {
@@ -171,14 +281,16 @@ static HRESULT __stdcall XbCreateDevice(UINT adapter, DWORD deviceType, HWND foc
             LOWORD(gpu.DriverVersion.LowPart));
     }
 
-    const UINT hostWidth = pp->BackBufferWidth * g_RenderScale, hostHeight = pp->BackBufferHeight * g_RenderScale;
+    const UINT hostWidth = HostWidthFor(pp->BackBufferWidth, pp->BackBufferHeight);
+    const UINT hostHeight = pp->BackBufferHeight * g_RenderScale;
     if (FAILED(g_Device->CreateTexture(hostWidth, hostHeight, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8,
             D3DPOOL_DEFAULT, &g_HostBackTexture, nullptr)) ||
         FAILED(g_Device->CreateDepthStencilSurface(hostWidth, hostHeight, D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, FALSE,
             &g_HostDepth, nullptr)))
         Fatal("Could not create the %ux%u frame buffer. Lower ResolutionScale in settings.ini.", hostWidth, hostHeight);
     g_HostBackTexture->GetSurfaceLevel(0, &g_HostBackBuffer);
-    LOG_INFO("Rendering at %ux%u (%ux)", hostWidth, hostHeight, g_RenderScale);
+    LOG_INFO("Rendering at %ux%u (%ux)%s", hostWidth, hostHeight, g_RenderScale,
+        hostWidth > pp->BackBufferWidth * g_RenderScale ? ", true widescreen" : "");
     debug::MenuDeviceCreated(g_Device, GameWindow());
 
     // Xbox-side device and frame buffers.
@@ -285,12 +397,17 @@ static HRESULT __stdcall XbCopyRects(Surface* source, const RECT* rects, UINT co
         count = 1;
     }
     const LONG k = LONG(g_RenderScale);
+    const SurfaceMap fromMap = MapFor(source), toMap = MapFor(dest);
     for (UINT i = 0; i < count; ++i) {
         const RECT& r = rects[i];
         POINT at = points ? points[i] : POINT{ r.left, r.top };
-        RECT src = { r.left * k, r.top * k, r.right * k, r.bottom * k };
-        RECT dst = { at.x * k, at.y * k, (at.x + r.right - r.left) * k, (at.y + r.bottom - r.top) * k };
-        g_Device->StretchRect(from, &src, to, &dst, D3DTEXF_NONE);
+        RECT src = { 0, r.top * k, 0, r.bottom * k };
+        RECT dst = { 0, at.y * k, 0, (at.y + r.bottom - r.top) * k };
+        MapRangeX(fromMap, r.left, r.right, src.left, src.right);
+        MapRangeX(toMap, at.x, at.x + r.right - r.left, dst.left, dst.right);
+        // a wide frame's whole width copied into a narrow surface is resampled: filter it
+        const bool resized = src.right - src.left != dst.right - dst.left;
+        g_Device->StretchRect(from, &src, to, &dst, resized ? D3DTEXF_LINEAR : D3DTEXF_NONE);
     }
     return D3D_OK;
 }
@@ -332,8 +449,9 @@ static void __stdcall XbGetViewportOffsetAndScale(float* offset, float* scale)
     scale[1] = -(v.Height * 0.5f);
     scale[2] = (v.MaxZ - v.MinZ) * z;
     scale[3] = 1.0f;
-    offset[0] = v.Width * 0.5f + v.X + g_State.screenSpaceOffset[0];
-    offset[1] = v.Height * 0.5f + v.Y + g_State.screenSpaceOffset[1];
+    // X and Y are signed: a widened view's viewport starts left of the frame (game/widescreen.cpp).
+    offset[0] = v.Width * 0.5f + float(LONG(v.X)) + g_State.screenSpaceOffset[0];
+    offset[1] = v.Height * 0.5f + float(LONG(v.Y)) + g_State.screenSpaceOffset[1];
     offset[2] = v.MinZ * z;
     offset[3] = 0.0f;
 }
@@ -364,7 +482,8 @@ static void __stdcall XbSetScissors(DWORD count, BOOL exclusive, const D3DRECT* 
     if (exclusive || count > 1)
         LOG_DEBUG("SetScissors: count %lu exclusive %d (using first rect)", count, exclusive);
     const LONG k = LONG(g_RenderScale);
-    RECT r = { rects[0].x1 * k, rects[0].y1 * k, rects[0].x2 * k, rects[0].y2 * k };
+    RECT r = { 0, rects[0].y1 * k, 0, rects[0].y2 * k };
+    MapRangeX(MapFor(g_State.renderTarget), rects[0].x1, rects[0].x2, r.left, r.right);
     g_Device->SetScissorRect(&r);
     g_Device->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
 }
@@ -386,12 +505,17 @@ static void __stdcall XbClear(DWORD count, const D3DRECT* rects, DWORD flags, D3
 {
     const Viewport& v = g_State.viewport;
     const UINT k = g_RenderScale;
-    D3DVIEWPORT9 hv = { v.X * k, v.Y * k, v.Width * k, v.Height * k, 0.0f, 1.0f };
+    const SurfaceMap map = MapFor(g_State.renderTarget);
+    LONG x1, x2;
+    MapRangeX(map, LONG(v.X), LONG(v.X + v.Width), x1, x2);
+    D3DVIEWPORT9 hv = { DWORD(x1), v.Y * k, DWORD(x2 - x1), v.Height * k, 0.0f, 1.0f };
     g_Device->SetViewport(&hv);
     D3DRECT scaled[16];
     if (rects && count <= 16) {
-        for (DWORD i = 0; i < count; ++i)
-            scaled[i] = { rects[i].x1 * LONG(k), rects[i].y1 * LONG(k), rects[i].x2 * LONG(k), rects[i].y2 * LONG(k) };
+        for (DWORD i = 0; i < count; ++i) {
+            scaled[i] = { 0, rects[i].y1 * LONG(k), 0, rects[i].y2 * LONG(k) };
+            MapRangeX(map, rects[i].x1, rects[i].x2, scaled[i].x1, scaled[i].x2);
+        }
         rects = scaled;
     } else {
         count = 0; // no (or unexpectedly many) rectangles: clear the whole viewport
@@ -496,7 +620,21 @@ static void UploadCpuWrittenBackBuffer()
     for (UINT y = 0; y < h; ++y)
         std::memcpy(static_cast<uint8_t*>(lr.pBits) + y * lr.Pitch, src + y * pitch, w * 4);
     g_CpuFrame->UnlockRect();
-    g_Device->StretchRect(g_CpuFrame, nullptr, g_HostBackBuffer, nullptr, D3DTEXF_LINEAR);
+    // A wide frame shows the movie in the middle, undistorted, with black at the sides; the front end's
+    // background movies cover the whole width instead (cut at the top and bottom).
+    const SurfaceMap map = MapFor(bb);
+    if (map.wide && game::InShell()) {
+        const RECT source = CoverSource(map);
+        g_Device->StretchRect(g_CpuFrame, &source, g_HostBackBuffer, nullptr, D3DTEXF_LINEAR);
+        return;
+    }
+    RECT dest = { LONG(map.centre), 0, LONG(map.centre) + LONG(w * g_RenderScale), LONG(map.hostHeight) };
+    if (map.wide) {
+        const RECT sides[2] = { { 0, 0, dest.left, dest.bottom }, { dest.right, 0, LONG(map.hostWidth), dest.bottom } };
+        for (const RECT& side : sides)
+            g_Device->ColorFill(g_HostBackBuffer, &side, D3DCOLOR_XRGB(0, 0, 0));
+    }
+    g_Device->StretchRect(g_CpuFrame, nullptr, g_HostBackBuffer, map.wide ? &dest : nullptr, D3DTEXF_LINEAR);
 }
 
 // (Re)creates the window swap chain when the client area changes size.
@@ -566,7 +704,8 @@ static void DrawMenu()
 }
 
 // Scales the rendered frame into the window at the chosen aspect ratio (the
-// game renders 16:9 anamorphic when widescreen is on), with black bars.
+// game renders 16:9 anamorphic when widescreen is on; a true widescreen frame
+// has the picture's own shape), with black bars.
 static void PresentFrame()
 {
     g_Device->EndScene();
@@ -577,7 +716,8 @@ static void PresentFrame()
     }
     D3DSURFACE_DESC out;
     g_SwapChainBuffer->GetDesc(&out);
-    const float aspect = GetSettings().widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
+    const SurfaceMap frame = MapFor(g_State.backBuffer);
+    const float aspect = frame.wide ? float(frame.hostWidth) / float(frame.hostHeight) : PictureAspect();
     LONG w = LONG(out.Width), h = LONG(out.Height);
     if (!GetSettings().stretch) {
         if (w > LONG(h * aspect + 0.5f))

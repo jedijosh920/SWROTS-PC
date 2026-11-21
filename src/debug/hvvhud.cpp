@@ -102,7 +102,9 @@ bool OnScreen(const float p[3], const ImGuiViewport* vp, ImVec2& out, float* dep
         return false;
     if (depth)
         *depth = z;
-    const float focal = (vp->Size.x / 2) / std::tan(fov / 2);
+    // The field of view spans the picture's width, or with true widescreen the game's 4:3 frame in its middle.
+    const float span = TrueWidescreen() ? vp->Size.y * 4.0f / 3.0f : vp->Size.x;
+    const float focal = (span / 2) / std::tan(fov / 2);
     // a Versus duel's camera spans the field of view across the height too (measured: its picture is stretched to the
     // screen's shape); the dev map's (Heroes vs Villains) has square pixels
     const float focalY = game::BootIsVersusDuel() ? (vp->Size.y / 2) / std::tan(fov / 2) : focal;

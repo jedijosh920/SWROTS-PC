@@ -76,6 +76,7 @@ constexpr uint32_t kHudHandlers = 0x268;
 constexpr uint32_t kAddHandler = 0x00157300; // thiscall (const {name, prototype}*)
 using HudSetupFn = void(__fastcall*)(uint8_t*, void*);
 HudSetupFn g_OriginalHudSetup = nullptr;
+volatile bool g_HudSetUp = false; // this boot
 struct Handler {
     std::string name;
     MenuHandlerMaker make;
@@ -85,6 +86,9 @@ std::vector<Handler> g_Handlers;
 void __fastcall HudSetupHook(uint8_t* hud, void*)
 {
     g_OriginalHudSetup(hud, nullptr);
+    if (!g_HudSetUp)
+        LOG_INFO("Menus: the in-game HUD is set up (a level)");
+    g_HudSetUp = true;
     for (const Handler& handler : g_Handlers) {
         struct {
             const char* name;
@@ -249,6 +253,21 @@ void AddShellScreen(const std::string& lowerXmlName)
         g_ShellScreens.push_back(lowerXmlName);
 }
 
+bool InShell()
+{
+    __try {
+        uint8_t* shell = *reinterpret_cast<uint8_t**>(uintptr_t(kShell));
+        return shell && (*reinterpret_cast<uint32_t*>(shell + 0xC) & 0x40000) != 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool InLevel()
+{
+    return g_HudSetUp;
+}
+
 bool GoToShellScreen(const char* name)
 {
     __try {
@@ -282,6 +301,7 @@ void InstallMenus()
         LOG_WARN("Menus: the menu code is not as expected; no menus of the port's own");
         return;
     }
+    g_HudSetUp = false; // a new image: the front end or a level, to be seen
     // The stubs live in the port's memory and survive reboots; the jumps are patched into every new image.
     static uint8_t* tableStub = Trampoline(kTableFind, kTableFindBytes, sizeof(kTableFindBytes));
     static uint8_t* hudStub = Trampoline(kHudSetup, kHudSetupBytes, sizeof(kHudSetupBytes));
