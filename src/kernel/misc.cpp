@@ -179,8 +179,9 @@ KERNEL_EXPORT(304, RtlTimeFieldsToTime);
 enum : ULONG { REG_DWORD_X = 4, REG_BINARY_X = 3 };
 
 // Dashboard video settings: widescreen (0x00010000, from the player's settings),
-// 480p (0x00080000) and 720p (0x00020000).
-static ULONG VideoFlags() { return (GetSettings().widescreen ? 0x00010000 : 0) | 0x00080000 | 0x00020000; }
+// 480p (0x00080000) and 720p (0x00020000). True widescreen (Widescreen=2) has the game draw its 4:3
+// frame, which the port extends at the sides (d3d.h).
+static ULONG VideoFlags() { return (GetSettings().widescreen == 1 ? 0x00010000 : 0) | 0x00080000 | 0x00020000; }
 
 NTSTATUS XBAPI ExQueryNonVolatileSetting(ULONG ValueIndex, ULONG* Type, void* Value, ULONG ValueLength, ULONG* ResultLength)
 {

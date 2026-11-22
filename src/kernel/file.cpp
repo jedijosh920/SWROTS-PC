@@ -22,6 +22,7 @@
 
 #include "core/log.h"
 #include "game/game.h"
+#include "game/widescreen.h"
 #include "kernel/exports.h"
 #include "kernel/host_nt.h"
 #include "kernel/kernel.h"
@@ -442,6 +443,9 @@ NTSTATUS XBAPI NtCreateFile(HANDLE* FileHandle, ACCESS_MASK DesiredAccess, xbox:
             status, status >= 0 ? *FileHandle : nullptr);
     if (status >= 0)
         TrackGameHandle(*FileHandle);
+    // A movie: the size of its picture, for its place on a wide screen (game/widescreen.h).
+    if (status >= 0 && !oa.RootDirectory && xpath.size() > 4 && _stricmp(xpath.c_str() + xpath.size() - 4, ".sfd") == 0)
+        game::NoteMovieOpened(storage.c_str());
     TraceOpenCallers(xpath, _AddressOfReturnAddress());
     return status;
 }

@@ -14,6 +14,12 @@ namespace swrots::game {
 // At every boot, after the image is loaded.
 void InstallMenus();
 
+// Whether the front end (the shell: title, main menu, Versus and mission select...) is up.
+bool InShell();
+// Whether this boot is a level's (Versus and Heroes vs Villains included): the in-game HUD (IVaderHUD) was set up
+// since the image was loaded. The shell stays up in a level (InShell), for the pause menu.
+bool InLevel();
+
 // The key the menus give a name (an item's, a screen's, a text id's): the game's string hash (0x222BA0).
 uint32_t MenuKey(const char* name);
 

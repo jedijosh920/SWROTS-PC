@@ -519,7 +519,7 @@ void FlightEndFrame(IDirect3DSurface9* backBuffer)
     fs.time = now.QuadPart;
     if (!g_ThumbWidth) {
         g_ThumbHeight = 270;
-        g_ThumbWidth = GetSettings().widescreen ? 480 : 360;
+        g_ThumbWidth = UINT(270.0f * PictureAspect() + 0.5f) & ~1u;
     }
     if (!fs.thumbnail)
         Device()->CreateRenderTarget(g_ThumbWidth, g_ThumbHeight, D3DFMT_X8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE,

@@ -84,8 +84,53 @@ UINT RenderScale();
 // Width and height of an Xbox surface or texture level 0, in Xbox pixels.
 void XboxSurfaceSize(const xd3d::PixelContainer* surface, UINT& width, UINT& height);
 
-// Host render target / depth surface backing an Xbox surface (RenderScale() x its size).
+// Host render target / depth surface backing an Xbox surface (RenderScale() x its size, wider for
+// true widescreen: see SurfaceMap).
 IDirect3DSurface9* HostSurfaceFor(xd3d::Surface* surface, bool depth);
+
+// --- True widescreen (Widescreen=2) ---------------------------------------------------------------
+// The game draws its usual 640x480 4:3 frame. Render targets shaped like the back buffer get host
+// surfaces as wide as the picture: the game's frame sits in the middle at RenderScale(), undistorted,
+// and the 3D picture continues at the sides (Hor+). Whole-width screen effects (bloom, fades, letterbox
+// bars) are spread over the whole width; pictures and menus stay in the middle; HUD pieces near the
+// sides follow the screen's edges (Settings::hudAnchor).
+struct SurfaceMap {
+    UINT xboxWidth = 0, xboxHeight = 0; // the surface's Xbox size
+    UINT hostWidth = 0, hostHeight = 0; // its host surface's size
+    bool wide = false;                  // hostWidth is more than xboxWidth x RenderScale()
+    float centre = 0;                   // host x of the Xbox frame's left edge, centred
+    float left = 0, right = 0;          // the same for HUD pieces kept at the left or the right edge
+};
+// Cover: a picture filling the whole width, its height grown as much and cut at the top and bottom (the front
+// end's background movies, like CSS object-fit: cover).
+// Movie: a movie's picture wider than the frame (the film's, 640x272, MoviePictureOnScreen), grown about the
+// frame's middle to fill the width, or the height when filling the width would cut too much of it.
+enum class Placement { Centre, Stretch, Left, Right, Cover, Movie };
+// How an Xbox surface's pixels map to its host surface.
+SurfaceMap MapFor(const xd3d::PixelContainer* surface);
+// Host width of a render target of this Xbox size.
+UINT HostWidthFor(UINT xboxWidth, UINT xboxHeight);
+// Host x of an Xbox pixel coordinate (pre-transformed vertex) on a surface, placed as given.
+float MapScreenX(const SurfaceMap& map, float x, Placement placement);
+// Host y of an Xbox pixel coordinate on a surface: RenderScale() times, or grown about the middle for Cover.
+float MapScreenY(const SurfaceMap& map, float y, Placement placement);
+// The source rectangle (Xbox pixels) of a whole-frame picture shown covering a wide surface: the middle band
+// of its height that fills the width at the same scale (the whole picture when not wide).
+RECT CoverSource(const SurfaceMap& map);
+// The scale (host pixels per Xbox pixel) of a movie's picture of `height` Xbox pixels, as wide as the frame, on a
+// wide surface (Placement::Movie): the width's, unless it cuts more than a tenth of the picture's height (a screen
+// much wider than the film): then the height's, with black at the sides.
+float MovieScale(const SurfaceMap& map, float height);
+// Host x range of an Xbox pixel range (viewport, scissor, rectangle) on a surface: the whole Xbox
+// width spans the whole host width, anything narrower stays in the centred frame.
+void MapRangeX(const SurfaceMap& map, LONG x1, LONG x2, LONG& hostX1, LONG& hostX2);
+// The back buffer's margin at each side, in Xbox pixels (0 without true widescreen): the game's view is
+// widened by this much at each side (game/widescreen.cpp), its viewport reaching from -margin to 640 + margin.
+int WideMargin();
+// Whether a texture's data is one of the render targets the game drew into (resources.cpp).
+bool IsRenderTargetData(DWORD data);
+// Whether a texture's data is a render target with a wide host surface (or the back buffer).
+bool IsWideData(DWORD data);
 // Host texture for an Xbox texture (uploads and converts guest data as needed).
 IDirect3DBaseTexture9* HostTextureFor(xd3d::BaseTexture* texture, xd3d::Palette* palette);
 // Frees host resources not used for a while (called once per frame).

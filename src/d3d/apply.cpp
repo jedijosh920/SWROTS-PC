@@ -271,6 +271,10 @@ bool g_PretransformedDraw = false;
 
 const float* TextureScale(int stage) { return g_TextureScale[stage]; }
 
+// True widescreen: the fixed-function projection's x is narrowed so that a viewport spread over a
+// wide target shows the game's frame in the middle, undistorted, and more of the scene at the sides.
+static float g_ProjectionSquash = 1.0f;
+
 // Fixed-function vertex/pixel pipeline state (FVF and declaration-only draws).
 static void ApplyFixedFunctionStates()
 {
@@ -297,7 +301,11 @@ static void ApplyFixedFunctionStates()
 
     const XboxState& st = State();
     Device()->SetTransform(D3DTS_VIEW, &st.transforms[TS_VIEW]);
-    Device()->SetTransform(D3DTS_PROJECTION, &st.transforms[TS_PROJECTION]);
+    D3DMATRIX projection = st.transforms[TS_PROJECTION];
+    if (g_ProjectionSquash != 1.0f)
+        for (int r = 0; r < 4; ++r)
+            projection.m[r][0] *= g_ProjectionSquash; // row vectors: column 0 makes clip x
+    Device()->SetTransform(D3DTS_PROJECTION, &projection);
     for (int i = 0; i < 4; ++i) {
         Device()->SetTransform(D3DTRANSFORMSTATETYPE(D3DTS_WORLDMATRIX(i)), &st.transforms[TS_WORLD + i]);
     }
@@ -401,6 +409,12 @@ static void ApplyVertexProgramConstants(const DWORD* registerPresent)
     UINT width, height;
     XboxSurfaceSize(State().renderTarget, width, height);
     float scale[4] = { width * 0.5f, -(height * 0.5f), DepthScale(), 1.0f };
+    // True widescreen: the target is wider than width x k; mapping its whole width keeps Xbox pixel i
+    // on the same host pixels, shifted into the middle, and what the game's camera sees beyond the
+    // frame's sides (clip x past +-1) lands at the sides (Hor+).
+    const SurfaceMap map = MapFor(State().renderTarget);
+    if (map.wide)
+        scale[0] = float(map.hostWidth) / float(RenderScale()) * 0.5f;
     float offset[4] = { width * 0.5f - 0.5f, height * 0.5f - 0.5f, 0.0f, 0.0f };
     dev->SetVertexShaderConstantF(kVsRegScreenScale, scale, 1);
     dev->SetVertexShaderConstantF(kVsRegScreenOffset, offset, 1);
@@ -523,9 +537,19 @@ bool ApplyDrawState(const DWORD* registerPresent)
     } else {
         dev->SetVertexShader(nullptr);
         dev->SetPixelShader(nullptr);
-        ApplyFixedFunctionStates();
         const UINT k = RenderScale();
-        D3DVIEWPORT9 hv = { v.X * k, v.Y * k, v.Width * k, v.Height * k, v.MinZ, v.MaxZ };
+        // On a wide target a whole-width viewport covers the whole host width: transformed geometry is
+        // narrowed to keep its shape (more of the scene at the sides); pre-transformed vertices are
+        // placed by the draw code (draw.cpp) and only need the room.
+        const SurfaceMap map = MapFor(State().renderTarget);
+        LONG x1, x2;
+        MapRangeX(map, LONG(v.X), LONG(v.X + v.Width), x1, x2);
+        // A viewport of the frame's width spread over the whole host width is narrowed; one the game already
+        // widened by the margins (game/widescreen.cpp) covers it as it is.
+        const bool spread = map.wide && x2 - x1 == LONG(map.hostWidth);
+        g_ProjectionSquash = spread && !g_PretransformedDraw ? float(v.Width * k) / float(map.hostWidth) : 1.0f;
+        ApplyFixedFunctionStates();
+        D3DVIEWPORT9 hv = { DWORD(x1), v.Y * k, DWORD(x2 - x1), v.Height * k, v.MinZ, v.MaxZ };
         dev->SetViewport(&hv);
         static bool warned = false;
         if (State().pixelShader && !warned) {

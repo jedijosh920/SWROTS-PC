@@ -982,7 +982,7 @@ bool OnScreen(uint8_t* character)
     const float y = d[0] * m[4] + d[1] * m[5] + d[2] * m[6];
     const float z = d[0] * m[8] + d[1] * m[9] + d[2] * m[10];
     const float tanUp = std::tan(fov * 0.5f) * kOnScreenMargin;
-    const float tanSide = tanUp * (GetSettings().widescreen ? 16.0f / 9.0f : 4.0f / 3.0f);
+    const float tanSide = tanUp * PictureAspect();
     return z > 0 && std::fabs(x) < z * tanSide && std::fabs(y) < z * tanUp;
 }
 
@@ -1040,7 +1040,7 @@ bool SharedCamera(float m[16], float fov)
                 v *= kMaxShift / length;
         // Back along the view until both fit.
         const float tanUp = std::tan(fov * 0.5f) * kFrameMargin;
-        const float tanSide = tanUp * (GetSettings().widescreen ? 16.0f / 9.0f : 4.0f / 3.0f);
+        const float tanSide = tanUp * PictureAspect();
         float back = 0;
         for (const float* q : { a, b }) {
             const float d[3] = { q[0] - c[0] - shift[0], q[1] - c[1] - shift[1], q[2] - c[2] - shift[2] };

@@ -3,6 +3,9 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 
 #include "core/log.h"
@@ -42,6 +45,36 @@ void WriteText(const wchar_t* section, const wchar_t* key, const std::string& va
     WritePrivateProfileStringW(section, key, std::wstring(value.begin(), value.end()).c_str(), g_Path.c_str());
 }
 
+// A shape (width / height): "21:9", "3440x1440", "2.39"; "Auto", "0" or anything unreadable is 0 (automatic).
+float ParseRatio(const std::string& text)
+{
+    const size_t sep = text.find_first_of(":xX/");
+    float value = 0.0f;
+    if (sep != std::string::npos) {
+        const float w = float(std::atof(text.substr(0, sep).c_str())), h = float(std::atof(text.substr(sep + 1).c_str()));
+        value = h > 0 ? w / h : 0.0f;
+    } else {
+        value = float(std::atof(text.c_str()));
+    }
+    // Narrower than 4:3 or wider than 4:1 is not a shape the picture takes.
+    return value >= 1.0f && value <= 4.0f ? value : 0.0f;
+}
+
+std::string RatioText(float value)
+{
+    if (value <= 0.0f)
+        return "Auto";
+    static const struct {
+        int w, h;
+    } kNamed[] = { { 4, 3 }, { 5, 4 }, { 16, 10 }, { 16, 9 }, { 21, 9 }, { 32, 9 }, { 32, 10 }, { 48, 9 } };
+    for (const auto& n : kNamed)
+        if (std::fabs(value - float(n.w) / float(n.h)) < 0.0005f)
+            return std::to_string(n.w) + ":" + std::to_string(n.h);
+    char text[16];
+    snprintf(text, sizeof text, "%.3f", value);
+    return text;
+}
+
 } // namespace
 
 const Settings& GetSettings() { return g_Settings; }
@@ -58,7 +91,10 @@ void LoadSettings(const std::wstring& path)
     s.vsync = ReadInt(L"Display", L"VSync", d.vsync, 0, 1) != 0;
     s.stretch = ReadInt(L"Display", L"Stretch", d.stretch, 0, 1) != 0;
     s.resolutionScale = ReadInt(L"Graphics", L"ResolutionScale", d.resolutionScale, 0, 8);
-    s.widescreen = ReadInt(L"Graphics", L"Widescreen", d.widescreen, 0, 1) != 0;
+    s.widescreen = ReadInt(L"Graphics", L"Widescreen", d.widescreen, 0, 2);
+    s.aspectRatio = ParseRatio(ReadText(L"Graphics", L"AspectRatio", RatioText(d.aspectRatio)));
+    s.hudAnchor = ReadInt(L"Graphics", L"HudAnchor", d.hudAnchor, 0, 1) != 0;
+    s.hudAspect = ParseRatio(ReadText(L"Graphics", L"HudAspect", RatioText(d.hudAspect)));
     s.anisotropy = ReadInt(L"Graphics", L"Anisotropy", d.anisotropy, 1, 16);
     s.bloom = ReadInt(L"Graphics", L"Bloom", d.bloom, 0, 1) != 0;
     s.fpsLimit = ReadInt(L"Game", L"FpsLimit", d.fpsLimit, 30, 60) >= 45 ? 60 : 30;
@@ -78,16 +114,50 @@ void LoadSettings(const std::wstring& path)
     s.hvvOverheadInfo = ReadInt(L"HvV", L"OverheadInfo", d.hvvOverheadInfo, 0, 2);
     s.hvvOthersSlowMotion = ReadInt(L"HvV", L"OthersSlowMotion", d.hvvOthersSlowMotion, 0, 1) != 0;
     SaveSettings(); // writes defaults for missing keys, normalizes values
+    static const char* const kShapes[] = { "4:3", "16:9 (anamorphic)", "true widescreen" };
     LOG_INFO("Settings: %dx%d%s%s%s, resolution scale %d%s, %s, %dx anisotropic, bloom %s, %d fps", s.width, s.height,
         s.fullscreen ? " fullscreen" : "", s.vsync ? " vsync" : "", s.stretch ? " stretched" : "", s.resolutionScale,
-        s.resolutionScale ? "" : " (auto)", s.widescreen ? "16:9" : "4:3", s.anisotropy, s.bloom ? "on" : "off",
+        s.resolutionScale ? "" : " (auto)", kShapes[s.widescreen], s.anisotropy, s.bloom ? "on" : "off",
         s.fpsLimit);
+    if (s.widescreen == 2)
+        LOG_INFO("Settings: true widescreen at %.3f (aspect ratio %s), HUD %s, HUD shape %s", PictureAspect(),
+            RatioText(s.aspectRatio).c_str(), s.hudAnchor ? "at the edges" : "centred", RatioText(s.hudAspect).c_str());
     static const char* const kInputs[] = { "auto", "keyboard is player 1", "two controllers" };
     LOG_INFO("Settings: co-op %s (input %s, player 2 death: %s, camera %s, friendly fire %s, boss %s, story safety %s, player 2 %s)",
         s.coop ? "on" : "off", kInputs[s.coopInput], s.coopDeath ? "game over" : "comes back", s.coopCamera ? "player 1" : "shared",
         s.coopFriendlyFire ? "on" : "off", s.coopBoss ? "player 2" : "the game's",
         s.coopStorySafety ? "on" : "off", s.coopPlayer2.empty() ? "automatic" : s.coopPlayer2.c_str());
 }
+
+float PictureAspect()
+{
+    const Settings& s = g_Settings;
+    if (s.widescreen == 0)
+        return 4.0f / 3.0f;
+    if (s.widescreen == 1)
+        return 16.0f / 9.0f;
+    // Read once: the frame buffer's shape is chosen when the game creates its device, and stays.
+    static float shape = [&] {
+        float value = s.aspectRatio;
+        if (value <= 0.0f) {
+            // Automatic: the monitor's shape in fullscreen (the window covers the primary monitor),
+            // else the window's.
+            float w = float(s.width), h = float(s.height);
+            if (s.fullscreen) {
+                MONITORINFO mi = { sizeof(mi) };
+                if (GetMonitorInfoW(MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY), &mi)) {
+                    w = float(mi.rcMonitor.right - mi.rcMonitor.left);
+                    h = float(mi.rcMonitor.bottom - mi.rcMonitor.top);
+                }
+            }
+            value = h > 0 ? w / h : 16.0f / 9.0f;
+        }
+        return std::clamp(value, 4.0f / 3.0f, 4.0f);
+    }();
+    return shape;
+}
+
+bool TrueWidescreen() { return g_Settings.widescreen == 2 && PictureAspect() > 4.0f / 3.0f + 0.01f; }
 
 void SaveSettings()
 {
@@ -101,6 +171,9 @@ void SaveSettings()
     WriteInt(L"Display", L"Stretch", s.stretch);
     WriteInt(L"Graphics", L"ResolutionScale", s.resolutionScale);
     WriteInt(L"Graphics", L"Widescreen", s.widescreen);
+    WriteText(L"Graphics", L"AspectRatio", RatioText(s.aspectRatio));
+    WriteInt(L"Graphics", L"HudAnchor", s.hudAnchor);
+    WriteText(L"Graphics", L"HudAspect", RatioText(s.hudAspect));
     WriteInt(L"Graphics", L"Anisotropy", s.anisotropy);
     WriteInt(L"Graphics", L"Bloom", s.bloom);
     WriteInt(L"Game", L"FpsLimit", s.fpsLimit);

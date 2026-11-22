@@ -16,7 +16,12 @@ struct Settings {
     bool stretch = false;     // fill the window, ignoring the aspect ratio (no black bars)
     // Rendering
     int resolutionScale = 0;  // internal resolution = Xbox resolution (640x480) x this, 1-8; 0 = auto
-    bool widescreen = true;   // 16:9 (the game renders anamorphic widescreen); off: 4:3 pillarbox
+    int widescreen = 1;       // 0: 4:3 pillarbox; 1: 16:9 (the game renders anamorphic widescreen);
+                              // 2: true widescreen at any shape (21:9, 32:9...): the game's 4:3 picture
+                              //    extended at the sides (Hor+), the HUD at the screen's edges
+    float aspectRatio = 0.0f; // Widescreen=2: the picture's shape (width / height); 0 = the screen's or window's
+    bool hudAnchor = true;    // Widescreen=2: HUD pieces near the sides follow the screen's edges; off: all centred
+    float hudAspect = 0.0f;   // Widescreen=2: the HUD keeps within this shape, centred (e.g. 16:9); 0 = the whole width
     int anisotropy = 16;      // texture filtering, 1 (off) - 16
     bool bloom = true;        // the game's full-screen bloom (soft glow around bright areas)
     // Game
@@ -37,6 +42,12 @@ struct Settings {
 };
 
 const Settings& GetSettings();
+
+// The shape (width / height) of the picture the game is shown at: 4:3, 16:9, or with Widescreen=2 the
+// chosen or detected shape (never narrower than 4:3). Fixed once read.
+float PictureAspect();
+// Widescreen=2 and a picture wider than 4:3: the frame is extended at the sides (see d3d/d3d.h).
+bool TrueWidescreen();
 Settings& EditSettings();
 
 // Loads `path` (creating it with defaults if missing); later Save() calls write there.

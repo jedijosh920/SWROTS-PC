@@ -25,6 +25,7 @@ struct HostRenderTarget {
     IDirect3DTexture9* texture = nullptr; // color targets are textures so they can be sampled
     IDirect3DSurface9* surface = nullptr;
     UINT width = 0, height = 0;
+    UINT hostWidth = 0;       // wider than width x RenderScale() for true widescreen (d3d.h)
     DWORD lastUsed = 0;
 };
 
@@ -60,7 +61,7 @@ IDirect3DSurface9* HostSurfaceFor(Surface* surface, bool depth)
     }
     if (!rt.surface) {
         HRESULT hr;
-        const UINT hw = w * RenderScale(), hh = h * RenderScale();
+        const UINT hw = HostWidthFor(w, h), hh = h * RenderScale();
         if (depth) {
             hr = Device()->CreateDepthStencilSurface(hw, hh, D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, FALSE, &rt.surface, nullptr);
         } else {
@@ -72,13 +73,22 @@ IDirect3DSurface9* HostSurfaceFor(Surface* surface, bool depth)
             Fatal("Could not create a %ux%u %s target (%08lX)", w, h, depth ? "depth" : "render", hr);
         rt.width = w;
         rt.height = h;
-        LOG_DEBUG("Render target %08lX: %ux%u %s", surface->Data, w, h, depth ? "depth" : "color");
+        rt.hostWidth = hw;
+        LOG_DEBUG("Render target %08lX: %ux%u %s, host %ux%u", surface->Data, w, h, depth ? "depth" : "color", hw, hh);
     }
     rt.lastUsed = g_Frame;
     return rt.surface;
 }
 
 bool IsRenderTargetData(DWORD data) { return g_RenderTargets.count(data) != 0; }
+
+bool IsWideData(DWORD data)
+{
+    if (State().backBuffer && data == State().backBuffer->Data)
+        return MapFor(State().backBuffer).wide;
+    auto it = g_RenderTargets.find(data);
+    return it != g_RenderTargets.end() && it->second.hostWidth > it->second.width * RenderScale();
+}
 
 IDirect3DBaseTexture9* HostRenderTargetTexture(DWORD data)
 {

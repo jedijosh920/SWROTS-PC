@@ -16,8 +16,8 @@ What's new in each release: [changelog](CHANGELOG.md).
 ## Features
 
 - Runs natively as a 32-bit Windows program: no emulation layer.
-- Any window size or fullscreen, 16:9 widescreen, higher internal resolution, anisotropic
-  filtering, a sharp picture on high-DPI displays.
+- Any window size or fullscreen, 16:9 widescreen, true widescreen at any shape (21:9, 32:9; experimental),
+  higher internal resolution, anisotropic filtering, a sharp picture on high-DPI displays.
 - Keyboard and mouse, Xbox controllers, and PlayStation controllers (DualShock 4, DualSense) with rumble.
 - Level changes and mission restarts happen in the same window, like on the console.
 - Mods as loose files: replace textures, models and other game files without rebuilding archives.
