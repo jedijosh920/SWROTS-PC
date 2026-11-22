@@ -234,10 +234,13 @@ static std::vector<BandBox> g_BandRows;   // the last frame's rows spanning the 
 // The loading screen keeps its 4:3 shape with black at the sides: while it is up (game/widescreen.cpp), nothing
 // reaches or continues to the edges. Found from its picture too (one 640x256 band in three tiles, 256, 256, 128:
 // game/devmap.cpp), on a frame after one that drew it, should the game's own code not be as expected.
+// A frame that draws the level is not the loading screen, whatever the game's state says: started from the
+// missions menu, a level boots afresh and its loading screen is handed on by the game (0x215780) and not let go
+// while the level runs, which kept the HUD in the middle for the whole mission.
 static bool g_LoadingPicture = false;
 static bool LoadingScreen()
 {
-    return g_LoadingPicture || game::LoadingScreenUp();
+    return (g_LoadingPicture || game::LoadingScreenUp()) && g_Stats.world < kWorldDrawsForHud;
 }
 constexpr float kLoadingPictureHeight = 256.0f;
 // Tiles of one row: tops and bottoms this close, sides this close (Xbox pixels).
