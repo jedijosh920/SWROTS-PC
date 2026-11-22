@@ -16,6 +16,9 @@
 // the viewport extended by m pixels at each side: the same pixel scale (nothing in the 4:3 frame moves),
 // side planes that let through what the margins show, a projection that reaches them, and a viewport from
 // -m to 640 + m. The game's own viewport rectangle (read by its 2D code) is left as it was.
+// The game also draws parts of the screen on their own: the part of the level seen through a portal, over the
+// rectangle the portal covers, clamped to the 4:3 frame (slot 0x64, 0x211A10, then 0x211140). When such a view
+// has the whole view's mapping (the same camera) and reaches a side of the frame, it is widened at that side.
 //
 // Sectors seen through portals: the level's sectors are drawn through their portals (0x200A..: each portal's
 // corners projected to the screen with the view's focal lengths and centre, 0x619430..0x61943C; the rectangle
@@ -100,6 +103,16 @@ struct ViewportRect {
     float minZ, maxZ;
 };
 
+// The pixel-to-view mapping of the last whole-width view: a narrower view with the same mapping is a part of
+// it (the camera's), seen through a portal.
+float g_WholeSx = 0.0f, g_WholeOx = 0.0f;
+
+bool SameMapping(float a, float b)
+{
+    const float d = a > b ? a - b : b - a;
+    return d <= 1e-5f * (a > 0.0f ? a : -a) + 1e-7f;
+}
+
 void Widen(void* renderer, bool planes)
 {
     const int margin = d3d::WideMargin();
@@ -107,22 +120,42 @@ void Widen(void* renderer, bool planes)
     const int* screen = &At<int>(kScreenSize);
     const int* screenRect = &At<int>(kScreenOffset); // x, y, width, height
     std::memcpy(g_PortalScreen, screenRect, sizeof(g_PortalScreen));
-    // Only the whole screen's view (not a part of it the game draws on its own).
-    if (margin <= 0 || viewport[0] != 0 || viewport[2] != screen[0] || viewport[2] <= 0)
+    if (margin <= 0 || viewport[2] <= 0)
         return;
+    const float inset = At<float>(kPixelInset), sx = At<float>(kPixelToViewX), ox = At<float>(kViewOffsetX);
+    // The whole screen's view, or a part of it the game draws on its own through a portal: the rectangle a
+    // portal covers is cut by the screen's grown one (g_PortalScreen) and then clamped to the 4:3 frame, so the
+    // part of the level seen through a portal at a side of the frame was drawn, and chosen, only up to that side
+    // (in the first mission, a view from x 329 to 640: floors, props and characters beside the frame came and
+    // went as the player moved). Such a view is told apart from other narrower ones (a portrait, a picture in
+    // the HUD) by its mapping, the camera's; it is widened at the sides it shares with the frame.
+    bool atLeft, atRight;
+    if (viewport[0] == 0 && viewport[2] == screen[0]) {
+        atLeft = atRight = true;
+        g_WholeSx = sx;
+        g_WholeOx = ox;
+    } else {
+        if (!SameMapping(sx, g_WholeSx) || !SameMapping(ox, g_WholeOx))
+            return;
+        atLeft = viewport[0] <= 0;
+        atRight = viewport[0] + viewport[2] >= screen[0];
+        if (!atLeft && !atRight)
+            return;
+    }
     // What is drawn is chosen from a wider view than the one shown: with the same width, pieces of the level
     // beside the 4:3 frame were still left out at times (holes in the floor and walls at the sides).
     const int cullMargin = margin * kCullScale;
     g_PortalScreen[0] -= cullMargin;
     g_PortalScreen[2] += 2 * cullMargin;
-    const float inset = At<float>(kPixelInset), sx = At<float>(kPixelToViewX), ox = At<float>(kViewOffsetX);
+    const int marginLeft = atLeft ? margin : 0, marginRight = atRight ? margin : 0;
+    const int cullLeft = atLeft ? cullMargin : 0, cullRight = atRight ? cullMargin : 0;
     const float sy = At<float>(kPixelToViewY), oy = At<float>(kViewOffsetY);
-    const float x0 = float(viewport[0] - margin), x1 = float(viewport[0] + viewport[2] + margin);
+    const float x0 = float(viewport[0] - marginLeft), x1 = float(viewport[0] + viewport[2] + marginRight);
     const float left = (x0 + inset) * sx + ox, right = (x1 - inset) * sx + ox;
     const float top = (float(viewport[1]) + inset) * sy + oy, bottom = (float(viewport[1] + viewport[3]) - inset) * sy + oy;
 
     if (planes) {
-        const float c0 = float(viewport[0] - cullMargin), c1 = float(viewport[0] + viewport[2] + cullMargin);
+        const float c0 = float(viewport[0] - cullLeft), c1 = float(viewport[0] + viewport[2] + cullRight);
         const float cl = (c0 + inset) * sx + ox, cr = (c1 - inset) * sx + ox;
         alignas(16) float eye[4] = {};
         alignas(16) float corners[4][4] = {
@@ -147,8 +180,8 @@ void Widen(void* renderer, bool planes)
     const int* offset = &At<int>(kScreenOffset);
     // The viewport reaches past the 640-pixel frame (x is negative, as a signed value): d3d/device.cpp
     // places it on the wide frame.
-    const ViewportRect wide = { DWORD(viewport[0] - margin + offset[0]), DWORD(viewport[1] + offset[1]),
-        DWORD(viewport[2] + 2 * margin), DWORD(viewport[3]), 0.0f, 1.0f };
+    const ViewportRect wide = { DWORD(viewport[0] - marginLeft + offset[0]), DWORD(viewport[1] + offset[1]),
+        DWORD(viewport[2] + marginLeft + marginRight), DWORD(viewport[3]), 0.0f, 1.0f };
     reinterpret_cast<SetViewportFn>(uintptr_t(kSetViewport))(&wide);
     reinterpret_cast<CombineViewFn>(uintptr_t(kCombineView))(renderer, nullptr);
 }
