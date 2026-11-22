@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -158,7 +159,8 @@ static void ScaleScreenPositions(uint8_t* vertices, UINT count, UINT stride, UIN
 // pictures placed at the edge (level shots, arrows, planets) keep their shape.
 // HUD pieces are judged together with what they touch: the last frame's pieces are merged into groups
 // wherever their boxes meet (a label and its band, a portrait and its bars), and a piece inside a group
-// moves with the whole group, so the parts of one element are never torn apart.
+// moves with the whole group, so the parts of one element are never torn apart; a group at the left edge and one
+// at the right edge are never merged (GroupHudPieces).
 
 // How many 3D draws a frame must have had before its screen-space draws count as a HUD over it.
 constexpr DWORD kWorldDrawsForHud = 16;
@@ -166,6 +168,9 @@ constexpr DWORD kWorldDrawsForHud = 16;
 constexpr float kHudEdge = 0.2f;
 // ...and does not reach further than this fraction of the width from it (else it spans the screen: middle).
 constexpr float kHudReach = 0.75f;
+// A HUD piece this close to a side (a fraction of the frame's width: the HUD's own margin is about 36 pixels) holds
+// its group at that side: the player's portrait at the left, a boss's at the right.
+constexpr float kHudSide = 0.1f;
 // HUD pieces this close (Xbox pixels) belong to one group.
 constexpr float kHudGap = 6.0f;
 // In the front end an opaque picture across the width and at least this much of the height (the background
@@ -378,8 +383,13 @@ struct HudGroup {
     HudBox box;
     Placement placement;
 };
-static std::vector<HudBox> g_HudPieces;   // this frame's HUD pieces
+static std::vector<HudBox> g_HudPieces;   // this frame's HUD pieces, in the order drawn
 static std::vector<HudGroup> g_HudGroups; // the last frame's, merged
+struct HudPiece {
+    HudBox box;
+    Placement placement; // its group's
+};
+static std::vector<HudPiece> g_HudPlaced; // the last frame's pieces, each with its group's placement
 
 static Placement SideOf(const HudBox& b, float width)
 {
@@ -390,28 +400,101 @@ static Placement SideOf(const HudBox& b, float width)
     return Placement::Centre;
 }
 
-// End of a frame: merges its HUD pieces into groups for the next frame's placement.
+// End of a frame: merges its HUD pieces into groups for the next frame's placement. Pieces are taken in the
+// order drawn; one joins every group it touches, except that groups holding different sides are never joined
+// (held: a piece within kHudSide of the side; both sides for one reaching across the frame). The HUD of two
+// characters facing each other at the bottom (the player's at the left, a boss's at the right) can overlap in the
+// middle (the end of the player's long bar under the boss's bars), and a new objective's panel across the top
+// touches R2-D2's portrait at the right: as one group they were kept in the middle. A piece touching groups that
+// cannot be joined goes with the one drawn last (the element being drawn); one inside a group (a label in its
+// panel) is part of it. A group held at one side only stays at that side however far it reaches (the player's
+// experience bar grows towards the middle as the game goes on); one held at both sides (reaching across the frame)
+// stays in the middle; one held at neither is placed by its extent (SideOf).
 static void GroupHudPieces()
 {
-    std::vector<HudBox> boxes = std::move(g_HudPieces);
+    constexpr float kWidth = 640.0f;
+    std::vector<HudBox> pieces = std::move(g_HudPieces);
     g_HudPieces.clear();
-    for (bool merged = true; merged;) {
-        merged = false;
-        for (size_t i = 0; i < boxes.size() && !merged; ++i)
-            for (size_t k = i + 1; k < boxes.size(); ++k) {
-                HudBox& a = boxes[i];
-                const HudBox& b = boxes[k];
-                if (a.x0 - kHudGap > b.x1 || b.x0 - kHudGap > a.x1 || a.y0 - kHudGap > b.y1 || b.y0 - kHudGap > a.y1)
-                    continue;
-                a = { std::min(a.x0, b.x0), std::max(a.x1, b.x1), std::min(a.y0, b.y0), std::max(a.y1, b.y1) };
-                boxes.erase(boxes.begin() + ptrdiff_t(k));
-                merged = true;
+    struct Building {
+        HudBox box;
+        bool left, right; // has a piece starting near the left side, ending near the right side
+        size_t last;      // the last piece added
+        bool alive;
+    };
+    std::vector<Building> groups;
+    std::vector<size_t> owner(pieces.size());
+    auto touch = [](const HudBox& a, const HudBox& b) {
+        return !(a.x0 - kHudGap > b.x1 || b.x0 - kHudGap > a.x1 || a.y0 - kHudGap > b.y1 || b.y0 - kHudGap > a.y1);
+    };
+    auto inside = [](const HudBox& a, const HudBox& g) {
+        return a.x0 >= g.x0 - 1.0f && a.x1 <= g.x1 + 1.0f && a.y0 >= g.y0 - 1.0f && a.y1 <= g.y1 + 1.0f;
+    };
+    // The sides held: 0 none, 1 left, 2 right, 3 both (reaching across). Held sides that differ are never joined
+    // (left and right, or one side and both); none goes with anything.
+    auto compatible = [](int a, int b) { return !a || !b || a == b; };
+    auto held = [](const Building& g) { return (g.left ? 1 : 0) | (g.right ? 2 : 0); };
+    for (size_t i = 0; i < pieces.size(); ++i) {
+        const HudBox& p = pieces[i];
+        bool pl = p.x0 <= kWidth * kHudSide, pr = p.x1 >= kWidth * (1.0f - kHudSide);
+        std::vector<size_t> touching;
+        for (size_t g = 0; g < groups.size(); ++g)
+            if (groups[g].alive && touch(groups[g].box, p))
+                touching.push_back(g);
+        // The groups drawn last first: a piece touching groups that cannot be joined goes with the element being
+        // drawn.
+        std::sort(touching.begin(), touching.end(), [&](size_t a, size_t b) { return groups[a].last > groups[b].last; });
+        std::vector<size_t> join;
+        // A piece inside a group (a label in its panel, a bar in its frame) is part of it, whatever its extent.
+        for (size_t g : touching)
+            if (inside(p, groups[g].box)) {
+                join.push_back(g);
+                pl = pr = false;
                 break;
             }
+        if (join.empty()) {
+            int sides = (pl ? 1 : 0) | (pr ? 2 : 0);
+            for (size_t g : touching)
+                if (compatible(sides, held(groups[g]))) {
+                    join.push_back(g);
+                    sides |= held(groups[g]);
+                }
+        }
+        if (join.empty()) {
+            groups.push_back({ p, pl, pr, i, true });
+            owner[i] = groups.size() - 1;
+            continue;
+        }
+        Building& target = groups[join[0]];
+        for (size_t k = 1; k < join.size(); ++k) {
+            Building& other = groups[join[k]];
+            target.box = { std::min(target.box.x0, other.box.x0), std::max(target.box.x1, other.box.x1),
+                std::min(target.box.y0, other.box.y0), std::max(target.box.y1, other.box.y1) };
+            target.left |= other.left;
+            target.right |= other.right;
+            other.alive = false;
+            for (size_t& o : owner)
+                if (o == join[k])
+                    o = join[0];
+        }
+        target.box = { std::min(target.box.x0, p.x0), std::max(target.box.x1, p.x1), std::min(target.box.y0, p.y0),
+            std::max(target.box.y1, p.y1) };
+        target.left |= pl;
+        target.right |= pr;
+        target.last = i;
+        owner[i] = join[0];
     }
+    auto placement = [&](const Building& g) {
+        if (g.left != g.right)
+            return g.left ? Placement::Left : Placement::Right;
+        return g.left ? Placement::Centre : SideOf(g.box, kWidth);
+    };
     g_HudGroups.clear();
-    for (const HudBox& b : boxes)
-        g_HudGroups.push_back({ b, SideOf(b, 640.0f) });
+    for (const Building& g : groups)
+        if (g.alive)
+            g_HudGroups.push_back({ g.box, placement(g) });
+    g_HudPlaced.clear();
+    for (size_t i = 0; i < pieces.size(); ++i)
+        g_HudPlaced.push_back({ pieces[i], placement(groups[owner[i]]) });
 }
 
 static Placement Decide(const SurfaceMap& map, const ScreenBounds& b);
@@ -490,6 +573,11 @@ static Placement Decide(const SurfaceMap& map, const ScreenBounds& b)
     const HudBox box = { b.minX, b.maxX, b.minY, b.maxY };
     if (map.xboxWidth == 640)
         g_HudPieces.push_back(box);
+    // The same piece in the last frame (the HUD is drawn alike frame after frame): its group's placement.
+    for (const HudPiece& placed : g_HudPlaced)
+        if (std::fabs(box.x0 - placed.box.x0) <= 0.5f && std::fabs(box.x1 - placed.box.x1) <= 0.5f &&
+            std::fabs(box.y0 - placed.box.y0) <= 0.5f && std::fabs(box.y1 - placed.box.y1) <= 0.5f)
+            return placed.placement;
     for (const HudGroup& g : g_HudGroups)
         if (box.x0 >= g.box.x0 - 1.0f && box.x1 <= g.box.x1 + 1.0f && box.y0 >= g.box.y0 - 1.0f &&
             box.y1 <= g.box.y1 + 1.0f)
