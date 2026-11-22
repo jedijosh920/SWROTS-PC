@@ -36,13 +36,17 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <string>
+#include <vector>
 
 #include "core/log.h"
 #include "core/patch.h"
 #include "core/settings.h"
 #include "d3d/d3d.h"
+#include "game/menus.h"
 
 namespace swrots::game {
 
@@ -233,6 +237,54 @@ bool Matches(uint32_t address, const uint8_t* bytes, size_t length)
 bool LoadingScreenUp()
 {
     return g_LoadingScreenUp;
+}
+
+namespace {
+std::atomic<uint32_t> g_MoviePicture{ 0 }; // width << 16 | height, 0 when unknown
+}
+
+void NoteMovieOpened(const wchar_t* ntPath)
+{
+    // "\??\D:\..." (the host's NT path) opens as "\\?\D:\...".
+    std::wstring path = ntPath;
+    if (path.compare(0, 4, L"\\??\\") == 0)
+        path[1] = L'\\';
+    g_MoviePicture = 0;
+    const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return;
+    std::vector<uint8_t> head(64 * 1024);
+    DWORD read = 0;
+    const BOOL ok = ReadFile(file, head.data(), DWORD(head.size()), &read, nullptr);
+    CloseHandle(file);
+    if (!ok)
+        return;
+    // The first MPEG video sequence header (00 00 01 B3): width and height, 12 bits each.
+    for (DWORD i = 0; i + 7 <= read; ++i) {
+        if (head[i] || head[i + 1] || head[i + 2] != 1 || head[i + 3] != 0xB3)
+            continue;
+        const uint32_t width = uint32_t(head[i + 4]) << 4 | head[i + 5] >> 4;
+        const uint32_t height = uint32_t(head[i + 5] & 0xF) << 8 | head[i + 6];
+        if (width && height) {
+            g_MoviePicture = width << 16 | height;
+            LOG_DEBUG("Widescreen: movie picture %ux%u", width, height);
+        }
+        return;
+    }
+}
+
+bool InFrontEnd()
+{
+    return InShell() && !InLevel() && !g_LoadingScreenUp;
+}
+
+bool MoviePicture(int& width, int& height)
+{
+    const uint32_t v = g_MoviePicture;
+    width = int(v >> 16);
+    height = int(v & 0xFFFF);
+    return v != 0;
 }
 
 void InstallWidescreen()

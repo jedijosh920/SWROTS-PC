@@ -103,7 +103,9 @@ struct SurfaceMap {
 };
 // Cover: a picture filling the whole width, its height grown as much and cut at the top and bottom (the front
 // end's background movies, like CSS object-fit: cover).
-enum class Placement { Centre, Stretch, Left, Right, Cover };
+// Movie: a movie's picture wider than the frame (the film's, 640x272, MoviePictureOnScreen), grown about the
+// frame's middle to fill the width, or the height when filling the width would cut too much of it.
+enum class Placement { Centre, Stretch, Left, Right, Cover, Movie };
 // How an Xbox surface's pixels map to its host surface.
 SurfaceMap MapFor(const xd3d::PixelContainer* surface);
 // Host width of a render target of this Xbox size.
@@ -115,6 +117,10 @@ float MapScreenY(const SurfaceMap& map, float y, Placement placement);
 // The source rectangle (Xbox pixels) of a whole-frame picture shown covering a wide surface: the middle band
 // of its height that fills the width at the same scale (the whole picture when not wide).
 RECT CoverSource(const SurfaceMap& map);
+// The scale (host pixels per Xbox pixel) of a movie's picture of `height` Xbox pixels, as wide as the frame, on a
+// wide surface (Placement::Movie): the width's, unless it cuts more than a tenth of the picture's height (a screen
+// much wider than the film): then the height's, with black at the sides.
+float MovieScale(const SurfaceMap& map, float height);
 // Host x range of an Xbox pixel range (viewport, scissor, rectangle) on a surface: the whole Xbox
 // width spans the whole host width, anything narrower stays in the centred frame.
 void MapRangeX(const SurfaceMap& map, LONG x1, LONG x2, LONG& hostX1, LONG& hostX2);

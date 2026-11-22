@@ -365,6 +365,7 @@ static const char* PlacementName(Placement p)
     case Placement::Left: return "at the left edge";
     case Placement::Right: return "at the right edge";
     case Placement::Cover: return "covering the width";
+    case Placement::Movie: return "a movie, filling the width";
     case Placement::Centre: break;
     }
     return "in the middle";
@@ -438,6 +439,22 @@ static bool ReadsWideTarget()
     return false;
 }
 
+// A film's movie (game/widescreen.h): its picture, wider than the frame, drawn from the texture the movie plays
+// into (as large as the picture) across the frame's width, out of the front end (where background movies cover
+// the width). Its black above and below is the cleared frame.
+static bool MovieDraw(const ScreenBounds& b)
+{
+    int width = 0, height = 0;
+    const BaseTexture* t = State().textures[0];
+    if (!t || DrawLook() != Look::Picture || !game::MoviePicture(width, height) || width * 3 <= height * 4 ||
+        game::InFrontEnd())
+        return false;
+    UINT tw = 0, th = 0;
+    XboxSurfaceSize(t, tw, th);
+    return int(tw) == width && int(th) == height && b.minX <= 1.0f && b.maxX >= float(width) - 1.0f &&
+        std::fabs(b.maxY - b.minY - float(height)) <= 2.0f;
+}
+
 static Placement Decide(const SurfaceMap& map, const ScreenBounds& b)
 {
     if (!b.any)
@@ -453,6 +470,8 @@ static Placement Decide(const SurfaceMap& map, const ScreenBounds& b)
     // The menus: the front end (the shell up and not in a level: the shell stays up in a level, for the pause
     // menu) and the pause menu.
     const bool menus = (game::InShell() && !game::InLevel() && !game::PlayerObject()) || game::GamePaused();
+    if (MovieDraw(b))
+        return Placement::Movie;
     if (LoadingScreen())
         return Placement::Centre; // its band is still noted (ContinuedSides), to know the next frame is it too
     if (b.minX <= 1.0f && b.maxX >= width - 1.0f) {

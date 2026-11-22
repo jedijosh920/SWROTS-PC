@@ -13,6 +13,7 @@
 #include "game/devoptions.h"
 #include "game/game.h"
 #include "game/menus.h"
+#include "game/widescreen.h"
 #include "core/window.h"
 #include "d3d/recorder.h"
 #include "kernel/kernel.h"
@@ -123,6 +124,11 @@ float MapScreenX(const SurfaceMap& m, float x, Placement placement)
     case Placement::Stretch:
     case Placement::Cover:
         return (x + 0.5f) * float(m.hostWidth) / float(m.xboxWidth) - 0.5f;
+    case Placement::Movie: {
+        int width = 0, height = 0;
+        const float scale = game::MoviePicture(width, height) ? MovieScale(m, float(height)) : k;
+        return (x + 0.5f - float(m.xboxWidth) * 0.5f) * scale + float(m.hostWidth) * 0.5f - 0.5f;
+    }
     case Placement::Left:
         return x * k + (k - 1.0f) * 0.5f + m.left;
     case Placement::Right:
@@ -136,11 +142,23 @@ float MapScreenX(const SurfaceMap& m, float x, Placement placement)
 float MapScreenY(const SurfaceMap& m, float y, Placement placement)
 {
     const float k = float(g_RenderScale);
+    if (m.wide && placement == Placement::Movie) {
+        int width = 0, height = 0;
+        const float scale = game::MoviePicture(width, height) ? MovieScale(m, float(height)) : k;
+        return (y + 0.5f - float(m.xboxHeight) * 0.5f) * scale + float(m.hostHeight) * 0.5f - 0.5f;
+    }
     if (!m.wide || placement != Placement::Cover)
         return y * k + (k - 1.0f) * 0.5f;
     // The width's scale (host pixels per Xbox pixel) for the height too, about the middle.
     const float scale = float(m.hostWidth) / float(m.xboxWidth);
     return (y + 0.5f - float(m.xboxHeight) * 0.5f) * scale + float(m.hostHeight) * 0.5f - 0.5f;
+}
+
+float MovieScale(const SurfaceMap& m, float height)
+{
+    constexpr float kMovieCut = 0.1f; // the most of the picture's height cut to fill the width
+    const float width = float(m.hostWidth) / float(m.xboxWidth), tall = float(m.hostHeight) / height;
+    return width <= tall / (1.0f - kMovieCut) ? width : tall;
 }
 
 RECT CoverSource(const SurfaceMap& m)
@@ -621,11 +639,29 @@ static void UploadCpuWrittenBackBuffer()
         std::memcpy(static_cast<uint8_t*>(lr.pBits) + y * lr.Pitch, src + y * pitch, w * 4);
     g_CpuFrame->UnlockRect();
     // A wide frame shows the movie in the middle, undistorted, with black at the sides; the front end's
-    // background movies cover the whole width instead (cut at the top and bottom).
+    // background movies cover the whole width instead (cut at the top and bottom). A film's picture, wider than
+    // the frame, in its middle, is grown as Placement::Movie (draw.cpp: the game's movies are drawn from a
+    // texture; this is for one written into the frame).
     const SurfaceMap map = MapFor(bb);
-    if (map.wide && game::InShell()) {
+    if (map.wide && game::InFrontEnd()) {
         const RECT source = CoverSource(map);
         g_Device->StretchRect(g_CpuFrame, &source, g_HostBackBuffer, nullptr, D3DTEXF_LINEAR);
+        return;
+    }
+    int movieWidth = 0, movieHeight = 0;
+    if (map.wide && game::MoviePicture(movieWidth, movieHeight) && movieWidth == int(w) && movieHeight < int(h) &&
+        movieWidth * 3 > movieHeight * 4) {
+        const float scale = MovieScale(map, float(movieHeight));
+        const float shown = std::min(float(movieHeight), float(map.hostHeight) / scale);
+        RECT source = { 0, LONG((float(h) - shown) * 0.5f + 0.5f), LONG(w), 0 };
+        source.bottom = LONG(h) - source.top;
+        const LONG destW = std::min(LONG(float(w) * scale + 0.5f), LONG(map.hostWidth));
+        const LONG destH = std::min(LONG(float(source.bottom - source.top) * scale + 0.5f), LONG(map.hostHeight));
+        RECT dest = { (LONG(map.hostWidth) - destW) / 2, (LONG(map.hostHeight) - destH) / 2, 0, 0 };
+        dest.right = dest.left + destW;
+        dest.bottom = dest.top + destH;
+        g_Device->ColorFill(g_HostBackBuffer, nullptr, D3DCOLOR_XRGB(0, 0, 0));
+        g_Device->StretchRect(g_CpuFrame, &source, g_HostBackBuffer, &dest, D3DTEXF_LINEAR);
         return;
     }
     RECT dest = { LONG(map.centre), 0, LONG(map.centre) + LONG(w * g_RenderScale), LONG(map.hostHeight) };
