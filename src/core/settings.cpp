@@ -63,6 +63,13 @@ void LoadSettings(const std::wstring& path)
     s.bloom = ReadInt(L"Graphics", L"Bloom", d.bloom, 0, 1) != 0;
     s.fpsLimit = ReadInt(L"Game", L"FpsLimit", d.fpsLimit, 30, 60) >= 45 ? 60 : 30;
     {
+        s.language = d.language;
+        const std::string language = ReadText(L"Game", L"Language", d.language);
+        for (const char* name : { "Auto", "English", "French", "German", "Italian", "Spanish" })
+            if (_stricmp(language.c_str(), name) == 0)
+                s.language = name;
+    }
+    {
         wchar_t prompts[32] = {};
         GetPrivateProfileStringW(L"Controls", L"ButtonPrompts", L"Auto", prompts, 32, g_Path.c_str());
         s.buttonPrompts = _wcsicmp(prompts, L"Keyboard") == 0 ? 1 : _wcsicmp(prompts, L"Controller") == 0 ? 0 : -1;
@@ -78,10 +85,10 @@ void LoadSettings(const std::wstring& path)
     s.hvvOverheadInfo = ReadInt(L"HvV", L"OverheadInfo", d.hvvOverheadInfo, 0, 2);
     s.hvvOthersSlowMotion = ReadInt(L"HvV", L"OthersSlowMotion", d.hvvOthersSlowMotion, 0, 1) != 0;
     SaveSettings(); // writes defaults for missing keys, normalizes values
-    LOG_INFO("Settings: %dx%d%s%s%s, resolution scale %d%s, %s, %dx anisotropic, bloom %s, %d fps", s.width, s.height,
-        s.fullscreen ? " fullscreen" : "", s.vsync ? " vsync" : "", s.stretch ? " stretched" : "", s.resolutionScale,
-        s.resolutionScale ? "" : " (auto)", s.widescreen ? "16:9" : "4:3", s.anisotropy, s.bloom ? "on" : "off",
-        s.fpsLimit);
+    LOG_INFO("Settings: %dx%d%s%s%s, resolution scale %d%s, %s, %dx anisotropic, bloom %s, %d fps, language %s", s.width,
+        s.height, s.fullscreen ? " fullscreen" : "", s.vsync ? " vsync" : "", s.stretch ? " stretched" : "",
+        s.resolutionScale, s.resolutionScale ? "" : " (auto)", s.widescreen ? "16:9" : "4:3", s.anisotropy,
+        s.bloom ? "on" : "off", s.fpsLimit, s.language.c_str());
     static const char* const kInputs[] = { "auto", "keyboard is player 1", "two controllers" };
     LOG_INFO("Settings: co-op %s (input %s, player 2 death: %s, camera %s, friendly fire %s, boss %s, story safety %s, player 2 %s)",
         s.coop ? "on" : "off", kInputs[s.coopInput], s.coopDeath ? "game over" : "comes back", s.coopCamera ? "player 1" : "shared",
@@ -104,6 +111,7 @@ void SaveSettings()
     WriteInt(L"Graphics", L"Anisotropy", s.anisotropy);
     WriteInt(L"Graphics", L"Bloom", s.bloom);
     WriteInt(L"Game", L"FpsLimit", s.fpsLimit);
+    WriteText(L"Game", L"Language", s.language);
     WritePrivateProfileStringW(L"Controls", L"ButtonPrompts",
         s.buttonPrompts == 1 ? L"Keyboard" : s.buttonPrompts == 0 ? L"Controller" : L"Auto", g_Path.c_str());
     WriteInt(L"Coop", L"Enabled", s.coop);

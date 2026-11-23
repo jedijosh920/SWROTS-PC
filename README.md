@@ -4,8 +4,8 @@ An unofficial, native Windows port of **Star Wars: Episode III - Revenge of the 
 original Xbox. Not an emulator: the game's own code runs directly on your PC, and the parts of the
 Xbox it relied on (its kernel, Direct3D, audio and controllers) are replaced by native Windows code.
 
-You need your own copy of the game (the North American Xbox release). This project contains no
-game code, art, audio or other game data.
+You need your own copy of the game (the North American Xbox release, or the PAL release: France, or
+Europe in English, Spanish and Italian). This project contains no game code, art, audio or other game data.
 
 > **Status: early development.** The game boots, plays its movies and menus, and is playable
 > through level changes, restarts and saving. It has not been played through from start to finish
@@ -101,8 +101,14 @@ More: [installing](docs/install.md).
 - 64-bit Windows 10 (1803) or newer. (The port itself is a 32-bit program, but it needs the address
   space a 64-bit Windows gives 32-bit programs.)
 - A Direct3D 9 capable graphics card (anything from the last 15 years).
-- Your own disc image of *Star Wars: Episode III - Revenge of the Sith* for the Xbox, North American
-  release (the game's executable must have MD5 `6460ef37862de3af364a0563a0a18c4e`).
+- Your own disc image of *Star Wars: Episode III - Revenge of the Sith* for the Xbox (the game's executable,
+  `default.xbe`, must be one of these):
+
+  | Release | MD5 of `default.xbe` |
+  |---|---|
+  | North America (USA) | `6460ef37862de3af364a0563a0a18c4e` |
+  | France (PAL), *La Revanche des Sith* | `84ae8a86018f3ab4a1b5756b238cefd2` |
+  | Europe (PAL: English, Spanish, Italian) | `a48f65aa84a9848030b8644e1fd35b89` |
 
 ## Controls
 
@@ -153,7 +159,8 @@ and controller layouts: [controls](docs/controls.md).
 - Some modding limits: animations stored in a level's memory image (most `.bnm`) cannot be replaced
   by loose files yet, and loose text resources in folders the disc also has (e.g. `gameinfo\`) fail
   to load.
-- Only the North American release is supported.
+- The PAL releases (France, Europe) are newer to the port than the North American one: please report
+  anything that works on one and not the other.
 - On Intel integrated graphics (e.g. Iris Xe), lightsaber blades can show away from their hilts. On a
   laptop that also has an NVIDIA or AMD graphics card, set `swrots.exe` to **High performance** in
   Windows' graphics settings ([troubleshooting](docs/install.md#troubleshooting)).

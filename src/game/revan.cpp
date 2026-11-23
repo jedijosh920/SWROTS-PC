@@ -37,24 +37,28 @@
 #include "game/devmap.h"
 #include "game/eventtree.h"
 #include "game/hvv.h"
+#include "game/release.h"
 #include "game/resources.h"
 
 namespace swrots::game {
 
 namespace {
 
-constexpr uint32_t kScriptCharacterContext = 0x006943CC; // +0x68: the character whose script runs
-constexpr uint32_t kScriptInstance = 0x006964C0;
-constexpr uint32_t kSetup = 0x006965D8;
-constexpr uint32_t kSerraRulesCall = 0x00479228;          // call 0x479240: cdecl (instance, class object)
-constexpr uint32_t kSerraRules = 0x00479240;
-constexpr uint32_t kSubstitute = 0x00173AB0;              // cdecl (record A, record B)
-constexpr uint32_t kRecordOf = 0x001F53E0;                // cdecl (handle) -> the class's record
-constexpr uint32_t kHeldFrames = 0x00177FF0, kPressed = 0x00178070;
-constexpr uint32_t kButtonBlock = 0x006964E4, kButtonStun = 0x006964F4;
+static GAME_VA(kScriptCharacterContext, 0x006943CC); // +0x68: the character whose script runs
+static GAME_VA(kScriptInstance, 0x006964C0);
+static GAME_VA(kSetup, 0x006965D8);
+static GAME_VA(kSerraRulesCall, 0x00479228);          // call 0x479240: cdecl (instance, class object)
+static GAME_VA(kSerraRules, 0x00479240);
+static GAME_VA(kSubstitute, 0x00173AB0);              // cdecl (record A, record B)
+static GAME_VA(kRecordOf, 0x001F53E0);                // cdecl (handle) -> the class's record
+static GAME_VA(kHeldFrames, 0x00177FF0);
+static GAME_VA(kPressed, 0x00178070);
+static GAME_VA(kButtonBlock, 0x006964E4);
+static GAME_VA(kButtonStun, 0x006964F4);
 constexpr uint32_t kCharacterHealth = 0x130, kCharacterTransform = 0x150, kCharacterForce = 0xA40;
-constexpr uint32_t kObjectById = 0x000A31F0;
-constexpr uintptr_t kPlaySequence = 0x150E30, kFindSequence = 0x150D60;
+static GAME_VA(kObjectById, 0x000A31F0);
+static GAME_VA(kPlaySequence, 0x150E30);
+static GAME_VA(kFindSequence, 0x150D60);
 
 // Serra's class object's handles (the shared Jedi header and her own)
 constexpr uint32_t kForceStun = 0x120C, kForceStunAlt = 0x120E, kForceGraspStun = 0x11D2;
@@ -187,13 +191,13 @@ bool SetupEvent(uint32_t test)
 bool Declare(uint16_t* handle, const char* name, const char* animation, float speed)
 {
     return reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint16_t*, const char*, const char*, float, uint32_t)>(
-        uintptr_t(0x001F5B20))(reinterpret_cast<uint8_t*>(uintptr_t(kSetup)), nullptr, handle, name, animation, speed, 0x0055FB60);
+        uintptr_t(Va(0x001F5B20)))(reinterpret_cast<uint8_t*>(uintptr_t(kSetup)), nullptr, handle, name, animation, speed, Va(0x0055FB60));
 }
 
 bool Finish(uint32_t line)
 {
-    return reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, const char*, uint32_t)>(uintptr_t(0x001F6C00))(
-        reinterpret_cast<uint8_t*>(uintptr_t(kSetup)), nullptr, reinterpret_cast<const char*>(uintptr_t(0x0059C07C)), line);
+    return reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, const char*, uint32_t)>(uintptr_t(Va(0x001F6C00)))(
+        reinterpret_cast<uint8_t*>(uintptr_t(kSetup)), nullptr, reinterpret_cast<const char*>(uintptr_t(Va(0x0059C07C))), line);
 }
 
 void GrappleFlags()
@@ -213,7 +217,7 @@ uint32_t* PalmSlot(bool launch)
 void Blast(bool launch, int kind)
 {
     if (uint32_t* slot = PalmSlot(launch))
-        Call(0x001760B0, slot, kind);
+        Call(Va(0x001760B0), slot, kind);
 }
 
 // Dooku_Grab_KD_GB (0x371840): the knock-down throw
@@ -222,26 +226,26 @@ bool __fastcall DookuGrabKD(uint8_t* self, void*, uint32_t, uint32_t)
     uint8_t* inst = *reinterpret_cast<uint8_t**>(uintptr_t(kScriptInstance));
     if (Declare(&g_KDHandle, "Dooku_Grab_KD_GB", "Dooku_Grapple_KD_GB", 1.0f))
         GrappleFlags();
-    if (SetupEvent(0x001F6310)) { // start
-        Call(0x002BC210, 1, 0, 0);
-        Call(0x00172E00, 0, 0, 0);
-        Call(0x00172A40, Call<uint32_t>(0x00172D20, 0x9C4, 0));
-        Call(0x00174B40, "Dooku_Grab_KD_GR", 0, 0, 0, 0);
-        Call(0x0017A7D0, 0);
+    if (SetupEvent(Va(0x001F6310))) { // start
+        Call(Va(0x002BC210), 1, 0, 0);
+        Call(Va(0x00172E00), 0, 0, 0);
+        Call(Va(0x00172A40), Call<uint32_t>(Va(0x00172D20), 0x9C4, 0));
+        Call(Va(0x00174B40), "Dooku_Grab_KD_GR", 0, 0, 0, 0);
+        Call(Va(0x0017A7D0), 0);
     }
-    if (SetupEvent(0x001F6350)) { // end
-        Call(0x002BC1B0, 0, 0);
-        Call(0x00172E20);
-        Call(0x0017A7D0, 1);
+    if (SetupEvent(Va(0x001F6350))) { // end
+        Call(Va(0x002BC1B0), 0, 0);
+        Call(Va(0x00172E20));
+        Call(Va(0x0017A7D0), 1);
     }
-    if (SetupEvent(0x001F62D0)) // back to its state machine after
-        Call(0x0038A140, inst, self, 3, 3);
-    if (SetupEvent(0x001F6390) && inst) { // its frame codes
+    if (SetupEvent(Va(0x001F62D0))) // back to its state machine after
+        Call(Va(0x0038A140), inst, self, 3, 3);
+    if (SetupEvent(Va(0x001F6390)) && inst) { // its frame codes
         switch (At<int32_t>(inst, 0x120)) {
-        case 20: Call(0x002BC1B0, 1, 0); break;
+        case 20: Call(Va(0x002BC1B0), 1, 0); break;
         case 69: Blast(false, 4); break;
-        case 71: Call(0x002BBEE0, 20.0f); break;
-        case 73: Call(0x00172E20); break;
+        case 71: Call(Va(0x002BBEE0), 20.0f); break;
+        case 73: Call(Va(0x00172E20)); break;
         default: break;
         }
     }
@@ -254,24 +258,24 @@ bool __fastcall DookuGrabLaunch(uint8_t* self, void*, uint32_t, uint32_t)
     uint8_t* inst = *reinterpret_cast<uint8_t**>(uintptr_t(kScriptInstance));
     if (Declare(&g_LaunchHandle, "Dooku_Grab_Launch_GB", "Dooku_Grapple_Lnch_GB", 1.0f))
         GrappleFlags();
-    if (SetupEvent(0x001F6310)) {
-        Call(0x00172E00, 0, 0, 0);
-        Call(0x00172A40, Call<uint32_t>(0x00172D20, 0x9C4, 0));
-        Call(0x00174B40, "Dooku_Grab_Launch_GR", 0, 0, 0, 0);
-        Call(0x0017A7D0, 0);
+    if (SetupEvent(Va(0x001F6310))) {
+        Call(Va(0x00172E00), 0, 0, 0);
+        Call(Va(0x00172A40), Call<uint32_t>(Va(0x00172D20), 0x9C4, 0));
+        Call(Va(0x00174B40), "Dooku_Grab_Launch_GR", 0, 0, 0, 0);
+        Call(Va(0x0017A7D0), 0);
     }
-    if (SetupEvent(0x001F6350)) {
-        Call(0x00172E20);
+    if (SetupEvent(Va(0x001F6350))) {
+        Call(Va(0x00172E20));
         Blast(true, 5);
-        Call(0x0017A7D0, 1);
+        Call(Va(0x0017A7D0), 1);
     }
-    if (SetupEvent(0x001F62D0))
-        Call(0x0038A140, inst, self, 3, 3);
-    if (SetupEvent(0x001F6390) && inst) {
+    if (SetupEvent(Va(0x001F62D0)))
+        Call(Va(0x0038A140), inst, self, 3, 3);
+    if (SetupEvent(Va(0x001F6390)) && inst) {
         switch (At<int32_t>(inst, 0x120)) {
         case 0x64: Blast(true, 4); break;
-        case 0x6E: Call(0x002BBEE0, 20.0f); break;
-        case 0x73: Call(0x00172E20); break;
+        case 0x6E: Call(Va(0x002BBEE0), 20.0f); break;
+        case 0x73: Call(Va(0x00172E20)); break;
         default: break;
         }
     }
@@ -282,13 +286,13 @@ bool __fastcall DookuGrabLaunch(uint8_t* self, void*, uint32_t, uint32_t)
 bool __fastcall StormCast(uint8_t* self, void*, uint32_t, uint32_t)
 {
     if (Declare(&g_StormHandle, "Revan_ForceStorm", "Dooku_Frc_Light_In", 0.8f)) {
-        *reinterpret_cast<uint8_t*>(uintptr_t(0x00696531)) = 1;
-        *reinterpret_cast<uint8_t*>(uintptr_t(0x00696537)) = 1;
-        *reinterpret_cast<const char**>(uintptr_t(0x006964B8)) = kDuelMapTag;
+        *reinterpret_cast<uint8_t*>(uintptr_t(Va(0x00696531))) = 1;
+        *reinterpret_cast<uint8_t*>(uintptr_t(Va(0x00696537))) = 1;
+        *reinterpret_cast<const char**>(uintptr_t(Va(0x006964B8))) = kDuelMapTag;
     }
-    if (SetupEvent(0x001F62D0)) {
+    if (SetupEvent(Va(0x001F62D0))) {
         uint8_t* inst = *reinterpret_cast<uint8_t**>(uintptr_t(kScriptInstance));
-        Call(0x0038A140, inst, self, -1, -1);
+        Call(Va(0x0038A140), inst, self, -1, -1);
     }
     return Finish(0x7E02);
 }
@@ -326,21 +330,21 @@ void Substitute(uint8_t* classObject, uint32_t from, uint16_t toHandle, const ch
 void MakePalmBlasts(Fighter& f)
 {
     const auto make = [](uint32_t* slot, uint32_t effectGlobal, uintptr_t joint, float x, float y, float z, float pitch, float yaw, float roll) {
-        Call(0x00176000, slot, effectGlobal); // the effect's interned name (its holder's address)
+        Call(Va(0x00176000), slot, effectGlobal); // the effect's interned name (its holder's address)
         void* name = nullptr;
-        void* interned = Call<void*>(0x00222FA0, &name, reinterpret_cast<const char*>(joint));
-        Call(0x00176100, slot, interned, 0);
-        Call(0x001761D0, slot, x, y, z, pitch, yaw, roll, 1);
+        void* interned = Call<void*>(Va(0x00222FA0), &name, reinterpret_cast<const char*>(joint));
+        Call(Va(0x00176100), slot, interned, 0);
+        Call(Va(0x001761D0), slot, x, y, z, pitch, yaw, roll, 1);
     };
-    make(&f.palmBlast, 0x00807644, 0x005E1938, 0, 0, 18.0f, 90.0f, 0, 0);       // elbow_L_g
-    make(&f.launchBlast, 0x008093C4, 0x005AFBC4, 0, 12.0f, 6.0f, 90.0f, 0, -45.0f); // wrist_L_g
+    make(&f.palmBlast, Va(0x00807644), Va(0x005E1938), 0, 0, 18.0f, 90.0f, 0, 0);       // elbow_L_g
+    make(&f.launchBlast, Va(0x008093C4), Va(0x005AFBC4), 0, 12.0f, 6.0f, 90.0f, 0, -45.0f); // wrist_L_g
 }
 
 // The game's "is that character my enemy?" (0x18F3F0, thiscall on the character's AI controller (other, flag)).
 bool IsEnemyOf(uint8_t* self, uint8_t* other)
 {
     uint8_t* brain = At<uint8_t*>(self, 0x9FC);
-    return !brain || reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint8_t*, int)>(uintptr_t(0x0018F3F0))(brain, nullptr, other, 0);
+    return !brain || reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint8_t*, int)>(uintptr_t(Va(0x0018F3F0)))(brain, nullptr, other, 0);
 }
 
 uint8_t* NearestEnemy(uint8_t* self, float range, std::vector<uint8_t*>* all)
@@ -513,7 +517,7 @@ void InstallRevan()
     uint8_t call[5] = { 0xE8 };
     const int32_t rel = int32_t(kSerraRules) - int32_t(kSerraRulesCall + 5);
     std::memcpy(call + 1, &rel, 4);
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kSerraRulesCall)), call, 5) != 0) {
+    if (!MatchesCode(kSerraRulesCall, call, 5)) {
         LOG_WARN("Revan: unexpected code at Serra's rules; no other moves for her class's custom characters");
         return;
     }
@@ -565,7 +569,7 @@ void RevanFrame()
             continue;
         }
         if (Live(it->object, it->id))
-            reinterpret_cast<void(__cdecl*)(uint8_t*)>(uintptr_t(0x000A2FE0))(it->object);
+            reinterpret_cast<void(__cdecl*)(uint8_t*)>(uintptr_t(Va(0x000A2FE0)))(it->object);
         it = g_Sparks.erase(it);
     }
     for (auto it = g_Strikes.begin(); it != g_Strikes.end();) {

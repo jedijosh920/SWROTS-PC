@@ -36,6 +36,7 @@
 #include "core/patch.h"
 #include "game/characters.h"
 #include "game/menus.h"
+#include "game/release.h"
 #include "game/resources.h"
 #include "input/controls.h"
 #include "kernel/kernel.h"
@@ -766,10 +767,12 @@ const Cap* CapForIcon(int icon)
 }
 
 // --- The game's texture interface ------------------------------------------------------------------------------------
-constexpr uint32_t kTextureVtable = 0x00561A30;
-constexpr uint32_t kLoad = 0x0001F650, kRelease = 0x0001F5E0, kDrawQuad = 0x0001F040;
-constexpr uint32_t kFooterIconReturn = 0x002C4ECD; // ButtonIcon's draw
-constexpr uint32_t kTipTable = 0x007F0608;         // 18 x {int w, h; const char* key; void* handle}
+static GAME_VA(kTextureVtable, 0x00561A30);
+static GAME_VA(kLoad, 0x0001F650);
+static GAME_VA(kRelease, 0x0001F5E0);
+static GAME_VA(kDrawQuad, 0x0001F040);
+static GAME_VA(kFooterIconReturn, 0x002C4ECD); // ButtonIcon's draw
+static GAME_VA(kTipTable, 0x007F0608);         // 18 x {int w, h; const char* key; void* handle}
 
 // The icons' handles (this start's), with the image each held when loaded: a handle the game freed and gave to
 // another picture (an effect's) holds another image, and is no icon any more.
@@ -920,7 +923,7 @@ uint32_t RedirectText(uint32_t key)
 // The pictures the menus draw themselves (picture items: d-pads, ...) take their texture from a handle through
 // 0x2049F0 (cdecl (handle, frame) -> the texture); a button's handle gives the key cap's while the prompts are the
 // keyboard's. (Its first 6 bytes are position-independent: mov eax, [esp+4]; test eax, eax.)
-constexpr uint32_t kTextureOf = 0x002049F0;
+static GAME_VA(kTextureOf, 0x002049F0);
 constexpr uint8_t kTextureOfBytes[] = { 0x8B, 0x44, 0x24, 0x04, 0x85, 0xC0 };
 using TextureOfFn = void*(__cdecl*)(void*, int);
 TextureOfFn g_OriginalTextureOf = nullptr;
@@ -958,10 +961,10 @@ void InstallPrompts(const std::wstring& cache)
     patch(1, reinterpret_cast<const void*>(&LoadHook));
     patch(3, reinterpret_cast<const void*>(&ReleaseHook));
     patch(5, reinterpret_cast<const void*>(&DrawQuadHook));
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kTextureOf)), kTextureOfBytes, sizeof kTextureOfBytes) == 0) {
+    if (MatchesCode(kTextureOf, kTextureOfBytes, sizeof kTextureOfBytes)) {
         static uint8_t* stub = [] { // once: the port's memory outlives the game's restarts
             uint8_t* s = AllocStub(sizeof kTextureOfBytes + 5);
-            std::memcpy(s, kTextureOfBytes, sizeof kTextureOfBytes);
+            std::memcpy(s, reinterpret_cast<const void*>(uintptr_t(kTextureOf)), sizeof kTextureOfBytes); // the running release's bytes
             s[sizeof kTextureOfBytes] = 0xE9;
             const int32_t back = int32_t(kTextureOf + sizeof kTextureOfBytes) - int32_t(uintptr_t(s) + sizeof kTextureOfBytes + 5);
             std::memcpy(s + sizeof kTextureOfBytes + 1, &back, 4);

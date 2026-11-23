@@ -14,21 +14,38 @@
 
 namespace swrots::game {
 
+// North American addresses.
 static const SdkSymbol kSymbols[] = {
 #define SDK_SYMBOL(addr, name, kind) { addr, name, kind },
 #include "game/sdk_symbols.inc"
 #undef SDK_SYMBOL
 };
 
+// The table in the running release: once the release is known, a translated copy sorted by address (the PAL
+// executable's functions are not all in the same order).
+static const std::vector<SdkSymbol>& Symbols()
+{
+    static std::vector<SdkSymbol> symbols(std::begin(kSymbols), std::end(kSymbols));
+    static bool translated = false;
+    if (!translated && ReleaseKnown()) {
+        for (SdkSymbol& s : symbols)
+            s.address = Va(s.address);
+        std::stable_sort(symbols.begin(), symbols.end(),
+            [](const SdkSymbol& a, const SdkSymbol& b) { return a.address < b.address; });
+        translated = true;
+    }
+    return symbols;
+}
+
 const SdkSymbol* SdkSymbols(uint32_t* count)
 {
-    *count = uint32_t(sizeof(kSymbols) / sizeof(kSymbols[0]));
-    return kSymbols;
+    *count = uint32_t(Symbols().size());
+    return Symbols().data();
 }
 
 const SdkSymbol* FindSdkSymbol(const char* name)
 {
-    for (const SdkSymbol& s : kSymbols)
+    for (const SdkSymbol& s : Symbols())
         if (std::strcmp(s.name, name) == 0)
             return &s;
     return nullptr;
@@ -38,7 +55,7 @@ const SdkSymbol* NearestSdkSymbol(uint32_t address)
 {
     // Table is sorted by address.
     const SdkSymbol* best = nullptr;
-    for (const SdkSymbol& s : kSymbols) {
+    for (const SdkSymbol& s : Symbols()) {
         if (s.address > address)
             break;
         if (s.kind != SymbolKind::Data)
@@ -86,6 +103,7 @@ bool DescribeGameAddress(uint32_t address, char* out, size_t size)
 {
     static std::once_flag once;
     std::call_once(once, LoadGameSymbols);
+    address = NorthAmericaVa(address); // the map is the North American executable's
     auto it = std::upper_bound(g_GameSymbols.begin(), g_GameSymbols.end(), address,
         [](uint32_t a, const GameSymbol& s) { return a < s.address; });
     if (it == g_GameSymbols.begin())
@@ -103,7 +121,7 @@ void LogGameCallers(const char* tag, const void* stackTop, int max)
     int found = 0;
     for (int i = 0; i < 2048 && found < max; ++i) {
         uint32_t v = stack[i];
-        if (v < 0x00011006 || v >= 0x004A0000)
+        if (v < Va(0x00011006) || v >= Va(0x004A0000))
             continue;
         auto* code = reinterpret_cast<const uint8_t*>(uintptr_t(v));
         bool afterCall = code[-5] == 0xE8 || (code[-2] == 0xFF && (code[-1] & 0x38) == 0x10)

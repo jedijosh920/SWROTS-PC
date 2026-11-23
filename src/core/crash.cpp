@@ -6,6 +6,7 @@
 
 #include "core/log.h"
 #include "game/game.h"
+#include "game/release.h"
 #include "kernel/kernel.h"
 
 namespace swrots {
@@ -213,7 +214,7 @@ static LONG __stdcall FirstChance(EXCEPTION_POINTERS* info)
             for (int i = 0; i < 1024 && shown < 32; ++i) {
                 uint32_t v;
                 __try { v = sp[i]; } __except (EXCEPTION_EXECUTE_HANDLER) { break; }
-                if (v >= 0x11000 && v < 0x4EF000) {
+                if (v >= game::Va(0x11000) && v < game::Va(0x4EF000)) {
                     DescribeAddress(v, where, sizeof(where));
                     LOG_WARN("    [esp+%04X] %s", i * 4, where);
                     ++shown;

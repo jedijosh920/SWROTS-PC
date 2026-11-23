@@ -27,6 +27,7 @@
 #include "game/eventtree.h"
 #include "game/game.h"
 #include "game/menus.h"
+#include "game/release.h"
 #include "kernel/kernel.h"
 #include "game/resources.h"
 
@@ -34,7 +35,7 @@ namespace swrots::game {
 
 namespace {
 
-constexpr uint32_t kClassLookup = 0x000E9B60;
+static GAME_VA(kClassLookup, 0x000E9B60);
 constexpr uint8_t kClassLookupBytes[] = { 0xA1, 0xE8, 0xEB, 0x68, 0x00, 0x83, 0xEC, 0x0C }; // mov eax, [0x68EBE8]; sub esp, 0xC
 constexpr uint32_t kCreateSlot = 0x30 / 4;
 constexpr size_t kInfoCopy = 0x200;     // bytes of the base's class info copied (it is smaller; reads only)
@@ -65,10 +66,10 @@ const std::vector<std::pair<std::string, std::vector<std::string>>>& VoiceOf(con
 // with a mesh (0x280480: the double-bladed class for a flagged one). The Jedi Brute's is double-bladed (Lsaberjdbrute,
 // flag 1); Serra Keto's two records make her two sabers. At 0x2814D2 (lea ebx, [esi + 0x1068]; 6 bytes, replaced by a
 // call) a custom character's Blades= changes the records first.
-constexpr uint32_t kSaberSetup = 0x002814D2;
+static GAME_VA(kSaberSetup, 0x002814D2);
 constexpr uint8_t kSaberSetupBytes[] = { 0x8D, 0x9E, 0x68, 0x10, 0x00, 0x00 };
 constexpr uint32_t kWeaponRecords = 0x1064, kWeaponRecordSize = 0x20;
-constexpr uint32_t kAssignString = 0x00225A10; // TString, thiscall (const char*)
+static GAME_VA(kAssignString, 0x00225A10); // TString, thiscall (const char*)
 constexpr char kSingleHilt[] = "Meshes\\Weapons\\LsaberKnight\\LsaberKnight";
 constexpr char kDoubleHilt[] = "Meshes\\Weapons\\Lsaberjdbrute\\Lsaberjdbrute";
 
@@ -142,10 +143,10 @@ void BuildList(Proxy& p, const uint8_t* baseList)
 // keeps the base's name (the duel also finds the intro camera by it), so the store takes its own name instead: the
 // text of IDS_SPEAKER_<its key>, which the port's string hook supplies. (Answering it from the getter, 0x151B80, at
 // subtitle time, looked it up from there: the game hung.)
-constexpr uint32_t kSpeakerNameStore = 0x0015BC56;
+static GAME_VA(kSpeakerNameStore, 0x0015BC56);
 constexpr uint8_t kSpeakerNameStoreBytes[] = { 0x89, 0x96, 0x04, 0x0A, 0x00, 0x00 };
-constexpr uint32_t kStringCrc = 0x00222BA0;  // cdecl (const char*): a string id's key
-constexpr uint32_t kGameCore = 0x00645F7C;   // [+0x38] +0x94: the string tables; vfunc +4 thiscall (out, &key, 0)
+static GAME_VA(kStringCrc, 0x00222BA0);  // cdecl (const char*): a string id's key
+static GAME_VA(kGameCore, 0x00645F7C);   // [+0x38] +0x94: the string tables; vfunc +4 thiscall (out, &key, 0)
 
 // The game's text handles, once a start (cleared at every start: the game's string pool is made anew).
 std::vector<std::pair<const CustomCharacter*, uint32_t>> g_SpeakerTexts;
@@ -171,7 +172,7 @@ uint32_t SpeakerText(const CustomCharacter& custom)
 
 // The dialogue engine's start of a line (StartEntry, thiscall (speaker, entry, 0, 0, 0), ret 0x14): its first six
 // bytes (push ebp / mov ebp, esp / and esp, -16) moved to a stub.
-constexpr uint32_t kStartEntry = 0x00090330;
+static GAME_VA(kStartEntry, 0x00090330);
 constexpr uint8_t kStartEntryBytes[] = { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0 };
 using StartEntryFn = int(__fastcall*)(uint8_t*, void*, uint8_t*, int, int, int, int);
 StartEntryFn g_StartEntry = nullptr;
@@ -387,7 +388,7 @@ int __fastcall StartEntryHook(uint8_t* engine, void*, uint8_t* speaker, int entr
 // The duel's say (0x17ACC0, cdecl (event, context, ...): the current script's character says a line of the event;
 // first bytes mov eax, [0x6943CC]). A custom character playing another duelist's intro (Intro=) has a base whose
 // speaker has no lines for the "Versus" context: its line is asked without it (the speaker's taunts and kills).
-constexpr uint32_t kSayEvent = 0x0017ACC0;
+static GAME_VA(kSayEvent, 0x0017ACC0);
 constexpr uint8_t kSayEventBytes[] = { 0xA1, 0xCC, 0x43, 0x69, 0x00 };
 using SayEventFn = int(__cdecl*)(const char*, const char*, int, int, int);
 SayEventFn g_SayEvent = nullptr;
@@ -397,7 +398,7 @@ int __cdecl SayEventHook(const char* event, const char* context, int a, int b, i
     const CustomCharacter* custom = nullptr;
     uint8_t* character = nullptr;
     if (context && event && strcmp(context, "Versus") == 0) {
-        uint8_t* scripts = *reinterpret_cast<uint8_t**>(uintptr_t(0x006943CC));
+        uint8_t* scripts = *reinterpret_cast<uint8_t**>(uintptr_t(Va(0x006943CC)));
         character = scripts ? *reinterpret_cast<uint8_t**>(scripts + 0x68) : nullptr;
         custom = character ? CustomCharacterOf(character) : nullptr;
     }
@@ -474,9 +475,9 @@ void __cdecl ApplyBlades(uint8_t* character)
 // most +0xA44; a class whose Init sets no Force of its own after it, as the Jedi Brute, has none): a custom
 // character's Force and size after it. Its first instructions: push esi; mov esi, ecx; call 0x2670F0 (relative,
 // re-made in the stub).
-constexpr uint32_t kJediSetup = 0x002814C0;
+static GAME_VA(kJediSetup, 0x002814C0);
 constexpr uint8_t kJediSetupBytes[] = { 0x56, 0x8B, 0xF1, 0xE8 };
-constexpr uint32_t kJediSetupCallee = 0x002670F0;
+static GAME_VA(kJediSetupCallee, 0x002670F0);
 constexpr uint32_t kCharacterForce = 0xA40, kCharacterMaxForce = 0xA44, kObjectScale = 0x194;
 using JediSetupFn = bool(__fastcall*)(uint8_t*, void*);
 JediSetupFn g_OriginalJediSetup = nullptr;
@@ -499,14 +500,14 @@ bool __fastcall JediSetupHook(uint8_t* character, void*)
 // _blue, _purple) is picked by the script instance's saber colour (+0x374, an RGB; 0x4106D0, thiscall (instance, ...4),
 // ret 0x14: exactly red, green, blue or purple, else none), which a custom character's base set (the Jedi Brute's
 // green). For a custom character with its own colour, the pick sees the nearest of the four.
-constexpr uint32_t kChargeupPick = 0x004106D0;
+static GAME_VA(kChargeupPick, 0x004106D0);
 constexpr uint8_t kChargeupPickBytes[] = { 0x8B, 0x54, 0x24, 0x04, 0xF3, 0x0F, 0x10, 0x8A, 0x74, 0x03, 0x00, 0x00 };
 using ChargeupPickFn = void(__fastcall*)(void*, void*, uint8_t*, void*, void*, void*, void*);
 ChargeupPickFn g_ChargeupPick = nullptr;
 
 void __fastcall ChargeupPickHook(void* self, void*, uint8_t* instance, void* a, void* b, void* c, void* d)
 {
-    uint8_t* scripts = *reinterpret_cast<uint8_t**>(uintptr_t(0x006943CC));
+    uint8_t* scripts = *reinterpret_cast<uint8_t**>(uintptr_t(Va(0x006943CC)));
     uint8_t* character = scripts ? *reinterpret_cast<uint8_t**>(scripts + 0x68) : nullptr;
     const CustomCharacter* custom = character ? CustomCharacterOf(character) : nullptr;
     if (!custom || !custom->hasSaber || !instance)
@@ -537,12 +538,12 @@ void __fastcall ChargeupPickHook(void* self, void*, uint8_t* instance, void* a, 
 // A script's size change of its character (0x178FD0, cdecl (scale, frames): at once (+0x194) or eased over the frames
 // (+0x2C0 the target, +0x2C4 the time)): Vader's duel intro grows him to 1.1 and back to 1. A custom character's
 // size (Scale=) is its 1: the change is relative to it, so another duelist's intro keeps its size.
-constexpr uint32_t kScriptSetScale = 0x00178FD0;
+static GAME_VA(kScriptSetScale, 0x00178FD0);
 constexpr uint8_t kScriptSetScaleBytes[] = { 0x8B, 0x44, 0x24, 0x08, 0x85, 0xC0 };
 
 void __cdecl ScriptSetScale(float scale, int frames)
 {
-    uint8_t* scripts = *reinterpret_cast<uint8_t**>(uintptr_t(0x006943CC)); // [..] +0x68: the script's character
+    uint8_t* scripts = *reinterpret_cast<uint8_t**>(uintptr_t(Va(0x006943CC))); // [..] +0x68: the script's character
     uint8_t* character = scripts ? *reinterpret_cast<uint8_t**>(scripts + 0x68) : nullptr;
     if (!character)
         return;
@@ -553,7 +554,7 @@ void __cdecl ScriptSetScale(float scale, int frames)
         return;
     }
     *reinterpret_cast<float*>(character + 0x2C0) = scale;
-    *reinterpret_cast<float*>(character + 0x2C4) = float(frames) * *reinterpret_cast<const float*>(uintptr_t(0x00645EA4));
+    *reinterpret_cast<float*>(character + 0x2C4) = float(frames) * *reinterpret_cast<const float*>(uintptr_t(Va(0x00645EA4)));
 }
 
 // Force controls for a base without them. Every Jedi script class has the Force sequences (the shared Jedi set-up:
@@ -563,14 +564,14 @@ void __cdecl ScriptSetScale(float scale, int frames)
 // inputs 0x48E5C1, gate 0x48EA70, which powers 0x48EB6E, rules 0x48ECB4-0x48F50D): a branch is offered with
 // 0x175D60 (cdecl (condition, sequence, 3, 3, 1, 1.0f); the sequence from its handle by 0x1F53E0 (handle, file,
 // line)); the second stance (state 0x32, 0x1741A0) has its own set (each handle +2).
-constexpr uint32_t kBruteRulesCall = 0x003D9D38;
-constexpr uint32_t kBruteRules = 0x003D9D50;
-constexpr uint32_t kScriptCharacter = 0x006943CC; // [..] +0x68: the character whose script runs
+static GAME_VA(kBruteRulesCall, 0x003D9D38);
+static GAME_VA(kBruteRules, 0x003D9D50);
+static GAME_VA(kScriptCharacter, 0x006943CC); // [..] +0x68: the character whose script runs
 using RulesFn = void(__cdecl*)(uint8_t*, uint8_t*);
 
 bool Pressed(uint32_t button) // the button id's global; 0x178070 (id, 5, 0, 2)
 {
-    return reinterpret_cast<bool(__cdecl*)(uint32_t, int, int, int)>(uintptr_t(0x00178070))(
+    return reinterpret_cast<bool(__cdecl*)(uint32_t, int, int, int)>(uintptr_t(Va(0x00178070)))(
         *reinterpret_cast<const uint32_t*>(uintptr_t(button)), 5, 0, 2);
 }
 
@@ -582,9 +583,9 @@ bool Direction(uint32_t test, uint8_t* inst) // 0x1F5440 back, 0x1F5480 left, 0x
 void Offer(bool condition, uint8_t* classObject, uint32_t handleAt)
 {
     const uint16_t handle = *reinterpret_cast<uint16_t*>(classObject + handleAt);
-    void* sequence = reinterpret_cast<void*(__cdecl*)(uint32_t, const char*, int)>(uintptr_t(0x001F53E0))(handle,
+    void* sequence = reinterpret_cast<void*(__cdecl*)(uint32_t, const char*, int)>(uintptr_t(Va(0x001F53E0)))(handle,
         "customchars.cpp", __LINE__);
-    reinterpret_cast<void(__cdecl*)(bool, void*, int, int, int, float)>(uintptr_t(0x00175D60))(condition, sequence,
+    reinterpret_cast<void(__cdecl*)(bool, void*, int, int, int, float)>(uintptr_t(Va(0x00175D60)))(condition, sequence,
         3, 3, 1, 1.0f);
 }
 
@@ -638,28 +639,28 @@ void ForceRules(uint8_t* inst, uint8_t* classObject, const CustomCharacter& cust
             SetPowerFlags(inst, chosen.powers);
     // the computer's character (0x176E30) offers every power it can pay for; its attack table's rows (the Force
     // class's, added to the base's: ForceRows) choose among them by range and facing, its conditions are not asked
-    const bool ai = call(0x00176E30);
+    const bool ai = call(Va(0x00176E30));
     // the gate (nothing else chosen, ...), as Vader's
-    if (inst[0x1DA] || call(0x002BD150) || !call(0x002BC160) || inst[0x2F2])
+    if (inst[0x1DA] || call(Va(0x002BD150)) || !call(Va(0x002BC160)) || inst[0x2F2])
         return;
-    const int taps = reinterpret_cast<int(__cdecl*)(uint32_t, int, int, int, int, int)>(uintptr_t(0x001780F0))(
-        *reinterpret_cast<const uint32_t*>(uintptr_t(0x006964E8)), 0, 0, 10, 1, 0);
-    const bool push = taps >= 1, lightning = Pressed(0x006964F4), saberThrow = Pressed(0x00696500);
-    const bool heal = Pressed(0x00696514) && Pressed(0x00696518);
-    const float force = ai ? reinterpret_cast<float(__cdecl*)()>(uintptr_t(0x00177B10))() : 0.0f;
+    const int taps = reinterpret_cast<int(__cdecl*)(uint32_t, int, int, int, int, int)>(uintptr_t(Va(0x001780F0)))(
+        *reinterpret_cast<const uint32_t*>(uintptr_t(Va(0x006964E8))), 0, 0, 10, 1, 0);
+    const bool push = taps >= 1, lightning = Pressed(Va(0x006964F4)), saberThrow = Pressed(Va(0x00696500));
+    const bool heal = Pressed(Va(0x00696514)) && Pressed(Va(0x00696518));
+    const float force = ai ? reinterpret_cast<float(__cdecl*)()>(uintptr_t(Va(0x00177B10)))() : 0.0f;
     const auto affords = [&](uint32_t costAt) { return !ai || force >= *reinterpret_cast<float*>(inst + costAt); };
     const bool canPush = inst[0x2DC] && affords(0x33C), canGrip = inst[0x2DB] && affords(0x340);
     const bool canLightning = inst[0x2DD] && affords(0x330), canThrow = inst[0x2DF] && !inst[0x2F9] && affords(0x338);
     // heal: the computer's only below its health threshold (0x2BCF60)
-    const bool canHeal = inst[0x2D9] && (!ai || reinterpret_cast<float(__cdecl*)()>(uintptr_t(0x00177B40))() <
-        reinterpret_cast<float(__cdecl*)()>(uintptr_t(0x002BCF60))());
+    const bool canHeal = inst[0x2D9] && (!ai || reinterpret_cast<float(__cdecl*)()>(uintptr_t(Va(0x00177B40)))() <
+        reinterpret_cast<float(__cdecl*)()>(uintptr_t(Va(0x002BCF60)))());
     if (canGrip) // the grip's target (jedi_functions: 0x426190 (inst, class object, 0x1E0, 24, 350))
-        reinterpret_cast<void(__cdecl*)(uint8_t*, uint8_t*, int, float, float)>(uintptr_t(0x00426190))(inst,
+        reinterpret_cast<void(__cdecl*)(uint8_t*, uint8_t*, int, float, float)>(uintptr_t(Va(0x00426190)))(inst,
             classObject, 0x1E0, 24.0f, 350.0f);
-    if (ai && !call(0x002BD030)) // the character's "Allow Force Powers"
+    if (ai && !call(Va(0x002BD030))) // the character's "Allow Force Powers"
         return;
-    const uint32_t alt = reinterpret_cast<bool(__cdecl*)(int)>(uintptr_t(0x001741A0))(0x32) ? 2 : 0;
-    const bool back = Direction(0x001F5440, inst), left = Direction(0x001F5480, inst), right = Direction(0x001F54C0, inst);
+    const uint32_t alt = reinterpret_cast<bool(__cdecl*)(int)>(uintptr_t(Va(0x001741A0)))(0x32) ? 2 : 0;
+    const bool back = Direction(Va(0x001F5440), inst), left = Direction(Va(0x001F5480), inst), right = Direction(Va(0x001F54C0), inst);
     // each power: back, left, right, then any way
     const auto power = [&](bool trigger, uint32_t backAt, uint32_t leftAt, uint32_t rightAt, uint32_t plainAt) {
         Offer(trigger && back, classObject, backAt + alt);
@@ -681,13 +682,13 @@ void ForceRules(uint8_t* inst, uint8_t* classObject, const CustomCharacter& cust
 
 // The Jedi Brute's script, starting (its Init 0x3DA3E0), sets its character's Force to none (0x177AE0 (0, 0), cdecl
 // (force, most) on the script's character [[0x6943CC]+0x68], called at 0x3DA43C): a custom character's Force= instead.
-constexpr uint32_t kBruteSetForceCall = 0x003DA43C;
-constexpr uint32_t kSetForce = 0x00177AE0;
+static GAME_VA(kBruteSetForceCall, 0x003DA43C);
+static GAME_VA(kSetForce, 0x00177AE0);
 
 // Its health, the same way: the Jedi Brute's script sets 220 (0x177AC0 (health): the script's character's vfunc
 // +0x380), called at 0x3DA433.
-constexpr uint32_t kBruteSetHealthCall = 0x003DA433;
-constexpr uint32_t kSetHealth = 0x00177AC0;
+static GAME_VA(kBruteSetHealthCall, 0x003DA433);
+static GAME_VA(kSetHealth, 0x00177AC0);
 
 void __cdecl BruteSetHealthHook(float health)
 {
@@ -826,7 +827,7 @@ void __cdecl BruteRulesHook(uint8_t* inst, uint8_t* classObject)
 struct Duelist {
     const char* className;
     const char* prefix;
-    uint32_t intro, outro;
+    uint32_t intro, outro; // North American (Va: the running release's)
     const char* cameras; // cinematics\introcamera\<cameras>_Intro_Cam.cin
 };
 constexpr Duelist kDuelists[] = {
@@ -868,7 +869,7 @@ struct OwnIntro {
 };
 constexpr int kMaxOwnIntros = 8;
 OwnIntro g_OwnIntros[kMaxOwnIntros];
-constexpr uint32_t kSetup = 0x006965D8;
+static GAME_VA(kSetup, 0x006965D8);
 const char kDuelMapTag[] = "DuelMap";
 
 template <int K> bool __fastcall OwnIntroFn(uint8_t* self, void*, uint32_t, uint32_t)
@@ -876,29 +877,29 @@ template <int K> bool __fastcall OwnIntroFn(uint8_t* self, void*, uint32_t, uint
     auto* setup = reinterpret_cast<uint8_t*>(uintptr_t(kSetup));
     OwnIntro& own = g_OwnIntros[K];
     const bool declared = reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint16_t*, const char*, const char*, float, uint32_t)>(
-        uintptr_t(0x001F5B20))(setup, nullptr, &own.handle, own.name.c_str(), own.animation.c_str(), own.speed, 0x0055FB60);
+        uintptr_t(Va(0x001F5B20)))(setup, nullptr, &own.handle, own.name.c_str(), own.animation.c_str(), own.speed, Va(0x0055FB60));
     if (declared) {
-        *reinterpret_cast<uint8_t*>(uintptr_t(0x00696531)) = 1;
-        *reinterpret_cast<const char**>(uintptr_t(0x006964B8)) = kDuelMapTag;
+        *reinterpret_cast<uint8_t*>(uintptr_t(Va(0x00696531))) = 1;
+        *reinterpret_cast<const char**>(uintptr_t(Va(0x006964B8))) = kDuelMapTag;
     }
-    if (reinterpret_cast<bool(__fastcall*)(uint8_t*, void*)>(uintptr_t(0x001F62D0))(setup, nullptr)) { // as Vader's
-        uint8_t* instance = *reinterpret_cast<uint8_t**>(uintptr_t(0x006964C0));
-        reinterpret_cast<void(__cdecl*)(uint8_t*, uint8_t*, int, int)>(uintptr_t(0x0038A140))(instance, self, 2, 2);
+    if (reinterpret_cast<bool(__fastcall*)(uint8_t*, void*)>(uintptr_t(Va(0x001F62D0)))(setup, nullptr)) { // as Vader's
+        uint8_t* instance = *reinterpret_cast<uint8_t**>(uintptr_t(Va(0x006964C0)));
+        reinterpret_cast<void(__cdecl*)(uint8_t*, uint8_t*, int, int)>(uintptr_t(Va(0x0038A140)))(instance, self, 2, 2);
     }
     // its line as it starts (0x1F6310: the event the Jedi Brute's twirl turns its spinning saber on at; 0x1F62D0's
     // came as the intro ended)
-    if (reinterpret_cast<bool(__fastcall*)(uint8_t*, void*)>(uintptr_t(0x001F6310))(setup, nullptr)) {
+    if (reinterpret_cast<bool(__fastcall*)(uint8_t*, void*)>(uintptr_t(Va(0x001F6310)))(setup, nullptr)) {
         const char* event = own.outro ? "KIL" : "TNT";
         LOG_INFO("Custom characters: %s plays", own.name.c_str());
         if (!own.line.empty()) {
-            uint8_t* scripts = *reinterpret_cast<uint8_t**>(uintptr_t(0x006943CC));
+            uint8_t* scripts = *reinterpret_cast<uint8_t**>(uintptr_t(Va(0x006943CC)));
             if (uint8_t* character = scripts ? *reinterpret_cast<uint8_t**>(scripts + 0x68) : nullptr)
                 ForceNextLine(character, event, own.line.c_str());
         }
         reinterpret_cast<int(__cdecl*)(const char*, const char*, int, int, int)>(uintptr_t(kSayEvent))(event, "Versus", 1, 0, 0);
     }
-    return reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, const char*, uint32_t)>(uintptr_t(0x001F6C00))(
-        setup, nullptr, reinterpret_cast<const char*>(uintptr_t(0x0059C07C)), 0x7E00 + K);
+    return reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, const char*, uint32_t)>(uintptr_t(Va(0x001F6C00)))(
+        setup, nullptr, reinterpret_cast<const char*>(uintptr_t(Va(0x0059C07C))), 0x7E00 + K);
 }
 
 template <int... K> constexpr std::array<ClassSequenceFn, sizeof...(K)> OwnIntroFns(std::integer_sequence<int, K...>)
@@ -946,7 +947,7 @@ int __cdecl IntroSequences(const char* shortName, ClassSequenceFn* fns, int max)
                 count >= kMaxIntroFns)
                 continue;
             added[c.intro][outro] = true;
-            g_IntroTargets[count] = outro ? d.outro : d.intro;
+            g_IntroTargets[count] = Va(outro ? d.outro : d.intro);
             fns[count] = kIntroFns[size_t(count)];
             ++count;
             LOG_INFO("Custom characters: %s plays %s's duel %s", c.className.c_str(), d.className, outro ? "outro" : "intro");
@@ -955,7 +956,8 @@ int __cdecl IntroSequences(const char* shortName, ClassSequenceFn* fns, int max)
     return count;
 }
 
-constexpr uint32_t kIntroName = 0x0027B5A2;
+static GAME_VA(kIntroName, 0x0027B5A2);
+static GAME_VA(kIntroNameContinue, 0x0027B5A8);
 constexpr uint8_t kIntroNameBytes[] = { 0x50, 0x57, 0x8D, 0x44, 0x24, 0x1C };
 const char* g_IntroName = nullptr;
 
@@ -984,7 +986,7 @@ __declspec(naked) void IntroNameEntry()
         push eax
         push g_IntroName
         lea eax, [esp + 0x1C]
-        push 0x0027B5A8
+        push kIntroNameContinue
         ret
     }
 }
@@ -1060,7 +1062,7 @@ bool IsLiveObject(uint8_t* object)
 {
     // an object still in the level: the instance id at +4 finds it again (0xA31F0); a removed one's memory may be gone
     __try {
-        return reinterpret_cast<uint8_t*(__cdecl*)(uint32_t)>(uintptr_t(0x000A31F0))(*reinterpret_cast<uint32_t*>(object + 4)) == object;
+        return reinterpret_cast<uint8_t*(__cdecl*)(uint32_t)>(uintptr_t(Va(0x000A31F0)))(*reinterpret_cast<uint32_t*>(object + 4)) == object;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
@@ -1069,7 +1071,8 @@ bool IsLiveObject(uint8_t* object)
 // A saber's colour is set through its class's SetColor (vtable +0x604: 0x286180 for the single-bladed classes,
 // 0x2864F0 for the double-bladed one), by the equip, the power-up switch and some moves (the Jedi Brute's specials
 // light its saber in its own green): a custom character's sabers keep its colour.
-constexpr uint32_t kSaberVtables[] = { 0x005B1FF0, 0x005B2620, 0x005B2C90, 0x005B32F8, 0x005B3958 };
+static uint32_t kSaberVtables[] = { 0x005B1FF0, 0x005B2620, 0x005B2C90, 0x005B32F8, 0x005B3958 };
+GAME_VAS(kSaberVtables);
 constexpr uint32_t kSaberSetColorSlot = 0x604 / 4;
 constexpr uint32_t kCharacterWeapons = 0x1080; // 4 slots, 0x20 apart
 using SetColorFn = void(__fastcall*)(uint8_t*, void*, const float*);
@@ -1124,7 +1127,7 @@ uint8_t* __fastcall CreateCustom(uint8_t* info, void*)
     // only a Jedi has the colour pointer (IsA, vfunc +4, the IJedi type 0x249950): +0xF20 is past a clone's end
     const auto isA = reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint32_t)>(
         (*reinterpret_cast<void* const* const*>(character))[1]);
-    if (p->custom->hasSaber && isA(character, nullptr, 0x00249950))
+    if (p->custom->hasSaber && isA(character, nullptr, Va(0x00249950)))
         *reinterpret_cast<const float**>(character + kCharacterSaberColor) = p->custom->saber;
     if (!p->textureSet) // the plain one (not a set the base's list names: a respawn could pick a _duel look)
         *reinterpret_cast<int*>(character + kCharacterTextureSet) = 0;
@@ -1473,8 +1476,9 @@ void AddBuiltInCharacters()
 
 // Vader's script (its VaderBreath state, 0x48D4B0) breathes in and out through the script's sound call (0x17AD20,
 // cdecl (sound, near, 1, far, -1, 0)) at these four places; a custom character on his class with Breathing=0 does not.
-constexpr uint32_t kScriptPlaySound = 0x0017AD20;
-constexpr uint32_t kBreathCalls[] = { 0x0048D547, 0x0048D577, 0x0048D5BE, 0x0048D5EE };
+static GAME_VA(kScriptPlaySound, 0x0017AD20);
+static uint32_t kBreathCalls[] = { 0x0048D547, 0x0048D577, 0x0048D5BE, 0x0048D5EE };
+GAME_VAS(kBreathCalls);
 
 int __cdecl BreathSoundHook(int sound, int nearDistance, int one, int farDistance, int loop, int zero)
 {
@@ -1489,8 +1493,8 @@ int __cdecl BreathSoundHook(int sound, int nearDistance, int one, int farDistanc
 
 // A clone's Init sets its health (0x35B36D: 0x177AC0 (50, 1)); a custom character on it gets its own, and its meter
 // (Force +0xA40/+0xA44, which the clone has but leaves 0). The battle droid's the same (0x338B06: 30).
-constexpr uint32_t kCloneSetHealthCall = 0x0035B36D;
-constexpr uint32_t kDroidSetHealthCall = 0x00338B06;
+static GAME_VA(kCloneSetHealthCall, 0x0035B36D);
+static GAME_VA(kDroidSetHealthCall, 0x00338B06);
 
 bool ReadWhole(const std::wstring& path, std::vector<uint8_t>& data)
 {
@@ -1672,7 +1676,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
     BuildVoiceArchive(mods, gameData, cache);
     if (g_Customs.empty())
         return;
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kClassLookup)), kClassLookupBytes, sizeof(kClassLookupBytes)) != 0) {
+    if (!MatchesCode(kClassLookup, kClassLookupBytes, sizeof(kClassLookupBytes))) {
         LOG_WARN("Custom characters: the class lookup is not as expected; no custom characters");
         g_Customs.clear();
         return;
@@ -1680,7 +1684,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
     // The stub lives in the port's memory and survives reboots; the jump is patched into every new image.
     static uint8_t* stub = [] {
         uint8_t* s = AllocStub(sizeof(kClassLookupBytes) + 5);
-        std::memcpy(s, kClassLookupBytes, sizeof(kClassLookupBytes));
+        std::memcpy(s, reinterpret_cast<const void*>(uintptr_t(kClassLookup)), sizeof(kClassLookupBytes)); // the running release's bytes
         s[sizeof(kClassLookupBytes)] = 0xE9;
         const int32_t rel = int32_t(kClassLookup + sizeof(kClassLookupBytes)) -
             int32_t(uintptr_t(s) + sizeof(kClassLookupBytes) + 5);
@@ -1689,10 +1693,10 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
     }();
     g_OriginalLookup = reinterpret_cast<LookupFn>(stub);
     PatchJump(kClassLookup, reinterpret_cast<const void*>(&LookupHook));
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kStartEntry)), kStartEntryBytes, sizeof kStartEntryBytes) == 0) {
+    if (MatchesCode(kStartEntry, kStartEntryBytes, sizeof kStartEntryBytes)) {
         static uint8_t* startEntryStub = [] { // once: the port's memory outlives the game's reboots
             uint8_t* stub = AllocStub(sizeof kStartEntryBytes + 5);
-            std::memcpy(stub, kStartEntryBytes, sizeof kStartEntryBytes);
+            std::memcpy(stub, reinterpret_cast<const void*>(uintptr_t(kStartEntry)), sizeof kStartEntryBytes); // the running release's bytes
             stub[sizeof kStartEntryBytes] = 0xE9;
             const int32_t rel = int32_t(kStartEntry + sizeof kStartEntryBytes) -
                 int32_t(uintptr_t(stub) + sizeof kStartEntryBytes + 5);
@@ -1703,10 +1707,10 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
         PatchJump(kStartEntry, reinterpret_cast<const void*>(&StartEntryHook));
     }
     g_DuelLine = {};
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kChargeupPick)), kChargeupPickBytes, sizeof kChargeupPickBytes) == 0) {
+    if (MatchesCode(kChargeupPick, kChargeupPickBytes, sizeof kChargeupPickBytes)) {
         static uint8_t* pickStub = [] { // once: the port's memory outlives the game's reboots
             uint8_t* stub = AllocStub(sizeof kChargeupPickBytes + 5);
-            std::memcpy(stub, kChargeupPickBytes, sizeof kChargeupPickBytes);
+            std::memcpy(stub, reinterpret_cast<const void*>(uintptr_t(kChargeupPick)), sizeof kChargeupPickBytes); // the running release's bytes
             stub[sizeof kChargeupPickBytes] = 0xE9;
             const int32_t rel = int32_t(kChargeupPick + sizeof kChargeupPickBytes) -
                 int32_t(uintptr_t(stub) + sizeof kChargeupPickBytes + 5);
@@ -1717,12 +1721,12 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
         PatchJump(kChargeupPick, reinterpret_cast<const void*>(&ChargeupPickHook));
     }
     if (std::any_of(g_Customs.begin(), g_Customs.end(), [](const CustomCharacter& c) { return c.scale != 1.0f; }) &&
-        std::memcmp(reinterpret_cast<const void*>(uintptr_t(kScriptSetScale)), kScriptSetScaleBytes, sizeof kScriptSetScaleBytes) == 0)
+        MatchesCode(kScriptSetScale, kScriptSetScaleBytes, sizeof kScriptSetScaleBytes))
         PatchJump(kScriptSetScale, reinterpret_cast<const void*>(&ScriptSetScale));
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kSayEvent)), kSayEventBytes, sizeof kSayEventBytes) == 0) {
+    if (MatchesCode(kSayEvent, kSayEventBytes, sizeof kSayEventBytes)) {
         static uint8_t* sayStub = [] { // once: the port's memory outlives the game's reboots
             uint8_t* stub = AllocStub(sizeof kSayEventBytes + 5);
-            std::memcpy(stub, kSayEventBytes, sizeof kSayEventBytes);
+            std::memcpy(stub, reinterpret_cast<const void*>(uintptr_t(kSayEvent)), sizeof kSayEventBytes); // the running release's bytes
             stub[sizeof kSayEventBytes] = 0xE9;
             const int32_t rel = int32_t(kSayEvent + sizeof kSayEventBytes) - int32_t(uintptr_t(stub) + sizeof kSayEventBytes + 5);
             std::memcpy(stub + sizeof kSayEventBytes + 1, &rel, 4);
@@ -1731,7 +1735,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
         g_SayEvent = reinterpret_cast<SayEventFn>(sayStub);
         PatchJump(kSayEvent, reinterpret_cast<const void*>(&SayEventHook));
     }
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kSaberSetup)), kSaberSetupBytes, sizeof kSaberSetupBytes) == 0)
+    if (MatchesCode(kSaberSetup, kSaberSetupBytes, sizeof kSaberSetupBytes))
         PatchCall(kSaberSetup, reinterpret_cast<const void*>(&SaberSetupHook), sizeof kSaberSetupBytes);
     g_Made.clear();
     for (size_t i = 0; i < std::size(kSaberVtables); ++i) {
@@ -1746,7 +1750,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
         uint8_t call[5] = { 0xE8 };
         const int32_t rel = int32_t(kSetHealth) - int32_t(kBruteSetHealthCall + 5);
         std::memcpy(call + 1, &rel, 4);
-        if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kBruteSetHealthCall)), call, 5) == 0)
+        if (MatchesCode(kBruteSetHealthCall, call, 5))
             PatchCall(kBruteSetHealthCall, reinterpret_cast<const void*>(&BruteSetHealthHook), 5);
     }
     if (std::any_of(g_Customs.begin(), g_Customs.end(), [](const CustomCharacter& c) { return !c.breathing; })) {
@@ -1754,7 +1758,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
             uint8_t call[5] = { 0xE8 };
             const int32_t rel = int32_t(kScriptPlaySound) - int32_t(site + 5);
             std::memcpy(call + 1, &rel, 4);
-            if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(site)), call, 5) == 0)
+            if (MatchesCode(site, call, 5))
                 PatchCall(site, reinterpret_cast<const void*>(&BreathSoundHook), 5);
         }
     }
@@ -1762,28 +1766,28 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
         uint8_t call[5] = { 0xE8 };
         const int32_t rel = int32_t(kSetHealth) - int32_t(kCloneSetHealthCall + 5);
         std::memcpy(call + 1, &rel, 4);
-        if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kCloneSetHealthCall)), call, 5) == 0)
+        if (MatchesCode(kCloneSetHealthCall, call, 5))
             PatchCall(kCloneSetHealthCall, reinterpret_cast<const void*>(&CloneSetHealthHook), 5);
     }
     {
         uint8_t call[5] = { 0xE8 };
         const int32_t rel = int32_t(kSetHealth) - int32_t(kDroidSetHealthCall + 5);
         std::memcpy(call + 1, &rel, 4);
-        if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kDroidSetHealthCall)), call, 5) == 0)
+        if (MatchesCode(kDroidSetHealthCall, call, 5))
             PatchCall(kDroidSetHealthCall, reinterpret_cast<const void*>(&CloneSetHealthHook), 5);
     }
     {
         uint8_t call[5] = { 0xE8 };
         const int32_t rel = int32_t(kSetForce) - int32_t(kBruteSetForceCall + 5);
         std::memcpy(call + 1, &rel, 4);
-        if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kBruteSetForceCall)), call, 5) == 0)
+        if (MatchesCode(kBruteSetForceCall, call, 5))
             PatchCall(kBruteSetForceCall, reinterpret_cast<const void*>(&BruteSetForceHook), 5);
     }
     {
         uint8_t call[5] = { 0xE8 };
         const int32_t rel = int32_t(kBruteRules) - int32_t(kBruteRulesCall + 5);
         std::memcpy(call + 1, &rel, 4);
-        if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kBruteRulesCall)), call, 5) == 0)
+        if (MatchesCode(kBruteRulesCall, call, 5))
             PatchCall(kBruteRulesCall, reinterpret_cast<const void*>(&BruteRulesHook), 5);
     }
     g_ForceRowsFrom.clear();
@@ -1799,7 +1803,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
             RegisterResourcePatch(kForceBaseTree, &AddForceSounds);
         break;
     }
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kJediSetup)), kJediSetupBytes, sizeof kJediSetupBytes) == 0) {
+    if (MatchesCode(kJediSetup, kJediSetupBytes, sizeof kJediSetupBytes)) {
         static uint8_t* jediStub = [] { // once: the port's memory outlives the game's restarts
             uint8_t* s = AllocStub(13);
             s[0] = 0x56; // push esi
@@ -1818,7 +1822,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
     }
     if (std::any_of(g_Customs.begin(), g_Customs.end(),
             [](const CustomCharacter& c) { return c.intro >= 0 || !c.introAnimation.empty() || !c.outroAnimation.empty(); })) {
-        if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kIntroName)), kIntroNameBytes, sizeof kIntroNameBytes) == 0) {
+        if (MatchesCode(kIntroName, kIntroNameBytes, sizeof kIntroNameBytes)) {
             AddClassSequences(&IntroSequences);
             PatchJump(kIntroName, reinterpret_cast<const void*>(&IntroNameEntry));
             PatchNop(kIntroName + 5, sizeof kIntroNameBytes - 5);
@@ -1826,8 +1830,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
             LOG_WARN("Custom characters: the duel intro's name is not as expected; custom characters keep the base's intro");
         }
     }
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kSpeakerNameStore)), kSpeakerNameStoreBytes,
-            sizeof kSpeakerNameStoreBytes) == 0)
+    if (MatchesCode(kSpeakerNameStore, kSpeakerNameStoreBytes, sizeof kSpeakerNameStoreBytes))
         PatchCall(kSpeakerNameStore, reinterpret_cast<const void*>(&SpeakerNameStore), sizeof kSpeakerNameStoreBytes);
     else
         LOG_WARN("Custom characters: the subtitles' speaker name is not as expected; custom characters keep the base's");
@@ -1876,9 +1879,9 @@ int SayLine(uint8_t* speaker, const char* lineId)
 // TDialogueEngine::StopLine), the entry's thread count (0x8CF10, thiscall (entry's first dword, -1)), and the slot
 // out of the playing list (+0x11C: {capacity, count +0x120, slots +0x124}, 0x20 bytes each; remove-range 0x1E58E0,
 // thiscall (list, first, end)).
-constexpr uint32_t kDialogueStopLine = 0x0008FE40;
-constexpr uint32_t kDialogueEntryThreads = 0x0008CF10;
-constexpr uint32_t kDialogueRemoveSlots = 0x001E58E0;
+static GAME_VA(kDialogueStopLine, 0x0008FE40);
+static GAME_VA(kDialogueEntryThreads, 0x0008CF10);
+static GAME_VA(kDialogueRemoveSlots, 0x001E58E0);
 constexpr uint32_t kDialoguePlaying = 0x11C;
 constexpr uint32_t kDialogueLastStopped = 0x8C;
 

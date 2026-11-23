@@ -35,6 +35,7 @@
 #include "game/custommaps.h"
 #include "game/menus.h"
 #include "game/missions.h"
+#include "game/release.h"
 #include "game/resources.h"
 #include "game/roster.h"
 
@@ -57,15 +58,20 @@ constexpr float kRowStep = 24.0f; // the submenu's rows
 constexpr float kDescriptionX = 52.0f, kDescriptionY = 346.0f;
 constexpr size_t kDescriptionLength = 56; // the characters that fit
 
-constexpr uint32_t kBonusVtable = 0x005D6758;
+static GAME_VA(kBonusVtable, 0x005D6758);
 constexpr uint32_t kEventSlot = 0x10, kBuildSlot = 0x14, kRowSlot = 0x7C, kChosenSlot = 0x88, kCursorSlot = 0x8C;
-constexpr uint32_t kEvent = 0x002D34A0, kBuild = 0x002D42D0, kRow = 0x002C8F80, kChosen = 0x002D35E0,
-    kCursor = 0x002D3BE0;
-constexpr uint32_t kListReset = 0x002C6650;
+static GAME_VA(kEvent, 0x002D34A0);
+static GAME_VA(kBuild, 0x002D42D0);
+static GAME_VA(kRow, 0x002C8F80);
+static GAME_VA(kChosen, 0x002D35E0);
+static GAME_VA(kCursor, 0x002D3BE0);
+static GAME_VA(kListReset, 0x002C6650);
 // the shell ([0x7F637C], when its flags +0xC have 0x40000) finds a screen's item by name: thiscall (name, 0, 0)
-constexpr uint32_t kShell = 0x007F637C, kFindItem = 0x002F5A00;
-constexpr uint32_t kEntryAdd = 0x002D29A0;
-constexpr uint32_t kStringInit = 0x00225100, kStringFree = 0x00225230;
+static GAME_VA(kShell, 0x007F637C);
+static GAME_VA(kFindItem, 0x002F5A00);
+static GAME_VA(kEntryAdd, 0x002D29A0);
+static GAME_VA(kStringInit, 0x00225100);
+static GAME_VA(kStringFree, 0x00225230);
 constexpr int kY = 0x2C;
 // the game's places in the picture sets (the missions' follow)
 constexpr int kSmallPictures = 5, kLargePictures = 6, kHeads = 6, kPlanets = 5;

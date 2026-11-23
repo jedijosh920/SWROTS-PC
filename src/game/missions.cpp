@@ -37,6 +37,7 @@
 #include "game/game.h"
 #include "game/hvv.h"
 #include "game/menus.h"
+#include "game/release.h"
 #include "game/resources.h"
 #include "input/controls.h"
 #include "kernel/kernel.h"
@@ -53,44 +54,45 @@ constexpr uint32_t kCharacterScript = 0x434;     // its script instance: +4 its 
 constexpr uint32_t kCharacterInvincible = 0x5D6; // byte, "Invincible?"
 constexpr uint32_t kCharacterAI = 0x9FC;         // its AI controller
 constexpr uint32_t kAIOff = 0x28;                // byte on the controller: its AI switched off
-constexpr uint32_t kAISetTarget = 0x00193D90;    // thiscall on the controller (target)
+static GAME_VA(kAISetTarget, 0x00193D90);    // thiscall on the controller (target)
 constexpr uint32_t kActivate = 0xB4;             // object vfunc: a placed character joins the level
 constexpr uint32_t kPlace = 0x1F4;               // object vfunc, thiscall (const float m[16])
 constexpr uint32_t kInstantKillSlot = 0xC8;      // ICharacter vfunc, thiscall (0): an instant kill
-constexpr uintptr_t kPlaySequence = 0x150E30;    // ICharacter, thiscall (sequence, 0, 0, 0, speed)
-constexpr uint32_t kObjectById = 0x000A31F0;     // cdecl (id): a level object by its id
+static GAME_VA(kPlaySequence, 0x150E30);    // ICharacter, thiscall (sequence, 0, 0, 0, speed)
+static GAME_VA(kObjectById, 0x000A31F0);     // cdecl (id): a level object by its id
 // Objectives ([Objectives]): the game's own triggers, placed in the level
 constexpr uint32_t kObjectiveFirstId = kDevMapFirstId + 0x200;
-constexpr uint32_t kTriggerObjectiveVtable = 0x0058BD10;
+static GAME_VA(kTriggerObjectiveVtable, 0x0058BD10);
 constexpr uint32_t kTriggerFire = 0xA4; // a trigger object's vfunc: it fires
 // Tips ([Tips]): the game's own (IVaderTip, its text a string table id), placed in the level
 constexpr uint32_t kTipFirstId = kDevMapFirstId + 0x280;
-constexpr uint32_t kVaderTipVtable = 0x005CBBA0;
+static GAME_VA(kVaderTipVtable, 0x005CBBA0);
 // Force fields ([Fields]): the game's own (IForceField, an IStatic: the Jedi Temple's door field), placed in the level;
 // vfunc +0xA4 (0x2778B0) lights it, +0xA8 (0x277910) fades it away
 constexpr uint32_t kFieldFirstId = kDevMapFirstId + 0x300;
-constexpr uint32_t kForceFieldVtable = 0x005AF710;
+static GAME_VA(kForceFieldVtable, 0x005AF710);
 constexpr uint32_t kFieldOn = 0xA4, kFieldOff = 0xA8;
 // The game manager's players (docs/research/coop.md): their number and an instance id per slot; a story duel's
 // boss is its player 2 (its health bar on the HUD)
-constexpr uint32_t kGameManager = 0x007EB964;
+static GAME_VA(kGameManager, 0x007EB964);
 constexpr uint32_t kManagerPlayerCount = 0x1E4;
 constexpr uint32_t kManagerPlayerIds = 0x2A4;
 // Walking: the game's own goto (as Battlefront's AI uses it) to the level's goto markers (ICharacterGoto)
-constexpr uintptr_t kCharacterGoto = 0x00151400;  // ICharacter, thiscall (marker, may fight on the way)
-constexpr uintptr_t kExecutingGoto = 0x001513E0;  // ICharacter, thiscall (marker): still on its way
-constexpr uint32_t kGotoMarkerVtable = 0x00598970;
+static GAME_VA(kCharacterGoto, 0x00151400);  // ICharacter, thiscall (marker, may fight on the way)
+static GAME_VA(kExecutingGoto, 0x001513E0);  // ICharacter, thiscall (marker): still on its way
+static GAME_VA(kGotoMarkerVtable, 0x00598970);
 // A walk called off: the AI's goto controllers (type 8, TAI +0x18 count / +0x1C items, type at +0x10) let go of their
 // marker (SetGoto(null), vfunc +0x208: goto +0x13C and TAI +0x2D4 cleared)
 constexpr uint32_t kAIControllerCount = 0x18, kAIControllers = 0x1C, kControllerType = 0x10, kGotoController = 8;
 constexpr uint32_t kSetGoto = 0x208;
 // Sabers: the character's weapon slots, and what the cinematics' ToggleSaber event (0x24A490) calls on a saber
 constexpr uint32_t kCharacterWeapons = 0x1080;   // 4 slots, 0x20 apart: the weapon object, or null
-constexpr uint32_t kSaberVtables[] = { 0x005B1FF0, 0x005B2620, 0x005B2C90, 0x005B32F8, 0x005B3958 };
-constexpr uintptr_t kSaberExtend = 0x286080;     // ILightSaber, thiscall (float seconds): lit, its sound if seconds > 0
-constexpr uintptr_t kSaberRetract = 0x2860E0;    // ILightSaber, thiscall (float seconds): put away
+static uint32_t kSaberVtables[] = { 0x005B1FF0, 0x005B2620, 0x005B2C90, 0x005B32F8, 0x005B3958 };
+GAME_VAS(kSaberVtables);
+static GAME_VA(kSaberExtend, 0x286080);     // ILightSaber, thiscall (float seconds): lit, its sound if seconds > 0
+static GAME_VA(kSaberRetract, 0x2860E0);    // ILightSaber, thiscall (float seconds): put away
 constexpr uint32_t kSaberLit = 0x801;            // byte on the saber
-constexpr uint32_t kScriptSaberOnCall = 0x2BC586; // the script native SaberOn's call of kSaberExtend (5 bytes)
+static GAME_VA(kScriptSaberOnCall, 0x2BC586); // the script native SaberOn's call of kSaberExtend (5 bytes)
 
 std::vector<uint8_t*> g_SabersAway; // sabers the mission put away: the class scripts may not light them// The ids of the cast placed in the level (after the dev map's own and Heroes vs Villains')
 constexpr uint32_t kCastFirstId = kDevMapFirstId + 0x100;
@@ -937,7 +939,7 @@ int L_saber_color(lua_State* L)
 // slow_motion(scale [, ramp]): the game's slow motion (as its kills use): everything at `scale` of its speed (0.3: a
 // third) from now on, easing in over `ramp` seconds (default 0.15); slow_motion(1) back to normal. Script waits run
 // on real time. Back to normal when the mission ends.
-constexpr uintptr_t kSetSlowMotion = 0x000A20E0; // cdecl (scale, ramp in, hold, ramp out): frames at 30 a second
+static GAME_VA(kSetSlowMotion, 0x000A20E0); // cdecl (scale, ramp in, hold, ramp out): frames at 30 a second
 
 int L_slow_motion(lua_State* L)
 {
@@ -1012,8 +1014,8 @@ struct MissionAnimation {
 constexpr int kMaxMissionAnimations = 32;
 MissionAnimation g_Animations[kMaxMissionAnimations];
 int g_AnimationCount = 0;
-constexpr uint32_t kSequenceSetup = 0x006965D8;
-constexpr uint32_t kScriptInstance = 0x006964C0;
+static GAME_VA(kSequenceSetup, 0x006965D8);
+static GAME_VA(kScriptInstance, 0x006964C0);
 
 bool SequenceEvent(uint32_t test)
 {
@@ -1029,8 +1031,8 @@ bool SequenceEvent(uint32_t test)
 // A mission's slow motion (slow_motion(), a paired kill's): the game's letterbox cancels any slow motion every frame
 // while its bars are up (0x12E0B7 calls 0xA2110: its cinematics run at normal speed); a mission's cutscene keeps the
 // one the mission asked for (g_MissionSlow).
-constexpr uint32_t kLetterboxCancelSlowCall = 0x0012E0B7;
-constexpr uintptr_t kCancelSlowMotion = 0x000A2110;
+static GAME_VA(kLetterboxCancelSlowCall, 0x0012E0B7);
+static GAME_VA(kCancelSlowMotion, 0x000A2110);
 
 void __cdecl LetterboxCancelSlow()
 {
@@ -1050,17 +1052,17 @@ struct Grapple {
     double grabbedAt = 0; // (game time)
 };
 std::vector<Grapple> g_Grapples;
-constexpr uint32_t kScriptContext = 0x006943CC;   // the running script's: +0x68 its character
+static GAME_VA(kScriptContext, 0x006943CC);   // the running script's: +0x68 its character
 constexpr uint32_t kGrapplePartnerId = 0x5B0;     // the attacker's partner (an instance id), read by the grab
-constexpr uintptr_t kGrab = 0x00172E00;           // cdecl (x, y, z): the partner's root offset
-constexpr uintptr_t kRelease = 0x00172E20;
-constexpr uintptr_t kPartnerSequence = 0x00174B40; // cdecl (name, 0, 0, 0, 0): the partner plays that sequence
-constexpr uintptr_t kWeaponKillMode = 0x002BC210;  // cdecl (1, 0, 0) at a kill's start; 0x2BC1B0 (0, 0) after
-constexpr uintptr_t kWeaponKillModeOff = 0x002BC1B0;
-constexpr uintptr_t kSlowMotion = 0x000A20E0;      // cdecl (scale, ramp in, hold, ramp out): the time manager's ramp
+static GAME_VA(kGrab, 0x00172E00);           // cdecl (x, y, z): the partner's root offset
+static GAME_VA(kRelease, 0x00172E20);
+static GAME_VA(kPartnerSequence, 0x00174B40); // cdecl (name, 0, 0, 0, 0): the partner plays that sequence
+static GAME_VA(kWeaponKillMode, 0x002BC210);  // cdecl (1, 0, 0) at a kill's start; 0x2BC1B0 (0, 0) after
+static GAME_VA(kWeaponKillModeOff, 0x002BC1B0);
+static GAME_VA(kSlowMotion, 0x000A20E0);      // cdecl (scale, ramp in, hold, ramp out): the time manager's ramp
 // (not the scripts' 0x176BF0, which skips while the script effects are off, byte 0x6943D0: always, in a mission)
-constexpr uintptr_t kImpaleEffect = 0x00401F40;    // IDS_FX_LIGHTSABER_Body_Impale at the saber's middle
-constexpr uintptr_t kFrameCode = 0x001728C0;       // the animation's frame code now
+static GAME_VA(kImpaleEffect, 0x00401F40);    // IDS_FX_LIGHTSABER_Body_Impale at the saber's middle
+static GAME_VA(kFrameCode, 0x001728C0);       // the animation's frame code now
 
 // A sequence's events, each asked once a call: while the class is set up, asking registers the event with the
 // sequence (only events asked then ever come); while it plays, it is true at that event.
@@ -1127,19 +1129,19 @@ template <int K> bool __fastcall MissionAnimationFn(uint8_t* self, void*, uint32
     auto* setup = reinterpret_cast<uint8_t*>(uintptr_t(kSequenceSetup));
     MissionAnimation& a = g_Animations[K];
     reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint16_t*, const char*, const char*, float, uint32_t)>(
-        uintptr_t(0x001F5B20))(setup, nullptr, &a.handle, a.sequence.c_str(), a.animation.c_str(), 1.0f, 0x0055FB60);
+        uintptr_t(Va(0x001F5B20)))(setup, nullptr, &a.handle, a.sequence.c_str(), a.animation.c_str(), 1.0f, Va(0x0055FB60));
     SequenceEvents e;
-    e.start = SequenceEvent(0x001F6310);
-    e.left = SequenceEvent(0x001F6350);
-    e.ended = SequenceEvent(0x001F62D0);
-    e.frameCode = SequenceEvent(0x001F6390);
+    e.start = SequenceEvent(Va(0x001F6310));
+    e.left = SequenceEvent(Va(0x001F6350));
+    e.ended = SequenceEvent(Va(0x001F62D0));
+    e.frameCode = SequenceEvent(Va(0x001F6390));
     if (!g_Grapples.empty())
         GrappleEvents(e, K);
     if (e.ended) // it ended: back to the class's state machine
-        reinterpret_cast<void(__cdecl*)(uint8_t*, uint8_t*, int, int)>(uintptr_t(0x0038A140))(
+        reinterpret_cast<void(__cdecl*)(uint8_t*, uint8_t*, int, int)>(uintptr_t(Va(0x0038A140)))(
             *reinterpret_cast<uint8_t**>(uintptr_t(kScriptInstance)), self, -1, -1);
-    return reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, const char*, uint32_t)>(uintptr_t(0x001F6C00))(
-        setup, nullptr, reinterpret_cast<const char*>(uintptr_t(0x0059C07C)), 0x7D00 + K);
+    return reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, const char*, uint32_t)>(uintptr_t(Va(0x001F6C00)))(
+        setup, nullptr, reinterpret_cast<const char*>(uintptr_t(Va(0x0059C07C))), 0x7D00 + K);
 }
 
 template <int... K>
@@ -1191,9 +1193,9 @@ uint8_t* FindSequence(uint8_t* c, const char* name)
 constexpr uint32_t kStateSequence = 0x30, kStateSpeed = 0x50, kStatePlaySpeed = 0x54, kStateTransitions = 0x78,
                    kStateRange = 0xB8, kStateQueued = 0xD0;
 constexpr uint32_t kRangeFirst = 0x08, kRangeLast = 0x0A, kRangeFrame = 0x14, kRangeRate = 0x24;
-constexpr uint32_t kTickScriptSlot = 0x0058EFDC; // ICharacter TCharState vtable +0x24
-constexpr uintptr_t kTickScript = 0x0049CD90;    // thiscall (cs, arg): one tick of its sequence (its end handled here)
-constexpr uintptr_t kSeekFrame = 0x0049D0E0;     // thiscall (cs, int frame): into the range holding the frame
+static GAME_VA(kTickScriptSlot, 0x0058EFDC); // ICharacter TCharState vtable +0x24
+static GAME_VA(kTickScript, 0x0049CD90);    // thiscall (cs, arg): one tick of its sequence (its end handled here)
+static GAME_VA(kSeekFrame, 0x0049D0E0);     // thiscall (cs, int frame): into the range holding the frame
 
 // play_anim's controls: a range of frames played, looped or held, kept to by the tick hook until the character's
 // sequence changes (stop_anim, a hit, its death, its class's own choice).
@@ -1390,14 +1392,14 @@ void BackToClass(uint8_t* cs)
 {
     if (At<int>(cs, 0x24) <= 0) // its active states (the call reads the first)
         return;
-    uint32_t* const globals[] = { reinterpret_cast<uint32_t*>(uintptr_t(0x006943CC)),
-        reinterpret_cast<uint32_t*>(uintptr_t(0x0069652C)), reinterpret_cast<uint32_t*>(uintptr_t(kScriptInstance)),
-        reinterpret_cast<uint32_t*>(uintptr_t(0x00696528)) };
+    uint32_t* const globals[] = { reinterpret_cast<uint32_t*>(uintptr_t(Va(0x006943CC))),
+        reinterpret_cast<uint32_t*>(uintptr_t(Va(0x0069652C))), reinterpret_cast<uint32_t*>(uintptr_t(kScriptInstance)),
+        reinterpret_cast<uint32_t*>(uintptr_t(Va(0x00696528))) };
     uint32_t saved[4];
     for (int i = 0; i < 4; ++i)
         saved[i] = *globals[i];
     Virtual<void(__fastcall*)(uint8_t*, void*)>(cs, 0xC)(cs, nullptr); // its script context
-    reinterpret_cast<void(__cdecl*)(uint32_t, uint32_t, int, int)>(uintptr_t(0x0038A140))(*globals[2], *globals[1], -1, -1);
+    reinterpret_cast<void(__cdecl*)(uint32_t, uint32_t, int, int)>(uintptr_t(Va(0x0038A140)))(*globals[2], *globals[1], -1, -1);
     for (int i = 0; i < 4; ++i)
         *globals[i] = saved[i];
 }
@@ -1941,8 +1943,8 @@ int L_camera_game(lua_State*)
 // The game's own cutscene bars (ILetterBox, [0x69226C]; its "set", thiscall (on, seconds, size), as the game's
 // cinematics call it: 0.5 s, 0.125 of the screen): they slide in and out; while they are in, the game counts it a
 // cutscene (0xA3720: its HUD hidden).
-constexpr uint32_t kLetterBox = 0x0069226C;
-constexpr uintptr_t kLetterBoxSet = 0x0012DF30;
+static GAME_VA(kLetterBox, 0x0069226C);
+static GAME_VA(kLetterBoxSet, 0x0012DF30);
 
 void GameLetterbox(bool on, float seconds)
 {
@@ -3059,7 +3061,7 @@ void InstallMissions(const std::wstring& mods)
 // The level's "Allow char fade?" (ILevelProperties [0x68F720] +0xC8): the game fades characters that look near the
 // camera (by their size on screen: a long lens makes far ones "near"), which empties a cutscene's close shots: off
 // while a shot of the mission's is on, the level's own again for the game's camera.
-constexpr uint32_t kLevelProperties = 0x0068F720;
+static GAME_VA(kLevelProperties, 0x0068F720);
 constexpr uint32_t kAllowCharFade = 0xC8;
 
 void KeepCharactersInShot(bool shot)

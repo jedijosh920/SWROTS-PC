@@ -20,6 +20,7 @@
 #include "audio/audio.h"
 #include "core/settings.h"
 #include "core/window.h"
+#include "game/release.h"
 #include "kernel/mm.h"
 #include "kernel/reboot.h"
 #include "kernel/sha1.h"
@@ -182,11 +183,24 @@ enum : ULONG { REG_DWORD_X = 4, REG_BINARY_X = 3 };
 // 480p (0x00080000) and 720p (0x00020000).
 static ULONG VideoFlags() { return (GetSettings().widescreen ? 0x00010000 : 0) | 0x00080000 | 0x00020000; }
 
+// The dashboard language (XC_LANGUAGE): the player's setting, or the disc's language: French for the French
+// release, English for the others (the European disc also has Spanish and Italian).
+static ULONG Language()
+{
+    static const struct { const char* name; ULONG code; } kLanguages[] = {
+        { "English", 1 }, { "German", 3 }, { "French", 4 }, { "Spanish", 5 }, { "Italian", 6 },
+    };
+    for (const auto& l : kLanguages)
+        if (GetSettings().language == l.name)
+            return l.code;
+    return game::CurrentRelease() == game::Release::France ? 4 : 1;
+}
+
 NTSTATUS XBAPI ExQueryNonVolatileSetting(ULONG ValueIndex, ULONG* Type, void* Value, ULONG ValueLength, ULONG* ResultLength)
 {
     ULONG dword;
     switch (ValueIndex) {
-    case 0x7: dword = 1; break;          // XC_LANGUAGE: English
+    case 0x7: dword = Language(); break; // XC_LANGUAGE
     case 0x8: dword = VideoFlags(); break; // XC_VIDEO
     case 0x9: dword = 0; break;          // XC_AUDIO: stereo
     case 0xA: case 0xB: case 0xC: dword = 0; break; // parental controls off
@@ -210,7 +224,7 @@ NTSTATUS XBAPI ExQueryNonVolatileSetting(ULONG ValueIndex, ULONG* Type, void* Va
         if (ValueLength < size) return xbox::X_STATUS_BUFFER_TOO_SMALL;
         std::memset(Value, 0, size);
         auto* u = static_cast<ULONG*>(Value);
-        u[0x2C / 4] = 1;          // Language
+        u[0x2C / 4] = Language(); // Language
         u[0x30 / 4] = VideoFlags(); // VideoFlags
         return xbox::X_STATUS_SUCCESS;
     }

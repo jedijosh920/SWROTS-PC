@@ -5,8 +5,8 @@ emulated or recompiled: the Xbox had an x86 CPU, so its machine code runs as-is.
 on a PC is replaced by native code: the Xbox kernel, and the Xbox libraries the game links statically
 (Direct3D 8, DirectSound, the controller library).
 
-This page is an overview for the curious and for contributors. Addresses refer to the supported
-executable (`default.xbe`, MD5 `6460ef37862de3af364a0563a0a18c4e`).
+This page is an overview for the curious and for contributors. Addresses refer to the North American
+executable (`default.xbe`, MD5 `6460ef37862de3af364a0563a0a18c4e`); see [releases](#releases) for the PAL one.
 
 ## Why 32-bit
 
@@ -20,8 +20,8 @@ The game is 32-bit machine code, and a 64-bit process cannot execute it. The por
    game's fixed address range (`0x10000`-`0x96E000`) belongs to it before Windows puts anything
    there. It also reserves 128 MiB at `0x80000000` for the Xbox's contiguous memory, then loads
    `core.dll` and hands over. Its own code is overwritten by the game.
-2. `core.dll` (`src/core/main.cpp`) reads settings, installs the game files on first run, checks the
-   executable's MD5, and copies the game's sections to their addresses. Windows still needs this
+2. `core.dll` (`src/core/main.cpp`) reads settings, installs the game files on first run, identifies the
+   release from the executable's MD5, and copies the game's sections to their addresses. Windows still needs this
    process's PE headers, so they are moved aside and the game's header area points to them.
 3. It patches the game where it touches Xbox-only hardware (below), creates the window, and starts
    the game's entry point on a thread set up like an Xbox thread.
@@ -115,6 +115,33 @@ A top-level window with the game's own icon (decoded from the executable at runt
 ships no game artwork) and a child window the game draws into. The mouse is captured only once you
 click into the game. The process is per-monitor DPI aware, so the picture is never stretched by
 Windows.
+
+## Releases
+
+The port is written against the North American executable. The PAL release (France; Europe in English,
+Spanish and Italian: one executable, the same code) is a build of the same sources two days older,
+linked a little differently:
+
+- every section after `.text` starts 0xA0 bytes lower, with the same contents apart from pointers;
+- `.data`'s zero-filled tail is 0xA0, 0xA4 or 0xA8 bytes lower, depending on the variable;
+- `.text` holds the same functions, a few of them a little longer or shorter, so the shift changes from
+  function to function, and a few functions sit elsewhere.
+
+`tools/releases/pal_map.py` finds where every North American address is in the PAL executable and writes
+the ranges to `src/game/pal_map.inc` (from your own copies of both executables; it also checks that the code
+around every address the port uses is the same in both, and that every address in the sources is
+translated). At startup the MD5 picks the release (`src/game/release.h`), and:
+
+- address variables declared with `GAME_VA` (arrays: `GAME_VAS`) are moved to the running release's
+  addresses, before any hook is installed; an address written in place goes through `game::Va()`;
+- code the port compares with its own copy of the North American bytes before patching it is checked
+  with `game::MatchesCode`, which accepts the PAL executable's own addresses in operands, and stubs copy
+  the running executable's bytes, not that copy;
+- crash reports and the symbol map (`symbols\swrots.map`) name addresses by their North American
+  equivalent.
+
+The game is told the console's language (`[Game] Language` in `settings.ini`): French with the French
+disc, English otherwise. The console otherwise stays the North American one (NTSC, 60 Hz, 480p and 720p).
 
 ## Engine background
 

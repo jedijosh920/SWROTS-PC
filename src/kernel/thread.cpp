@@ -270,9 +270,10 @@ void InstallFsPatches()
 {
     using game::FsKind;
     for (const game::FsPatchSite& site : game::kFsPatchSites) {
-        const auto* code = reinterpret_cast<const uint8_t*>(uintptr_t(site.address));
+        const uint32_t address = game::Va(site.address);
+        const auto* code = reinterpret_cast<const uint8_t*>(uintptr_t(address));
         if (code[0] != 0x64)
-            Fatal("FS patch site %08X does not hold an FS instruction", site.address);
+            Fatal("FS patch site %08X does not hold an FS instruction", address);
         const void* stub = nullptr;
         switch (site.kind) {
         case FsKind::Fs20Eax: stub = FsStub_Fs20Eax; break;
@@ -281,7 +282,7 @@ void InstallFsPatches()
         case FsKind::Fs04Ecx: stub = FsStub_Fs04Ecx; break;
         case FsKind::Fs04Edi: stub = FsStub_Fs04Edi; break;
         }
-        PatchCall(site.address, stub, site.length);
+        PatchCall(address, stub, site.length);
     }
     LOG_INFO("Patched %u FS-relative instructions", uint32_t(std::size(game::kFsPatchSites)));
 }

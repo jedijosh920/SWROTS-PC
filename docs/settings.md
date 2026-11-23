@@ -20,6 +20,9 @@ Bloom=1             ; the game's full-screen bloom; 0 turns it off
 
 [Game]
 FpsLimit=30         ; 30 like the original; 60 is experimental
+Language=Auto       ; the language the game is told the console uses: Auto (French with the French disc, English
+                    ; otherwise), English, French, German, Italian, Spanish. Choose one your disc has (the European
+                    ; disc: English, Spanish, Italian)
 
 [Controls]
 ButtonPrompts=Auto  ; the buttons shown on screen: Auto (the keyboard's keys or the controller's buttons, whichever

@@ -7,6 +7,7 @@
 #include "core/log.h"
 #include "core/patch.h"
 #include "game/game.h"
+#include "game/release.h"
 
 namespace swrots::game {
 
@@ -16,7 +17,7 @@ namespace {
 // console->Set(name, value, 1) at 0x115B7 (push 1 / push ebp / push ebx / mov ecx, eax /
 // call [edx + 0x1C], 9 bytes). Values set before a variable is registered wait in the
 // console's pending list and apply when it registers (0x12740).
-constexpr uint32_t kVarsSetSite = 0x000115B7;
+static GAME_VA(kVarsSetSite, 0x000115B7);
 
 // kOptionsHideDebugDisplays (+0xD7) suppresses the engine's debug displays (fps counter, profiler,
 // memory display): the options constructor (0x157C0) sets it to 1 and no variable or launch argument
@@ -25,7 +26,7 @@ constexpr uint32_t kVarsSetSite = 0x000115B7;
 // When a level starts, 0x2AAB00 copies the profile's settings into the options object, including
 // god (+0xC9) from the profile's byte +0x2D (mov dl, [edi + 0x2D] / mov [ecx + 0xC9], dl at
 // 0x2AABD2, 9 bytes), which would undo god=true from vars_xbox.cfg. The patch keeps either.
-constexpr uint32_t kProfileGodCopySite = 0x002AABD2;
+static GAME_VA(kProfileGodCopySite, 0x002AABD2);
 
 bool g_DebugDisplays = false;
 uint8_t* g_AppliedTo = nullptr;
@@ -80,8 +81,9 @@ __declspec(naked) void VarsSetStub()
 // The engine's disc error callback (0x6D4F0, xinstall/file layer) shows the "dirty or
 // damaged" screen. Logs its arguments, the XAPI last error and the callers, then runs it.
 // Entry: push ecx / mov eax, [0x645F7C] (6 bytes), continued at 0x6D4F6.
-constexpr uint32_t kDiscErrorHandler = 0x0006D4F0;
-constexpr uint32_t kXapiGetLastError = 0x004A054D;
+static GAME_VA(kDiscErrorHandler, 0x0006D4F0);
+static GAME_VA(kDiscErrorContinue, 0x0006D4F6);
+static GAME_VA(kXapiGetLastError, 0x004A054D);
 
 void __stdcall LogDiscError(const uint32_t* stack)
 {
@@ -100,14 +102,15 @@ __declspec(naked) void DiscErrorStub()
         call LogDiscError
         popad
         push ecx
-        mov eax, dword ptr ds:[0x00645F7C]
-        push 0x0006D4F6
+        mov eax, kEngineServices
+        mov eax, [eax]
+        push kDiscErrorContinue
         ret
     }
 }
 
 // The "You are missing required animations for character %s" report: je over the engine warning.
-constexpr uint32_t kMissingAnimationsWarnJump = 0x001F8BF0;
+static GAME_VA(kMissingAnimationsWarnJump, 0x001F8BF0);
 
 } // namespace
 

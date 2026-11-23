@@ -24,6 +24,7 @@
 #include "game/devmap.h"
 #include "game/freecam.h"
 #include "game/game.h"
+#include "game/release.h"
 #include "input/controls.h"
 #include "kernel/kernel.h"
 
@@ -113,9 +114,9 @@ constexpr uint32_t kLoaderIds = 0x40; // the hero classes' placed characters (th
 // The game's character fields and calls the match uses.
 constexpr uint32_t kActivate = 0xB4;           // object vfunc, thiscall (): a placed character joins the level
 constexpr uint32_t kPlace = 0x1F4;             // object vfunc, thiscall (const float m[16])
-constexpr uintptr_t kPlaySequence = 0x150E30;  // ICharacter, thiscall (sequence, 0, 0, 0, speed): what Versus' intro calls
-constexpr uint32_t kObjectById = 0x000A31F0;   // cdecl (instance id) -> object or null
-constexpr uint32_t kChangeHealth = 0x00151500; // character, thiscall (float change, a, attacker): co-op hooks it
+static GAME_VA(kPlaySequence, 0x150E30);  // ICharacter, thiscall (sequence, 0, 0, 0, speed): what Versus' intro calls
+static GAME_VA(kObjectById, 0x000A31F0);   // cdecl (instance id) -> object or null
+static GAME_VA(kChangeHealth, 0x00151500); // character, thiscall (float change, a, attacker): co-op hooks it
 constexpr uint32_t kCharacterHealth = 0x130;
 constexpr uint32_t kCharacterMaxHealth = 0x134;
 constexpr uint32_t kCharacterPower = 0xA40;    // Force power, and its maximum (0 for those without)
@@ -126,14 +127,14 @@ constexpr uint32_t kCharacterScript = 0x434;   // its script instance (a hit can
 constexpr uint32_t kCharacterInvincible = 0x5D6; // byte, "Invincible?"
 constexpr uint32_t kCharacterAI = 0x9FC;       // its AI controller
 constexpr uint32_t kAITarget = 0x41C;          // the controller's target
-constexpr uint32_t kAISetTarget = 0x00193D90;  // thiscall on the controller (target)
+static GAME_VA(kAISetTarget, 0x00193D90);  // thiscall on the controller (target)
 constexpr uint32_t kAIOff = 0x28;              // byte on the controller: its AI switched off
 // Battlefront's ways to the posts: the game's own goto (ICharacter::Goto, thiscall (character, marker, may fight):
 // a goto controller walks it there, fighting what it meets) to the level's goto markers (ICharacterGoto, never a
 // character), and whether one is still on its way (ICharacter::ExecutingGoto, thiscall (character, marker)).
-constexpr uint32_t kCharacterGoto = 0x00151400;
-constexpr uint32_t kExecutingGoto = 0x001513E0;
-constexpr uint32_t kGotoMarkerVtable = 0x00598970;
+static GAME_VA(kCharacterGoto, 0x00151400);
+static GAME_VA(kExecutingGoto, 0x001513E0);
+static GAME_VA(kGotoMarkerVtable, 0x00598970);
 constexpr float kFightRange = 800.0f;          // Battlefront: an enemy this near is fought, the post waits
 constexpr float kMarkerReach = 150.0f;         // a marker counts as reached this near (well inside kPostRadius)
 // A hit's attacker (the health change's last argument) is the character, its script instance, one of its
@@ -425,7 +426,7 @@ int AttackerOf(uint8_t* attacker)
         // its sabers: only a Jedi has the weapon slots (IsA, vfunc +4, the IJedi type 0x249950); a clone's or a battle
         // droid's object ends before them (0xEE0 bytes)
         const auto isA = reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint32_t)>((*reinterpret_cast<void* const* const*>(f))[1]);
-        if (!isA(f, nullptr, 0x00249950))
+        if (!isA(f, nullptr, Va(0x00249950)))
             continue;
         for (uint32_t at = kWeaponsFrom; at < kWeaponsTo; at += 4)
             if (Field<uint8_t*>(f, at) == attacker)
@@ -964,14 +965,15 @@ void CheckWinner(ULONGLONG now)
 //   the instigator's target; the shared saber-lock sequences call it from six places.
 // - The instigator is the running script's character ([[0x6943CC] +0x68]); a kill move, grab or lock links the two
 //   fighters ([0x6943CC] +0x23C: their instance ids at +0xC and +0x10).
-constexpr uint32_t kScriptSlowMotion = 0x00176BF0;
+static GAME_VA(kScriptSlowMotion, 0x00176BF0);
 constexpr uint8_t kScriptSlowMotionBytes[] = { 0xE8, 0xEB, 0x57, 0xFF, 0xFF, 0x80, 0x38, 0x00, 0x75, 0x05 };
-constexpr uint32_t kSetSlowMotion = 0x000A20E0;    // cdecl (scale, rampIn, hold, rampOut)
-constexpr uint32_t kCancelSlowMotion = 0x000A2110; // cdecl (): back to 1
-constexpr uint32_t kScriptEffectsOff = 0x006943D0;
-constexpr uint32_t kScriptContext = 0x006943CC;
-constexpr uint32_t kCombatCamera = 0x002BB250;
-constexpr uint32_t kCombatCameraCalls[] = { 0x00408B52, 0x00408BAE, 0x00408DE1, 0x00408E27, 0x0040907B, 0x004090C1 };
+static GAME_VA(kSetSlowMotion, 0x000A20E0);    // cdecl (scale, rampIn, hold, rampOut)
+static GAME_VA(kCancelSlowMotion, 0x000A2110); // cdecl (): back to 1
+static GAME_VA(kScriptEffectsOff, 0x006943D0);
+static GAME_VA(kScriptContext, 0x006943CC);
+static GAME_VA(kCombatCamera, 0x002BB250);
+static uint32_t kCombatCameraCalls[] = { 0x00408B52, 0x00408BAE, 0x00408DE1, 0x00408E27, 0x0040907B, 0x004090C1 };
+GAME_VAS(kCombatCameraCalls);
 
 uint8_t* g_SlowOwner = nullptr;       // whose slowing is running (its restore must get through)
 uint8_t* g_LockCameraOwner = nullptr; // whose lock camera is on
@@ -1043,8 +1045,7 @@ void __cdecl LockCamera(uint32_t on, uint32_t a2, uint32_t a3, uint32_t a4, uint
 void InstallEffectHooks()
 {
     g_SlowOwner = g_LockCameraOwner = nullptr;
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kScriptSlowMotion)), kScriptSlowMotionBytes,
-            sizeof kScriptSlowMotionBytes) == 0)
+    if (MatchesCode(kScriptSlowMotion, kScriptSlowMotionBytes, sizeof kScriptSlowMotionBytes))
         PatchJump(kScriptSlowMotion, reinterpret_cast<const void*>(&ScriptSlowMotion));
     else
         LOG_WARN("HvV: the slow-motion call is not as expected; other fighters' slow motion reaches the player");
@@ -1081,9 +1082,9 @@ void CheckSlowMotion()
 // menus on the main menu (0x2FAFA0) instead of the title. A match started from the menus brings them along, with the
 // controller and memory unit in use (the session settings [[0x66F7A4] +4]: +0x84, +0x80), and goes back to the main
 // menu the same way.
-constexpr uint32_t kProfile = 0x007E8F24;
-constexpr uint32_t kSaveProfile = 0x0024D300;
-constexpr uint32_t kSessionSettings = 0x0066F7A4;
+static GAME_VA(kProfile, 0x007E8F24);
+static GAME_VA(kSaveProfile, 0x0024D300);
+static GAME_VA(kSessionSettings, 0x0066F7A4);
 
 // Saves the profile for the next start; false without one (a start from Default_Xbox.cfg, before the menus).
 bool SaveProfile(int& controller, int& memoryUnit)
@@ -1873,7 +1874,7 @@ bool HvvSameSide(const uint8_t* a, const uint8_t* b)
 bool GamePaused()
 {
     __try {
-        uint8_t* services = *reinterpret_cast<uint8_t**>(uintptr_t(0x0068D944));
+        uint8_t* services = *reinterpret_cast<uint8_t**>(uintptr_t(Va(0x0068D944)));
         uint8_t* time = services ? *reinterpret_cast<uint8_t**>(services + 0x5C) : nullptr;
         return time && time[0x14] && *reinterpret_cast<uint32_t*>(time + 0x38) != 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {

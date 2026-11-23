@@ -293,8 +293,11 @@ static void Run(void* reserveBase, unsigned reserveSize, void* contiguousBase, u
     if (!g_Xbe.Load(paths.gameData + L"\\default.xbe", error))
         Fatal("%s\n\nCopy the contents of your Star Wars: Episode III disc into:\n%ls", error.c_str(), paths.gameData.c_str());
     std::string md5 = g_Xbe.Md5Hex();
-    if (md5 != game::kRetailMd5)
-        Fatal("default.xbe is not the supported retail release (MD5 %s).", md5.c_str());
+    game::Release release;
+    if (!game::FindRelease(md5, &release))
+        Fatal("default.xbe is not a supported release of the game (MD5 %s). Supported: %ls.", md5.c_str(),
+            game::kSupportedReleases);
+    game::SelectRelease(release);
 
     PrepareImageRange(reserveBase, reserveSize);
     LoadGameImage();
