@@ -15,6 +15,7 @@
 
 #include "core/log.h"
 #include "core/patch.h"
+#include "game/release.h"
 #include "input/controls.h"
 
 namespace swrots::game {
@@ -75,11 +76,12 @@ float RotationDifference(const Matrix& a, const Matrix& b)
 }
 
 // Hooks a function whose first `length` bytes are position-independent instructions; returns the
-// original (those bytes copied to a stub that continues after them).
-void* Detour(uint32_t address, const uint8_t* prologue, uint32_t length, const void* hook)
+// original (those bytes copied to a stub that continues after them). The bytes are the game's own, in
+// the running release (they are checked against the North American code first).
+void* Detour(uint32_t address, uint32_t length, const void* hook)
 {
     uint8_t* stub = AllocStub(length + 5);
-    std::memcpy(stub, prologue, length);
+    std::memcpy(stub, reinterpret_cast<const void*>(uintptr_t(address)), length);
     stub[length] = 0xE9;
     int32_t back = int32_t(address + length) - int32_t(uintptr_t(stub) + length + 5);
     std::memcpy(stub + length + 1, &back, 4);
@@ -93,7 +95,7 @@ void* Detour(uint32_t address, const uint8_t* prologue, uint32_t length, const v
 // SetTransform (vtable +0x1F4, thiscall (const Matrix*), ret 4), which only the two master camera
 // classes use. The matrix's rows are the camera's right, up and forward axes and its position; up is
 // +Y, and right x up = forward (as in Direct3D). It runs while the game is frozen (timeScale 0) too.
-constexpr uint32_t kSetTransform = 0x00129990;
+static GAME_VA(kSetTransform, 0x00129990);
 constexpr uint8_t kSetTransformPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0x83, 0xEC, 0x4C };
 using SetTransformFn = void(__fastcall*)(void* camera, void* edx, const Matrix* transform);
 SetTransformFn g_OriginalSetTransform = nullptr;
@@ -226,7 +228,7 @@ void __fastcall SetTransformHook(void* camera, void* edx, const Matrix* transfor
 // another scale). While flying, a pass whose view the flown camera reproduces (the same rotation, a
 // position within a shake's reach) gets the flown position; the others keep the game's, which follows
 // the flown camera itself.
-constexpr uint32_t kRenderCamera = 0x002116A0;
+static GAME_VA(kRenderCamera, 0x002116A0);
 constexpr uint8_t kRenderCameraPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0x81, 0xEC, 0xC4, 0x00, 0x00, 0x00 };
 using RenderCameraFn = char(__fastcall*)(void* renderer, void* edx, int kind, const Matrix* matrix);
 RenderCameraFn g_OriginalRenderCamera = nullptr;
@@ -269,7 +271,7 @@ char __fastcall RenderCameraHook(void* renderer, void* edx, int kind, const Matr
 // The renderer's field of view (a method of the render interface, vtable 0x59CA60; thiscall (float
 // radians), ret 4), set once a frame, zoom included. While flying it keeps the value it had before
 // the flight began.
-constexpr uint32_t kRenderFov = 0x00211C30;
+static GAME_VA(kRenderFov, 0x00211C30);
 constexpr uint8_t kRenderFovPrologue[] = { 0xA1, 0xF4, 0x93, 0x61, 0x00, 0x85, 0xC0 }; // mov eax, [0x6193F4]; test eax, eax
 using RenderFovFn = char(__fastcall*)(void* renderer, void* edx, float fov);
 RenderFovFn g_OriginalRenderFov = nullptr;
@@ -332,7 +334,7 @@ void InstallFreeCamera()
     g_HaveGameView = g_HaveToView = g_HaveGameFov = g_HaveRenderedView = false;
     input::HoldPlayerInput(false);
     const auto matches = [](uint32_t address, const uint8_t* bytes, size_t length) {
-        return std::memcmp(reinterpret_cast<const void*>(uintptr_t(address)), bytes, length) == 0;
+        return MatchesCode(address, bytes, length);
     };
     if (!matches(kSetTransform, kSetTransformPrologue, sizeof(kSetTransformPrologue)) ||
         !matches(kRenderCamera, kRenderCameraPrologue, sizeof(kRenderCameraPrologue)) ||
@@ -340,11 +342,11 @@ void InstallFreeCamera()
         LOG_WARN("Free camera: the camera code is not as expected; no free camera");
         return;
     }
-    g_OriginalSetTransform = reinterpret_cast<SetTransformFn>(Detour(kSetTransform, kSetTransformPrologue,
+    g_OriginalSetTransform = reinterpret_cast<SetTransformFn>(Detour(kSetTransform,
         sizeof(kSetTransformPrologue), reinterpret_cast<const void*>(&SetTransformHook)));
-    g_OriginalRenderCamera = reinterpret_cast<RenderCameraFn>(Detour(kRenderCamera, kRenderCameraPrologue,
+    g_OriginalRenderCamera = reinterpret_cast<RenderCameraFn>(Detour(kRenderCamera,
         sizeof(kRenderCameraPrologue), reinterpret_cast<const void*>(&RenderCameraHook)));
-    g_OriginalRenderFov = reinterpret_cast<RenderFovFn>(Detour(kRenderFov, kRenderFovPrologue, sizeof(kRenderFovPrologue),
+    g_OriginalRenderFov = reinterpret_cast<RenderFovFn>(Detour(kRenderFov, sizeof(kRenderFovPrologue),
         reinterpret_cast<const void*>(&RenderFovHook)));
 }
 

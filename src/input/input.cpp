@@ -23,6 +23,7 @@
 #include "core/window.h"
 #include "d3d/recorder.h"
 #include "debug/menu.h"
+#include "game/release.h"
 #include "input/controls.h"
 #include "input/playstation.h"
 #include "game/game.h"
@@ -85,7 +86,8 @@ void ResetPortsForReboot()
     for (Port& p : g_Ports)
         p = Port();
 }
-static XppDeviceType* const g_Gamepad = reinterpret_cast<XppDeviceType*>(uintptr_t(0x00557F14));
+static GAME_VA(kGamepadType, 0x00557F14); // XDEVICE_TYPE_GAMEPAD
+static XppDeviceType* Gamepad() { return reinterpret_cast<XppDeviceType*>(uintptr_t(kGamepadType)); }
 
 // A host controller: an XInput user index, or the n-th PlayStation pad.
 struct Source {
@@ -241,9 +243,9 @@ static ULONG ConnectedMask()
 static void RefreshConnections()
 {
     ULONG now = ConnectedMask();
-    if (now != g_Gamepad->CurrentConnected) {
-        g_Gamepad->ChangeConnected |= now ^ g_Gamepad->CurrentConnected;
-        g_Gamepad->CurrentConnected = now;
+    if (now != Gamepad()->CurrentConnected) {
+        Gamepad()->ChangeConnected |= now ^ Gamepad()->CurrentConnected;
+        Gamepad()->CurrentConnected = now;
     }
 }
 
@@ -654,16 +656,16 @@ static void __stdcall XbInitDevices(DWORD preallocTypeCount, void* preallocTypes
     (void)preallocTypes;
     std::lock_guard<std::mutex> lock(g_Lock);
     StartPlayStationPads();
-    g_Gamepad->CurrentConnected = ConnectedMask();
-    g_Gamepad->ChangeConnected = g_Gamepad->CurrentConnected;
-    g_Gamepad->PreviousConnected = 0;
-    LOG_INFO("XInitDevices: gamepads on ports mask %lX", g_Gamepad->CurrentConnected);
+    Gamepad()->CurrentConnected = ConnectedMask();
+    Gamepad()->ChangeConnected = Gamepad()->CurrentConnected;
+    Gamepad()->PreviousConnected = 0;
+    LOG_INFO("XInitDevices: gamepads on ports mask %lX", Gamepad()->CurrentConnected);
 }
 
 static DWORD __stdcall XbGetDevices(XppDeviceType* type)
 {
     std::lock_guard<std::mutex> lock(g_Lock);
-    if (type == g_Gamepad)
+    if (type == Gamepad())
         RefreshConnections();
     DWORD connected = type->CurrentConnected;
     type->ChangeConnected = 0;
@@ -674,7 +676,7 @@ static DWORD __stdcall XbGetDevices(XppDeviceType* type)
 static BOOL __stdcall XbGetDeviceChanges(XppDeviceType* type, DWORD* insertions, DWORD* removals)
 {
     std::lock_guard<std::mutex> lock(g_Lock);
-    if (type == g_Gamepad)
+    if (type == Gamepad())
         RefreshConnections();
     *insertions = *removals = 0;
     if (!type->ChangeConnected)
@@ -693,10 +695,10 @@ static HANDLE __stdcall XbInputOpen(XppDeviceType* type, DWORD port, DWORD slot,
 {
     (void)slot;
     (void)pollingParameters;
-    if (type != g_Gamepad || port >= 4)
+    if (type != Gamepad() || port >= 4)
         return nullptr;
     std::lock_guard<std::mutex> lock(g_Lock);
-    if (!(g_Gamepad->CurrentConnected & (1u << port)))
+    if (!(Gamepad()->CurrentConnected & (1u << port)))
         return nullptr;
     g_Ports[port].open = true;
     LOG_INFO("XInputOpen: gamepad port %lu", port);

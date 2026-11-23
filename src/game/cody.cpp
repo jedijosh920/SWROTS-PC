@@ -35,6 +35,7 @@
 
 #include "core/log.h"
 #include "core/patch.h"
+#include "game/release.h"
 #include "input/controls.h"
 #include "game/characters.h"
 #include "game/classsetup.h"
@@ -49,36 +50,37 @@ namespace swrots::game {
 
 namespace {
 
-constexpr uint32_t kIsComputer = 0x00176E30;             // cdecl bool (): the AI drives the script's character
-constexpr uint32_t kScriptCharacterContext = 0x006943CC; // +0x68: the character whose script runs, +0x70 its state
-constexpr uint32_t kHeldFrames = 0x00177FF0;             // cdecl int (button, 0), in a script's turn
-constexpr uint32_t kPressed = 0x00178070;                // cdecl bool (button, 1, 0, 2)
-constexpr uint32_t kButtonHeavy = 0x006964DC, kButtonCritical = 0x006964EC; // the script's button ids (Y, B)
-constexpr uint32_t kButtonPush = 0x006964E8;     // (RT: F)
-constexpr uint32_t kButtonDodge = 0x00696500;    // White (L1: Q; the Jedi's saber throw): LT is the lock-on's
-constexpr uint32_t kSayEvent = 0x0017ACC0;               // cdecl (event, context, 1, 0, 0): the script character says
-constexpr uint32_t kScriptHasTarget = 0x00176FF0;   // cdecl bool ()
-constexpr uint32_t kScriptPlayLayer = 0x00173B40;   // cdecl (animation, ...): an animation layer
-constexpr uint32_t kScriptStopLayer = 0x00173B80;   // cdecl (layer, blend)
-constexpr uint32_t kScriptShotSpread = 0x00176AB0;  // cdecl bool (): no spread
-constexpr uint32_t kCloneFireBolt = 0x003C0090;     // cdecl (instance, script, 0, spread, muzzle data, muzzle)
-constexpr uint32_t kCloneNextMuzzle = 0x001760B0;   // cdecl (muzzle*, count)
-constexpr uint32_t kScriptPlaySound = 0x0017AD20;   // cdecl (sound, near, 1, far, -1, 0)
+static GAME_VA(kIsComputer, 0x00176E30);             // cdecl bool (): the AI drives the script's character
+static GAME_VA(kScriptCharacterContext, 0x006943CC); // +0x68: the character whose script runs, +0x70 its state
+static GAME_VA(kHeldFrames, 0x00177FF0);             // cdecl int (button, 0), in a script's turn
+static GAME_VA(kPressed, 0x00178070);                // cdecl bool (button, 1, 0, 2)
+static GAME_VA(kButtonHeavy, 0x006964DC);
+static GAME_VA(kButtonCritical, 0x006964EC); // the script's button ids (Y, B)
+static GAME_VA(kButtonPush, 0x006964E8);     // (RT: F)
+static GAME_VA(kButtonDodge, 0x00696500);    // White (L1: Q; the Jedi's saber throw): LT is the lock-on's
+static GAME_VA(kSayEvent, 0x0017ACC0);               // cdecl (event, context, 1, 0, 0): the script character says
+static GAME_VA(kScriptHasTarget, 0x00176FF0);   // cdecl bool ()
+static GAME_VA(kScriptPlayLayer, 0x00173B40);   // cdecl (animation, ...): an animation layer
+static GAME_VA(kScriptStopLayer, 0x00173B80);   // cdecl (layer, blend)
+static GAME_VA(kScriptShotSpread, 0x00176AB0);  // cdecl bool (): no spread
+static GAME_VA(kCloneFireBolt, 0x003C0090);     // cdecl (instance, script, 0, spread, muzzle data, muzzle)
+static GAME_VA(kCloneNextMuzzle, 0x001760B0);   // cdecl (muzzle*, count)
+static GAME_VA(kScriptPlaySound, 0x0017AD20);   // cdecl (sound, near, 1, far, -1, 0)
 constexpr uint32_t kCloneMuzzle = 0x3D8, kCloneMuzzleData = 0x3EC, kCloneFireSound = 0x3E4; // in the instance
 constexpr char kCloneShootingLoop[] = "ctroop_atk_shooting_loop";
 // the battle droid's blaster (BattleDroid script, InitSound 0x337500 / StartFX 0x3373B0): its bolt 0x3BF8D0 (instance,
 // script, 0, spread, sound, muzzle), which plays the sound and the muzzle flash itself
-constexpr uint32_t kDroidFireBolt = 0x003BF8D0;
+static GAME_VA(kDroidFireBolt, 0x003BF8D0);
 constexpr uint32_t kDroidMuzzle = 0x268, kDroidFireSound = 0x24C; // in the instance
-constexpr uint32_t kButtonFast = 0x006964D8;     // X (Mouse 1): the droid commander's push-away
+static GAME_VA(kButtonFast, 0x006964D8);     // X (Mouse 1): the droid commander's push-away
 constexpr uint32_t kCharacterHealth = 0x130, kCharacterHealthMost = 0x134, kCharacterMeter = 0xA40, kCharacterMeterMost = 0xA44;
 constexpr uint32_t kCharacterTransform = 0x150, kCharacterOpponent = 0x3B8, kCharacterScript = 0x434;
 constexpr uint32_t kCharacterAI = 0x9FC;
 constexpr uint32_t kCharacterPort = 0x43C;     // the controller port driving it, -1 none
-constexpr uint32_t kAISetTarget = 0x00193D90;  // thiscall on the AI controller (target)
-constexpr uint32_t kObjectById = 0x000A31F0;   // cdecl (instance id) -> object or null
-constexpr uintptr_t kPlaySequence = 0x150E30;  // ICharacter, thiscall (sequence, 0, 0, 0, speed)
-constexpr uintptr_t kFindSequence = 0x150D60;  // ICharacter, thiscall (name) -> its sequence record or null
+static GAME_VA(kAISetTarget, 0x00193D90);  // thiscall on the AI controller (target)
+static GAME_VA(kObjectById, 0x000A31F0);   // cdecl (instance id) -> object or null
+static GAME_VA(kPlaySequence, 0x150E30);  // ICharacter, thiscall (sequence, 0, 0, 0, speed)
+static GAME_VA(kFindSequence, 0x150D60);  // ICharacter, thiscall (name) -> its sequence record or null
 
 // his meter
 constexpr float kMeterPerSecond = 35;
@@ -308,7 +310,7 @@ bool IsHelper(const uint8_t* c)
 bool IsEnemyOf(uint8_t* self, uint8_t* other)
 {
     uint8_t* brain = self ? At<uint8_t*>(self, kCharacterAI) : nullptr;
-    return !brain || reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint8_t*, int)>(uintptr_t(0x0018F3F0))(brain, nullptr, other, 0);
+    return !brain || reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint8_t*, int)>(uintptr_t(Va(0x0018F3F0)))(brain, nullptr, other, 0);
 }
 
 uint8_t* OpponentOf(uint8_t* character)
@@ -381,7 +383,7 @@ OwnMove g_Moves[] = {
     { "BattleDroid", "Droid_Strike", "BDroid_Atk_Shooting_In", 1.0f, 0 },     // pointing its blaster: fire
 };
 constexpr int kMoveCount = int(std::size(g_Moves));
-constexpr uint32_t kSetup = 0x006965D8;
+static GAME_VA(kSetup, 0x006965D8);
 const char kDuelMapTag[] = "DuelMap";
 
 // As the clone's own roll (CTroop_Nav_RollOut_L, 0x3575B0): optional (and its flag 0x696537); at its first frame
@@ -392,18 +394,18 @@ template <int K> bool __fastcall MoveFn(uint8_t* self, void*, uint32_t, uint32_t
     auto* setup = reinterpret_cast<uint8_t*>(uintptr_t(kSetup));
     OwnMove& move = g_Moves[K];
     const bool declared = reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint16_t*, const char*, const char*, float, uint32_t)>(
-        uintptr_t(0x001F5B20))(setup, nullptr, &move.handle, move.name, move.animation, move.speed, 0x0055FB60);
+        uintptr_t(Va(0x001F5B20)))(setup, nullptr, &move.handle, move.name, move.animation, move.speed, Va(0x0055FB60));
     if (declared) { // optional, required on duel maps (as Vader_Intro)
-        *reinterpret_cast<uint8_t*>(uintptr_t(0x00696531)) = 1;
-        *reinterpret_cast<uint8_t*>(uintptr_t(0x00696537)) = 1;
-        *reinterpret_cast<const char**>(uintptr_t(0x006964B8)) = kDuelMapTag;
+        *reinterpret_cast<uint8_t*>(uintptr_t(Va(0x00696531))) = 1;
+        *reinterpret_cast<uint8_t*>(uintptr_t(Va(0x00696537))) = 1;
+        *reinterpret_cast<const char**>(uintptr_t(Va(0x006964B8))) = kDuelMapTag;
     }
-    if (reinterpret_cast<bool(__fastcall*)(uint8_t*, void*)>(uintptr_t(0x001F62D0))(setup, nullptr)) { // first frame
-        uint8_t* instance = *reinterpret_cast<uint8_t**>(uintptr_t(0x006964C0));
-        reinterpret_cast<void(__cdecl*)(uint8_t*, uint8_t*, int, int)>(uintptr_t(0x0038A140))(instance, self, -1, -1);
+    if (reinterpret_cast<bool(__fastcall*)(uint8_t*, void*)>(uintptr_t(Va(0x001F62D0)))(setup, nullptr)) { // first frame
+        uint8_t* instance = *reinterpret_cast<uint8_t**>(uintptr_t(Va(0x006964C0)));
+        reinterpret_cast<void(__cdecl*)(uint8_t*, uint8_t*, int, int)>(uintptr_t(Va(0x0038A140)))(instance, self, -1, -1);
     }
-    return reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, const char*, uint32_t)>(uintptr_t(0x001F6C00))(
-        setup, nullptr, reinterpret_cast<const char*>(uintptr_t(0x0059C07C)), 0x7D00 + K);
+    return reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, const char*, uint32_t)>(uintptr_t(Va(0x001F6C00)))(
+        setup, nullptr, reinterpret_cast<const char*>(uintptr_t(Va(0x0059C07C))), 0x7D00 + K);
 }
 
 constexpr ClassSequenceFn kMoveFns[] = { &MoveFn<0>, &MoveFn<1>, &MoveFn<2>, &MoveFn<3>, &MoveFn<4>, &MoveFn<5>, &MoveFn<6> };
@@ -431,7 +433,7 @@ int __cdecl MoveSequences(const char* shortName, ClassSequenceFn* fns, int max)
 // add faults), no gravity, a steady slide down; on the floor its Rappel_Out lets go and gives it back to its AI.
 bool RopesReady()
 {
-    const uint8_t* ropes = *reinterpret_cast<uint8_t* const*>(uintptr_t(0x007F2EAC));
+    const uint8_t* ropes = *reinterpret_cast<uint8_t* const*>(uintptr_t(Va(0x007F2EAC)));
     return ropes && (*reinterpret_cast<const uint32_t*>(ropes + 0xC) & 0x40000) != 0;
 }
 
@@ -471,7 +473,7 @@ void CallSquad(uint8_t* cody, const Kind& kind, bool enemy, ULONGLONG now)
 // which hands each object it reaches to the callback. The callback hurts his enemies only, modestly, through the
 // game's own hit (0xA6720: a knock-down reaction from r_environment's EXPLOSION_* rows, the health change after it).
 // The effects are each level's own: the first of these the level has; without one, the shell is heard, not seen.
-constexpr uint32_t kExplosionClass = 0x0068E760;
+static GAME_VA(kExplosionClass, 0x0068E760);
 constexpr const char* kShellEffects[] = { "IDS_FX_explosion_med", "IDS_FX_explosion_large06", "IDS_FX_explosion_barrel_small",
     "IDS_FX_explosion_large05", "IDS_FX_flak_explosion01", "IDS_FX_explosion_large", "IDS_FX_Homing_Rocket_Explosion",
     "IDS_FX_electric_explosion_small", "IDS_FX_flak_explosion03", "IDS_FX_flak_explosion02", "IDS_FX_dust_burst_explosion09",
@@ -485,7 +487,7 @@ std::unordered_map<uint8_t*, ShellOf> g_ShellOwners; // shell -> who called it, 
 
 bool IsCharacter(uint8_t* object)
 {
-    return reinterpret_cast<bool(__cdecl*)(uint8_t*)>(uintptr_t(0x00089D10))(object);
+    return reinterpret_cast<bool(__cdecl*)(uint8_t*)>(uintptr_t(Va(0x00089D10)))(object);
 }
 
 void __cdecl ShellHit(uint8_t* shell, uint8_t* target, void*)
@@ -501,16 +503,16 @@ void __cdecl ShellHit(uint8_t* shell, uint8_t* target, void*)
         if (cody && (HvvActive() ? HvvSameSide(target, cody) : !IsEnemyOf(cody, target)))
             return;
         const float* centre = reinterpret_cast<const float*>(reinterpret_cast<uint8_t*(__fastcall*)(uint8_t*, void*)>(
-            uintptr_t(0x000F2280))(shell, nullptr) + 0x30);
+            uintptr_t(Va(0x000F2280)))(shell, nullptr) + 0x30);
         const float* p = Position(target);
         const float d = std::hypot(p[0] - centre[0], p[2] - centre[2]);
         float damage = type ? owner->second.damage : d < 60 ? 60.0f : d < 110 ? 40.0f : 20.0f;
         const auto isA = reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint32_t)>(
             (*reinterpret_cast<void* const* const*>(target))[1]);
-        if (isA(target, nullptr, 0x00249950) && At<uint8_t>(target, 0x1060)) // a Jedi blocking (as the canister)
+        if (isA(target, nullptr, Va(0x00249950)) && At<uint8_t>(target, 0x1060)) // a Jedi blocking (as the canister)
             damage /= 2;
         const float from[4] = { centre[0], centre[1] + 720.0f, centre[2], 1.0f };
-        reinterpret_cast<int(__cdecl*)(uint8_t*, uint8_t*, const char*, const float*, int, float, bool)>(uintptr_t(0x000A6720))(
+        reinterpret_cast<int(__cdecl*)(uint8_t*, uint8_t*, const char*, const float*, int, float, bool)>(uintptr_t(Va(0x000A6720)))(
             target, shell, type ? type : d < 60 ? "EXPLOSION_MEDIUM" : "EXPLOSION_LIGHT", from, 0, damage, true);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
@@ -521,7 +523,7 @@ void __cdecl ShellHit(uint8_t* shell, uint8_t* target, void*)
 // link (+0x24) a text the constructor made, set with its assign (0x225A10).
 void AssignText(uint8_t* field, const char* text)
 {
-    reinterpret_cast<void(__fastcall*)(void*, void*, const char*)>(uintptr_t(0x00225A10))(field, nullptr, text);
+    reinterpret_cast<void(__fastcall*)(void*, void*, const char*)>(uintptr_t(Va(0x00225A10)))(field, nullptr, text);
 }
 
 bool SetEffect(uint8_t* field, const char* const* effects, size_t count)
@@ -529,8 +531,8 @@ bool SetEffect(uint8_t* field, const char* const* effects, size_t count)
     for (size_t i = 0; i < count; ++i) { // the effect manager's check (0x1B3B00): one this level has
         const char* key = effects[i];
         void* name = nullptr; // held, never released: the interned name lives on, as the canister's holder's does
-        reinterpret_cast<void*(__cdecl*)(void*, const char*)>(uintptr_t(0x00222FA0))(&name, key);
-        if (name && reinterpret_cast<bool(__cdecl*)(void*)>(uintptr_t(0x001B3B00))(&name)) {
+        reinterpret_cast<void*(__cdecl*)(void*, const char*)>(uintptr_t(Va(0x00222FA0)))(&name, key);
+        if (name && reinterpret_cast<bool(__cdecl*)(void*)>(uintptr_t(Va(0x001B3B00)))(&name)) {
             *reinterpret_cast<void**>(field) = name;
             return true;
         }
@@ -543,7 +545,7 @@ bool SetEffect(uint8_t* field, const char* const* effects, size_t count)
 bool FireBlast(uint8_t* owner, const float at[3], const BlastLook& look)
 {
     float m[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, at[0], at[1], at[2], 1 };
-    uint8_t* shell = reinterpret_cast<uint8_t*(__cdecl*)(uint32_t)>(uintptr_t(0x000A2DB0))(kExplosionClass);
+    uint8_t* shell = reinterpret_cast<uint8_t*(__cdecl*)(uint32_t)>(uintptr_t(Va(0x000A2DB0)))(kExplosionClass);
     if (!shell)
         return false;
     uint8_t* props = shell + 0x1E0; // as its constructor left them (its texts made), the port's values set
@@ -560,7 +562,7 @@ bool FireBlast(uint8_t* owner, const float at[3], const BlastLook& look)
     g_ShellOwners[shell] = { owner, look.damageType, look.damage };
     if (look.made)
         *look.made = shell;
-    if (!reinterpret_cast<bool(__cdecl*)(uint8_t*, void*, const float*, int)>(uintptr_t(0x000A2DE0))(shell, nullptr, m, 1))
+    if (!reinterpret_cast<bool(__cdecl*)(uint8_t*, void*, const float*, int)>(uintptr_t(Va(0x000A2DE0)))(shell, nullptr, m, 1))
         return false;
     reinterpret_cast<void(__fastcall*)(uint8_t*, void*)>((*reinterpret_cast<void* const* const*>(shell))[0xA4 / 4])(shell, nullptr);
     return seen;
@@ -880,7 +882,7 @@ bool CodyReaction(uint8_t* character, void* bump, void* collision, void* sequenc
 }
 
 // The battle droid's script turn: its StateManager (0x3383B0, the clone's twin, same first bytes), the kit after it.
-constexpr uint32_t kDroidStateManager = 0x003383B0;
+static GAME_VA(kDroidStateManager, 0x003383B0);
 constexpr uint8_t kStateManagerBytes[] = { 0x56, 0x57, 0x8B, 0x3D, 0xC0, 0x64, 0x69, 0x00 }; // push esi; push edi; mov edi, [0x6964C0]
 using StateManagerFn = void(__fastcall*)(uint8_t*, void*, uint32_t, uint32_t);
 StateManagerFn g_OriginalDroidStateManager = nullptr;
@@ -889,15 +891,15 @@ void __fastcall DroidStateManagerHook(uint8_t* script, void*, uint32_t a, uint32
 {
     g_OriginalDroidStateManager(script, nullptr, a, b);
     const uint8_t* context = *reinterpret_cast<uint8_t* const*>(uintptr_t(kScriptCharacterContext));
-    uint8_t* instance = *reinterpret_cast<uint8_t**>(uintptr_t(0x006964C0));
+    uint8_t* instance = *reinterpret_cast<uint8_t**>(uintptr_t(Va(0x006964C0)));
     if (context)
         CloneKitFrame(script, instance, *reinterpret_cast<uint8_t* const*>(context + 0x68), true);
 }
 
-uint8_t* Trampoline(uint32_t address, const uint8_t* bytes, uint32_t length)
+uint8_t* Trampoline(uint32_t address, uint32_t length)
 {
     uint8_t* s = AllocStub(length + 5);
-    std::memcpy(s, bytes, length);
+    std::memcpy(s, reinterpret_cast<const void*>(uintptr_t(address)), length); // the running release's own bytes
     s[length] = 0xE9;
     const int32_t rel = int32_t(address + length) - int32_t(uintptr_t(s) + length + 5);
     std::memcpy(s + length + 1, &rel, 4);
@@ -942,8 +944,8 @@ void InstallCody()
         return;
     AddClassSequences(&MoveSequences);
     if (FindCustomCharacter("IDroidCommander")) {
-        if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kDroidStateManager)), kStateManagerBytes, sizeof kStateManagerBytes) == 0) {
-            static uint8_t* stub = Trampoline(kDroidStateManager, kStateManagerBytes, sizeof kStateManagerBytes);
+        if (MatchesCode(kDroidStateManager, kStateManagerBytes, sizeof kStateManagerBytes)) {
+            static uint8_t* stub = Trampoline(kDroidStateManager, sizeof kStateManagerBytes);
             g_OriginalDroidStateManager = reinterpret_cast<StateManagerFn>(stub);
             PatchJump(kDroidStateManager, reinterpret_cast<const void*>(&DroidStateManagerHook));
         } else {

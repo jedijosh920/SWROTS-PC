@@ -24,6 +24,7 @@
 #include "audio/audio.h"
 #include "core/log.h"
 #include "core/window.h"
+#include "game/release.h"
 #include "kernel/kernel.h"
 #include "xapi/xapi.h"
 
@@ -1373,8 +1374,8 @@ static DWORD g_PoolBytes = 0, g_PhysicalBytes = 0;
 
 void InitXboxGlobals()
 {
-    *reinterpret_cast<DWORD**>(uintptr_t(0x0053C140)) = &g_PoolBytes;
-    *reinterpret_cast<DWORD**>(uintptr_t(0x0053C13C)) = &g_PhysicalBytes;
+    *reinterpret_cast<DWORD**>(uintptr_t(game::Va(0x0053C140))) = &g_PoolBytes;
+    *reinterpret_cast<DWORD**>(uintptr_t(game::Va(0x0053C13C))) = &g_PhysicalBytes;
 }
 
 // --- Registration -----------------------------------------------------------------------

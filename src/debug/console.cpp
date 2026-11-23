@@ -24,6 +24,7 @@
 #include "game/devmap.h"
 #include "game/hvv.h"
 #include "game/missions.h"
+#include "game/release.h"
 #include "game/versus.h"
 #include "kernel/kernel.h"
 
@@ -770,7 +771,7 @@ bool Summarize(uint8_t* c, const uint8_t* player, CharacterSummary& out)
                 const uint32_t vtable = IsBadReadPtr(target, 4) ? 0 : *reinterpret_cast<const uint32_t*>(target);
                 if (target == player)
                     strcpy_s(out.target, "you");
-                else if (vtable >= 0x0055F660 && vtable < 0x00612BC8)
+                else if (vtable >= game::kRDataStart && vtable < game::kRDataEnd)
                     CopyName(out.target, sizeof(out.target), target);
                 else
                     strcpy_s(out.target, "(gone)");
@@ -831,10 +832,10 @@ void Scale(const std::vector<std::string>& words)
 // 0x1200 bytes), with the object around it found by its vtable (research: what a live swap must move).
 bool IsVtable(uint32_t value)
 {
-    if (value < 0x0055F660 || value >= 0x00612BC8 || (value & 3))
+    if (value < game::kRDataStart || value >= game::kRDataEnd || (value & 3))
         return false;
     const uint32_t first = *reinterpret_cast<const uint32_t*>(uintptr_t(value));
-    return first >= 0x00011000 && first < 0x004FEB00;
+    return first >= game::Va(0x00011000) && first < game::Va(0x004FEB00);
 }
 
 bool ReadDword(uintptr_t a, uint32_t& v)
@@ -888,7 +889,7 @@ void FindRefs(const std::vector<std::string>& words)
     std::vector<std::pair<uintptr_t, size_t>> regions = kernel::GameMemoryRegions();
     std::sort(regions.begin(), regions.end());
     regions.erase(std::unique(regions.begin(), regions.end()), regions.end());
-    regions.push_back({ 0x00612BE0, 0x0096E000 - 0x00612BE0 }); // the image's .data and .bss
+    regions.push_back({ game::kDataStart, game::kImageEnd - game::kDataStart }); // the image's .data and .bss
     int shown = 0, total = 0;
     for (const auto& [base, size] : regions) {
         for (uintptr_t a = base; a + 4 <= base + size; a += 4) {

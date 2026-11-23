@@ -24,6 +24,7 @@
 #include "game/customchars.h"
 #include "game/game.h"
 #include "game/hvv.h"
+#include "game/release.h"
 #include "game/resources.h"
 #include "kernel/kernel.h"
 
@@ -229,8 +230,8 @@ void __cdecl SpawnPlayerHook(void* playerClass, int variant)
 // variants. The created player gets it through its vfunc +0x2C8 (0xB1D60); at
 //   mov eax, [esp + 0xC] / mov edx, [ecx] / push eax   (7 bytes, 0xB1DE1)
 // ecx is the new player and [esp + 0xC] the variant. A chosen class gets one whose model is on disc.
-constexpr uint32_t kPlayerVariantSite = 0x000B1DE1;
-constexpr uint32_t kPlayerVariantContinue = 0x000B1DE8;
+static GAME_VA(kPlayerVariantSite, 0x000B1DE1);
+static GAME_VA(kPlayerVariantContinue, 0x000B1DE8);
 constexpr uint8_t kPlayerVariantBytes[] = { 0x8B, 0x44, 0x24, 0x0C, 0x8B, 0x11, 0x50 };
 
 // The player's saber colour. A character's +0xF20 points at a colour (float r, g, b, 0-1) that overrides
@@ -244,7 +245,8 @@ constexpr uint32_t kCharacterSaberColor = 0xF20;
 constexpr uint32_t kCharacterWeapons = 0x1080; // 4 slots, 0x20 apart: the weapon object, or null
 constexpr int kWeaponSlots = 4;
 constexpr uint32_t kSaberSetColor = 0x604;
-constexpr uint32_t kSaberVtables[] = { 0x005B1FF0, 0x005B2620, 0x005B2C90, 0x005B32F8, 0x005B3958 };
+static uint32_t kSaberVtables[] = { 0x005B1FF0, 0x005B2620, 0x005B2C90, 0x005B32F8, 0x005B3958 };
+GAME_VAS(kSaberVtables);
 
 uint8_t* g_Player = nullptr;      // the level's player, from its creation (this boot)
 uint32_t g_PlayerVtable = 0;      // its vtable then: the player is still there while it matches
@@ -257,7 +259,7 @@ bool PlayerAlive()
 // Only the Jedi-like characters (IJedi and those built on it) have the colour override and the weapon
 // slots; asked as the power-up switch asks (0x286BB2): IsA, vfunc +4, with the type's function as its
 // key (a type reference is just that address, 0x23C820).
-constexpr uint32_t kJediType = 0x00249950;
+static GAME_VA(kJediType, 0x00249950);
 
 bool HasSaberColor(uint8_t* character)
 {
@@ -392,9 +394,9 @@ OwnedList g_PlayerList;
 // what the level lacks through the port's resource hooks). A character's transform is at +0x150:
 // rows right, up, forward, position (as the dev item spawner at 0x2DF600 builds one in front of the
 // player). The spawned character takes its class's own AI and teams.
-constexpr uint32_t kClassLookup = 0x000E9B60;    // cdecl (const char* class) -> class info
-constexpr uint32_t kCreateInstance = 0x000E2350; // cdecl (class info) -> object
-constexpr uint32_t kSpawnInstance = 0x000A2DE0;  // cdecl bool (object, owner, const float m[16], int 1)
+static GAME_VA(kClassLookup, 0x000E9B60);    // cdecl (const char* class) -> class info
+static GAME_VA(kCreateInstance, 0x000E2350); // cdecl (class info) -> object
+static GAME_VA(kSpawnInstance, 0x000A2DE0);  // cdecl bool (object, owner, const float m[16], int 1)
 constexpr uint32_t kInstanceFlags = 0x0C;
 constexpr uint32_t kInstanceInactive = 0x08000000;
 constexpr uint32_t kCharacterCostume = 0x1E8;
@@ -443,7 +445,7 @@ std::vector<SpawnedCharacter> g_SpawnedCharacters;
 // The game's own way to remove an object (0xA2FE0, cdecl (object): its tear-down, vfunc +0x1CC, then
 // the object manager's Delete, 0xB5840, which waits for the end of an update when one is running), as
 // some fifty places in the game use it.
-constexpr uint32_t kDestroyObject = 0x000A2FE0;
+static GAME_VA(kDestroyObject, 0x000A2FE0);
 
 // Deactivated first: vfunc +0xB0 undoes the activation (+0xB4) a spawn ends with, taking the
 // character out of what it joined then (e.g. a Jedi's place in the list of characters blaster bolts
@@ -458,7 +460,7 @@ constexpr uint32_t kObjectProtected = 0x11D;
 // The lightsaber users that can deflect bolts ([0x7EAAF0], an array of characters; 0x26F360 adds one,
 // 0x26F350 removes one, both cdecl (character)). Only some classes' deactivation takes theirs out
 // (Dooku's and a spawned Jedi knight's did not), and a bolt picking a removed one crashed (0x26F14A).
-constexpr uint32_t kRemoveDeflector = 0x0026F350;
+static GAME_VA(kRemoveDeflector, 0x0026F350);
 
 void DestroyObject(uint8_t* object)
 {
@@ -493,7 +495,7 @@ uint8_t* CreateCharacter(const char* name, const std::string& costume, const std
 // 0xB6540 -> vfunc +0x220), so the activation after it (IJedi's +0xB4, 0x280790, switches on every saber not flagged
 // hidden) brought sabers 3 and 4 back at his hidden wrists: floating. Sent again after the activation, as the game's
 // script call does (vfunc +0x2AC, thiscall (event, delay)).
-constexpr uint32_t kGrievousVtable = 0x005C0E48;
+static GAME_VA(kGrievousVtable, 0x005C0E48);
 constexpr uint32_t kSendScriptEvent = 0x2AC;
 
 void SettleGrievous(uint8_t* character)
@@ -560,10 +562,10 @@ __declspec(naked) void PlayerVariantStub()
 // class the level did not expect is not in the list -- the HUD then shows the missing-texture
 // pattern -- so a portrait of the table missing from the list is loaded when asked for, the way the
 // level start loads them, and added. Its textures come from another level's PAK if need be.
-constexpr uint32_t kPortraitLookup = 0x0027B740;
-constexpr uint32_t kPortraitListAdd = 0x001F8A00; // thiscall (const Record*)
-constexpr uint32_t kPortraits = 0x00650C30;
-constexpr uint32_t kPortraitHeads = kPortraits + 0x34;
+static GAME_VA(kPortraitLookup, 0x0027B740);
+static GAME_VA(kPortraitListAdd, 0x001F8A00); // thiscall (const Record*)
+static GAME_VA(kPortraits, 0x00650C30);
+static GAME_VA(kPortraitHeads, 0x00650C64); // kPortraits + 0x34
 constexpr int kPortraitCount = 12;
 constexpr uint8_t kPortraitLookupPrologue[] = { 0x55, 0x8B, 0x6C, 0x24, 0x08, 0x85, 0xED }; // push ebp; mov ebp, [esp+8]; test ebp, ebp
 
@@ -630,7 +632,7 @@ void* __fastcall PortraitLookupHook(uint8_t* manager, void* edx, const char* nam
 // The HUD's own portrait (0x25E9xx: the character's class picked by checks, the face's name from kPortraits, the
 // lookup called at 0x25EADD with the character in esi): a custom character (customchars.h) with a portrait of its
 // own shows it, loaded and added to the list the first time.
-constexpr uint32_t kHudPortraitCall = 0x0025EADD;
+static GAME_VA(kHudPortraitCall, 0x0025EADD);
 
 // A trooper the player plays (Battlefront) has no portrait of the game's: the clone's Cody's helmet picture, the
 // battle droid's the droid commander's picture (customchars.cpp), by its costume list's class name (header +0).
@@ -685,7 +687,7 @@ void* __cdecl PortraitForCharacter(uint8_t* manager, const char* name, int head,
 // The pause screen's combat chart asks for the player's head picture (0x2B2A91: the lookup with head 1, the class's
 // name, no character): player 1 a custom character with a select-screen head of its own (its Versus strip cell,
 // interfc\front_end\s_selduel_<costume>head) shows that one, loaded from its file once per start.
-constexpr uint32_t kPausePortraitCall = 0x002B2A91;
+static GAME_VA(kPausePortraitCall, 0x002B2A91);
 std::unordered_map<std::string, void*> g_CustomHeads;
 
 void* __fastcall PausePortrait(uint8_t* manager, void*, const char* name, int head)
@@ -731,12 +733,15 @@ __declspec(naked) void PortraitCallStub()
 // tick is now skipped (the loader waits on the game's thread meanwhile: that thread must go on), and since that first
 // tick is the only one the game gives (the activation's), CharactersFrame gives it again once the setup made the
 // implement.
-constexpr uint32_t kCharacterTick = 0x00158790, kCharacterTickContinue = 0x0015879A;
+static GAME_VA(kCharacterTick, 0x00158790);
+static GAME_VA(kCharacterTickContinue, 0x0015879A);
 constexpr uint8_t kCharacterTickBytes[] = { 0x51, 0x56, 0x8B, 0xF1, 0x8A, 0x86, 0xC2, 0x01, 0x00, 0x00 };
-constexpr uint32_t kSaberTick = 0x00280790, kSaberTickContinue = 0x00280799;
+static GAME_VA(kSaberTick, 0x00280790);
+static GAME_VA(kSaberTickContinue, 0x00280799);
 constexpr uint8_t kSaberTickBytes[] = { 0x56, 0x57, 0x8B, 0xF1, 0xE8, 0xF7, 0x7F, 0xED, 0xFF }; // ... call 0x158790
 constexpr uint32_t kActivationSlot = 0x214, kTickSlot = 0xB4;
-constexpr uint32_t kScriptActivations[] = { 0x00267350, 0x0015ABF0, 0x002815F0, 0x002A0C00 }; // all start 0x15ABF0
+static uint32_t kScriptActivations[] = { 0x00267350, 0x0015ABF0, 0x002815F0, 0x002A0C00 }; // all start 0x15ABF0
+GAME_VAS(kScriptActivations);
 constexpr uint32_t kCharacterTickPending = 0x1C2, kCharacterActivationPending = 0x110, kCharacterScript = 0x438;
 std::unordered_set<const uint8_t*> g_WaitingSetup; // reported once
 SRWLOCK g_WaitingSetupLock = SRWLOCK_INIT;
@@ -889,7 +894,7 @@ const char* RegisteredClassName(const char* name)
 // `optionalanims` (+0xE4, read once by the level loader, 0xB12E9: mov dl, [ecx + 0xE4]) has every
 // level load all of them, with their animations (from other levels' PAKs where needed: resources.cpp).
 // The port turns it on by changing that read to `mov dl, 1`.
-constexpr uint32_t kOptionalMovesRead = 0x000B12E9;
+static GAME_VA(kOptionalMovesRead, 0x000B12E9);
 constexpr uint8_t kOptionalMovesReadBytes[] = { 0x8A, 0x91, 0xE4, 0x00, 0x00, 0x00 };
 bool g_OptionalMoves = false;
 
@@ -901,7 +906,7 @@ void EnableOptionalMoves(bool enabled)
 // "Is that character my enemy?" (0x18F3F0, thiscall on a character's AI controller (other, flag), its
 // character at +0x10): a rioting character is everyone's enemy and everyone is its; a neutral one is
 // no one's and no one is its. Otherwise the game decides.
-constexpr uint32_t kIsEnemy = 0x0018F3F0;
+static GAME_VA(kIsEnemy, 0x0018F3F0);
 constexpr uint8_t kIsEnemyPrologue[] = { 0x53, 0x55, 0x56, 0x57, 0x8B, 0x7C, 0x24, 0x14 };
 using IsEnemyFn = bool(__fastcall*)(uint8_t*, void*, uint8_t*, int);
 IsEnemyFn g_OriginalIsEnemy = nullptr;
@@ -940,7 +945,8 @@ Side SideOf(const uint8_t* character, uint32_t teams)
 // "is it friendly" (0x14FE30) and the Jedi's and characters' hit checks.
 const uint8_t* g_FriendlyFireA = nullptr;
 const uint8_t* g_FriendlyFireB = nullptr;
-constexpr uintptr_t kHitCallers[] = { 0x0015A396, 0x0014FE50, 0x00156142, 0x0015673E, 0x002675F3 };
+static uint32_t kHitCallers[] = { 0x0015A396, 0x0014FE50, 0x00156142, 0x0015673E, 0x002675F3 };
+GAME_VAS(kHitCallers);
 
 // Helpers (SpawnHelper) and whose: a helper is on its master's side, whatever teams the level gives (a duel gives its
 // player every team but the opponent's, so a helper with its master's teams was still taken for the player's enemy).
@@ -1000,8 +1006,8 @@ bool __fastcall IsEnemyHook(uint8_t* brain, void* edx, uint8_t* other, int flag)
 // the character's (0x18FA8C), so the game's lock-on takes it for an enemy from then on. For a level character (a
 // neutral the player strikes) that is the game's way; for one the port put on the player's side (an ally, a mission's
 // companion caught by a swing) it is not: the ally stays an ally and the player's teams stay as they were.
-constexpr uint32_t kProvokeCall = 0x001593F8;
-constexpr uint32_t kProvoke = 0x0018FA00;
+static GAME_VA(kProvokeCall, 0x001593F8);
+static GAME_VA(kProvoke, 0x0018FA00);
 using ProvokeFn = void(__fastcall*)(uint8_t*, void*, uint8_t*);
 
 void __fastcall ProvokeHook(uint8_t* brain, void*, uint8_t* attacker)
@@ -1045,7 +1051,7 @@ bool IsScriptActor(const uint8_t* character)
     return false;
 }
 
-constexpr uint32_t kReactionCall = 0x00159E20;
+static GAME_VA(kReactionCall, 0x00159E20);
 constexpr uint8_t kReactionCallBytes[] = { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0 }; // push ebp; mov ebp, esp; and esp, -16
 ReactionCallFn g_OriginalReactionCall = nullptr;
 ReactionWrapper g_ReactionWrapper = nullptr; // (kept across starts: a wrapper with nothing to do passes hits on)
@@ -1066,14 +1072,14 @@ void HookReactions(ReactionWrapper wrapper)
         g_ReactionWrapper = wrapper;
     if (*reinterpret_cast<const uint8_t*>(uintptr_t(kReactionCall)) == 0xE9) // this start's image has the jump
         return;
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kReactionCall)), kReactionCallBytes, sizeof kReactionCallBytes) != 0) {
+    if (!MatchesCode(kReactionCall, kReactionCallBytes, sizeof kReactionCallBytes)) {
         LOG_WARN("Characters: unexpected code at the hit reaction; hits are not filtered");
         return;
     }
     // the stub lives in the port's memory and survives reboots; the jump goes into every new image
     static uint8_t* stub = [] {
         uint8_t* s = AllocStub(sizeof kReactionCallBytes + 5);
-        std::memcpy(s, kReactionCallBytes, sizeof kReactionCallBytes);
+        std::memcpy(s, reinterpret_cast<const void*>(uintptr_t(kReactionCall)), sizeof kReactionCallBytes); // the running release's bytes
         s[sizeof kReactionCallBytes] = 0xE9;
         const int32_t rel = int32_t(kReactionCall + sizeof kReactionCallBytes) -
             int32_t(uintptr_t(s) + sizeof kReactionCallBytes + 5);
@@ -1135,15 +1141,14 @@ void InstallCharacters()
     g_HelperMasters.clear();
     g_ScriptActors.clear();
     g_WaitingSetup.clear();
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kCharacterTick)), kCharacterTickBytes,
-            sizeof(kCharacterTickBytes)) == 0 &&
-        std::memcmp(reinterpret_cast<const void*>(uintptr_t(kSaberTick)), kSaberTickBytes, sizeof(kSaberTickBytes)) == 0) {
+    if (MatchesCode(kCharacterTick, kCharacterTickBytes, sizeof(kCharacterTickBytes)) &&
+        MatchesCode(kSaberTick, kSaberTickBytes, sizeof(kSaberTickBytes))) {
         PatchJump(kCharacterTick, reinterpret_cast<const void*>(&CharacterTickStub));
         PatchJump(kSaberTick, reinterpret_cast<const void*>(&SaberTickStub));
     } else {
         LOG_WARN("Characters: unexpected code at the character ticks; activations unguarded");
     }
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kIsEnemy)), kIsEnemyPrologue, sizeof(kIsEnemyPrologue)) == 0) {
+    if (MatchesCode(kIsEnemy, kIsEnemyPrologue, sizeof(kIsEnemyPrologue))) {
         uint8_t* stub = AllocStub(16);
         std::memcpy(stub, kIsEnemyPrologue, sizeof(kIsEnemyPrologue));
         stub[8] = 0xE9;
@@ -1160,8 +1165,7 @@ void InstallCharacters()
         LOG_WARN("Characters: unexpected code at the enemy check; neutral and riot sides unavailable");
     }
     if (g_OptionalMoves) {
-        if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kOptionalMovesRead)), kOptionalMovesReadBytes,
-                sizeof(kOptionalMovesReadBytes)) == 0) {
+        if (MatchesCode(kOptionalMovesRead, kOptionalMovesReadBytes, sizeof(kOptionalMovesReadBytes))) {
             static const uint8_t kMoveOne[] = { 0xB2, 0x01, 0x90, 0x90, 0x90, 0x90 }; // mov dl, 1
             PatchBytes(kOptionalMovesRead, kMoveOne, sizeof(kMoveOne));
         } else {
@@ -1223,15 +1227,13 @@ void InstallCharacters()
     std::memcpy(stub + 6, &rel, 4);
     g_OriginalSpawnPlayer = reinterpret_cast<SpawnPlayerFn>(stub);
     PatchJump(kSpawnPlayer, reinterpret_cast<const void*>(&SpawnPlayerHook));
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kPlayerVariantSite)), kPlayerVariantBytes,
-            sizeof(kPlayerVariantBytes)) == 0) {
+    if (MatchesCode(kPlayerVariantSite, kPlayerVariantBytes, sizeof(kPlayerVariantBytes))) {
         PatchJump(kPlayerVariantSite, reinterpret_cast<const void*>(&PlayerVariantStub));
         PatchNop(kPlayerVariantSite + 5, sizeof(kPlayerVariantBytes) - 5);
     } else {
         LOG_WARN("Characters: unexpected code at the player variant site; variants unchanged");
     }
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kPortraitLookup)), kPortraitLookupPrologue,
-            sizeof(kPortraitLookupPrologue)) == 0) {
+    if (MatchesCode(kPortraitLookup, kPortraitLookupPrologue, sizeof(kPortraitLookupPrologue))) {
         uint8_t* portraitStub = AllocStub(16);
         std::memcpy(portraitStub, kPortraitLookupPrologue, sizeof(kPortraitLookupPrologue));
         portraitStub[7] = 0xE9;
@@ -1241,12 +1243,12 @@ void InstallCharacters()
         PatchJump(kPortraitLookup, reinterpret_cast<const void*>(&PortraitLookupHook));
         const int32_t lookup = int32_t(kPortraitLookup) - int32_t(kHudPortraitCall + 5);
         if (*reinterpret_cast<const uint8_t*>(uintptr_t(kHudPortraitCall)) == 0xE8 &&
-            std::memcmp(reinterpret_cast<const void*>(uintptr_t(kHudPortraitCall + 1)), &lookup, 4) == 0)
+            MatchesCode(kHudPortraitCall + 1, &lookup, 4))
             PatchCall(kHudPortraitCall, reinterpret_cast<const void*>(&PortraitCallStub), 5);
         g_CustomHeads.clear(); // the textures of the last start are gone with it
         const int32_t pauseLookup = int32_t(kPortraitLookup) - int32_t(kPausePortraitCall + 5);
         if (*reinterpret_cast<const uint8_t*>(uintptr_t(kPausePortraitCall)) == 0xE8 &&
-            std::memcmp(reinterpret_cast<const void*>(uintptr_t(kPausePortraitCall + 1)), &pauseLookup, 4) == 0)
+            MatchesCode(kPausePortraitCall + 1, &pauseLookup, 4))
             PatchCall(kPausePortraitCall, reinterpret_cast<const void*>(&PausePortrait), 5);
     } else {
         LOG_WARN("Characters: unexpected code at the HUD portrait lookup; portraits unchanged");
@@ -1461,24 +1463,24 @@ int ClassTextureSetIndex(const char* className, const std::string& spec)
 //   IInvisibleBrush), and other characters' references (their targets). The old body's own parts (its
 //   saber, effect groups, mesh instances, animation commits) keep pointing at it;
 // - the old player is marked inactive (+0xC 0x08000000) and moved far below the level.
-constexpr uint32_t kBindController = 0x00150580;    // thiscall (int id)
-constexpr uint32_t kPrimaryCharacter = 0x0068DCEC;  // the player's creation record: +0xC the player
-constexpr uint32_t kPlayerTransformRef = 0x0068EF70; // const float* (the player's +0x150)
+static GAME_VA(kBindController, 0x00150580);    // thiscall (int id)
+static GAME_VA(kPrimaryCharacter, 0x0068DCEC);  // the player's creation record: +0xC the player
+static GAME_VA(kPlayerTransformRef, 0x0068EF70); // const float* (the player's +0x150)
 constexpr uint32_t kCharacterControl = 0x390;       // 2: the player's
 constexpr uint32_t kPlace = 0x1F4;                   // object vfunc, thiscall (const float m[16])
 
 // The level's references to the player, by the object type's vtable and the field (as `findrefs`
 // found them in the Jedi Temple): only a dword in such a field of such an object moves.
 struct LevelReference {
-    uint32_t vtable;
+    uint32_t vtable; // North American (Va: the running release's)
     uint32_t field;
     uint32_t into; // where in the player it points: 0 the player, 0x150 its transform
 };
-constexpr uint32_t kGameManager = 0x007EB964;      // the game manager (pointer)
+static GAME_VA(kGameManager, 0x007EB964);      // the game manager (pointer)
 constexpr uint32_t kManagerPlayerSlots = 0x1E4;    // its player slots
 constexpr uint32_t kManagerPlayerIds = 0x2A4;      // a player's instance id per slot
-constexpr uint32_t kFocusListVtable = 0x0056CB0C; // TCamComPrimaryFocusList
-constexpr uint32_t kHudVitalsVtable = 0x005A82B0;  // the HUD's portrait (HudVitals.cpp)
+static GAME_VA(kFocusListVtable, 0x0056CB0C); // TCamComPrimaryFocusList
+static GAME_VA(kHudVitalsVtable, 0x005A82B0);  // the HUD's portrait (HudVitals.cpp)
 constexpr LevelReference kLevelReferences[] = {
     { 0x0056CB0C, 0x044, 0 },     // TCamComPrimaryFocusList: the camera's focus
     { 0x0056D028, 0x274, 0 },     // ICameraControl
@@ -1528,7 +1530,7 @@ bool IsLevelReference(uintptr_t a, uintptr_t base, uint32_t into)
 {
     for (const LevelReference& r : kLevelReferences) {
         uint32_t vtable;
-        if (r.into == into && a >= base + r.field && ReadGameDword(a - r.field, vtable) && vtable == r.vtable)
+        if (r.into == into && a >= base + r.field && ReadGameDword(a - r.field, vtable) && vtable == Va(r.vtable))
             return true;
     }
     return false;
@@ -1544,7 +1546,7 @@ constexpr uint32_t kAITargetPlayer = 0x50; // AI data "Target Player": the playe
 constexpr uint32_t kAIIgnoredByAI = 0x52;  // AI data "Ignored By AI"
 struct AIPart { uint32_t inCharacter, owner; };
 constexpr AIPart kAIParts[] = { { 0x9FC, 0x10 }, { kCharacterAIData, 0x29C } };
-constexpr uint32_t kDuelMasterCameraVtable = 0x005B4DC0; // IMasterCameraVader
+static GAME_VA(kDuelMasterCameraVtable, 0x005B4DC0); // IMasterCameraVader
 constexpr uint32_t kMasterCameraTargetId = 0x23C;
 // An instance id (object +4): a kind in the top four bits (0x4: made while playing, 0x7: the level's own
 // objects, the level's player among them) and an index in the low 16.
@@ -1643,8 +1645,8 @@ size_t CollectCandidates(uintptr_t base, size_t size, uint32_t lo, uint32_t span
 
 // Every character in the level: found through its AI data, which starts with kAIDataMarker and points
 // back at its character (+0x29C), which points at it (+0xA00).
-constexpr uint32_t kAIDataMarker = 0x00591C38;
-constexpr uint32_t kObjectById = 0x000A31F0;
+static GAME_VA(kAIDataMarker, 0x00591C38);
+static GAME_VA(kObjectById, 0x000A31F0);
 
 // The scan below reads all of the game's memory: callers that ask every frame (the fighters' kits, the specials, a
 // match's rules) share one scan for kLevelCharactersKeepMs, those still in the level then (ObjectById) returned.
@@ -1664,7 +1666,7 @@ std::vector<uint8_t*> LevelCharacters()
     static uint8_t* keptScene = nullptr;
     ULONGLONG& keptAt = g_LevelCharactersAt;
     const ULONGLONG now = GetTickCount64();
-    uint8_t* scene = *reinterpret_cast<uint8_t**>(uintptr_t(0x0068D944)); // the game's services: a new boot, a new list
+    uint8_t* scene = *reinterpret_cast<uint8_t**>(uintptr_t(Va(0x0068D944))); // the game's services: a new boot, a new list
     if (keptAt && now - keptAt < kLevelCharactersKeepMs && scene == keptScene) {
         std::vector<uint8_t*> still;
         still.reserve(kept.size());
@@ -1727,9 +1729,9 @@ bool SetCharacterScale(uint8_t* character, float scale)
 // Projectiles in flight (blaster bolts, deflected bolts, rockets) keep characters they involve, and a
 // deflected one read a character the port had just removed (0x26E6AD, from IDeflectionProjectile's
 // update): before the port removes characters (a live change, despawn), the bolts in the air go too.
-constexpr uint32_t kBlasterProjectileVtable = 0x005AAB90;
-constexpr uint32_t kDeflectionProjectileVtable = 0x005AC4B8;
-constexpr uint32_t kRocketProjectileVtable = 0x005B7B90;
+static GAME_VA(kBlasterProjectileVtable, 0x005AAB90);
+static GAME_VA(kDeflectionProjectileVtable, 0x005AC4B8);
+static GAME_VA(kRocketProjectileVtable, 0x005B7B90);
 
 int RemoveProjectiles()
 {
@@ -1756,7 +1758,7 @@ int RemoveProjectiles()
 // Characters targeting one about to be removed (despawn) let it go, through the AI's own SetTarget
 // (0x193D90, thiscall on the AI controller (target), null clearing it): a target left behind was read
 // once removed (a bolt fired at it, 0x26E6AD).
-constexpr uint32_t kAISetTarget = 0x00193D90;
+static GAME_VA(kAISetTarget, 0x00193D90);
 constexpr uint32_t kAIControllerInCharacter = 0x9FC;
 constexpr uint32_t kAITarget = 0x41C;
 
@@ -1837,7 +1839,7 @@ int RepointPlayerReferences(uint8_t* from, uint8_t* to)
 {
     const ULONGLONG started = GetTickCount64();
     std::vector<std::pair<uintptr_t, size_t>> regions = kernel::GameMemoryRegions();
-    regions.push_back({ 0x00612BE0, 0x0096E000 - 0x00612BE0 }); // the image's .data and .bss
+    regions.push_back({ kDataStart, kImageEnd - kDataStart }); // the image's .data and .bss
     std::sort(regions.begin(), regions.end());
     g_ScanRegions = &regions;
     std::unordered_map<uintptr_t, bool> readable;
@@ -1929,7 +1931,7 @@ int RepointPlayerReferences(uint8_t* from, uint8_t* to)
 // holds this character.
 bool ControllerBoundTo(const uint8_t* character)
 {
-    const uint8_t* input = *reinterpret_cast<uint8_t* const*>(uintptr_t(0x0068D4F4));
+    const uint8_t* input = *reinterpret_cast<uint8_t* const*>(uintptr_t(Va(0x0068D4F4)));
     const uint8_t* entry = input ? *reinterpret_cast<uint8_t* const*>(input + 0x1D8) : nullptr;
     return !entry || *reinterpret_cast<const uint8_t* const*>(entry + 0x7C) == character;
 }

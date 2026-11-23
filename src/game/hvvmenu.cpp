@@ -22,6 +22,7 @@
 #include "game/customchars.h"
 #include "game/custommaps.h"
 #include "game/devmap.h"
+#include "game/release.h"
 #include "kernel/kernel.h"
 #include "game/hvv.h"
 #include "game/menus.h"
@@ -48,9 +49,9 @@ constexpr const char* kLineupFile = "interfc\\front_end\\xml\\hvv_lineup.xml";
 constexpr const char* kSettingsFile = "interfc\\front_end\\xml\\settings.xml";
 constexpr float kRowStep = 24.0f; // the submenu's rows
 
-constexpr uint32_t kSwitchButtonVtable = 0x005D5580;
+static GAME_VA(kSwitchButtonVtable, 0x005D5580);
 constexpr uint32_t kEventSlot = 4;
-constexpr uint32_t kSwitchButtonEvent = 0x002CBEC0;
+static GAME_VA(kSwitchButtonEvent, 0x002CBEC0);
 constexpr int kChosen = 0x23;
 
 bool g_HvvMode = false;  // in the Heroes vs Villains screens (from its main menu row on)
@@ -193,11 +194,11 @@ bool __fastcall SwitchButtonEvent(uint8_t* self, void*, int event, int value)
 // 0x2D54B6): left/right (0x1F/0x20) move the cursor (+0x2C, a slot), A (0x23) picks (+0x28 set; then player 1 picks
 // the opponent), B (0x26) takes the pick back. Picking for the line-up (g_PickSlot), A takes the fighter under the
 // cursor for that place and B leaves it as it was; both go back to the line-up.
-constexpr uint32_t kPlayer1EventCall = 0x002D54B6;
-constexpr uint32_t kPlayer1Event = 0x002D51B0;
-constexpr uint32_t kSelectVtable = 0x005D68B8;
+static GAME_VA(kPlayer1EventCall, 0x002D54B6);
+static GAME_VA(kPlayer1Event, 0x002D51B0);
+static GAME_VA(kSelectVtable, 0x005D68B8);
 constexpr uint32_t kSelectFrameSlot = 3;
-constexpr uint32_t kSelectFrame = 0x002D56F0;
+static GAME_VA(kSelectFrame, 0x002D56F0);
 constexpr uint32_t kSelectSound = 0x2C; // vfunc, thiscall (sound id): 0x13 the pick's
 constexpr int kLeft = 0x1F, kRight = 0x20, kUp = 0x21, kDown = 0x22, kB = 0x26;
 constexpr int kX = 0x2B, kY = 0x2C;
@@ -233,11 +234,16 @@ constexpr const char* kDuelArenas[] = { "u103_sep_throneroom_01", "u103_sep_thro
 // after the game's); their pictures are the map's own (mods\maps\<id>\arena_small.stx 128x32, arena_large.stx 256x128) when
 // it has them. Chosen (slot 0x88, 0x2D21A0), a custom row makes the duel's launch the dev map's duel on that map
 // (VersusLaunch).
-constexpr uint32_t kArenaVtable = 0x005D63D8;
+static GAME_VA(kArenaVtable, 0x005D63D8);
 constexpr uint32_t kArenaBuildSlot = 0x14, kArenaChosenSlot = 0x88, kArenaCursorSlot = 0x8C, kArenaRowSlot = 0x7C;
-constexpr uint32_t kArenaBuild = 0x002D2AB0, kArenaChosen = 0x002D21A0, kArenaCursor = 0x002D2500, kArenaRow = 0x002D2460;
-constexpr uint32_t kArenaAdd = 0x002D29A0;
-constexpr uint32_t kStringInit = 0x00225100, kStringAssign = 0x00225A10, kStringFree = 0x00225230;
+static GAME_VA(kArenaBuild, 0x002D2AB0);
+static GAME_VA(kArenaChosen, 0x002D21A0);
+static GAME_VA(kArenaCursor, 0x002D2500);
+static GAME_VA(kArenaRow, 0x002D2460);
+static GAME_VA(kArenaAdd, 0x002D29A0);
+static GAME_VA(kStringInit, 0x00225100);
+static GAME_VA(kStringAssign, 0x00225A10);
+static GAME_VA(kStringFree, 0x00225230);
 constexpr const char* kArenaLevel = "u107_uta_grievous_01";
 int g_FirstCustomRow = -1; // the arena list's first custom map's row, -1 none
 int g_VersusMap = 0;
@@ -617,9 +623,16 @@ int SlotOfRow(int row)
     return row < 2 * g_PerSide ? kMaxPerSide + row - g_PerSide : -1;
 }
 
-std::wstring Wide(const std::string& text)
+std::wstring Wide(const std::string& text) // UTF-8 (fighters' names can have accents)
 {
-    return std::wstring(text.begin(), text.end());
+    if (text.empty())
+        return {};
+    const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), int(text.size()), nullptr, 0);
+    if (length <= 0)
+        return std::wstring(text.begin(), text.end());
+    std::wstring wide(size_t(length), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.data(), int(text.size()), wide.data(), length);
+    return wide;
 }
 
 // Battlefront's choices: its map (the dev map's floor, then the custom maps with command posts), side, troopers a
@@ -667,17 +680,20 @@ void UpdateTexts()
     {
         const std::string map = BfMapChoice();
         const CustomMap* custom = map.empty() ? nullptr : FindCustomMap(map);
-        SetMenuText("IDS_PORT_BF_V_MAP", Wide(custom ? custom->name : "DEVELOPER MAP"));
-        SetMenuText("IDS_PORT_BF_V_SIDE", g_BfSide == 0 ? L"REPUBLIC (CLONES)" : L"SEPARATISTS (DROIDS)");
-        SetMenuText("IDS_PORT_BF_V_TROOPS", Wide(std::to_string(kBfTroopChoices[g_BfTroops]) + " A SIDE"));
+        SetMenuText("IDS_PORT_BF_V_MAP", custom ? Wide(custom->name) : PortText(L"DEVELOPER MAP", L"CARTE DE DÉVELOPPEMENT"));
+        SetMenuText("IDS_PORT_BF_V_SIDE", g_BfSide == 0 ? PortText(L"REPUBLIC (CLONES)", L"RÉPUBLIQUE (CLONES)") :
+            PortText(L"SEPARATISTS (DROIDS)", L"SÉPARATISTES (DROÏDES)"));
+        SetMenuText("IDS_PORT_BF_V_TROOPS", std::to_wstring(kBfTroopChoices[g_BfTroops]) +
+            PortText(L" A SIDE", L" PAR CAMP"));
         SetMenuText("IDS_PORT_BF_V_TICKETS", Wide(std::to_string(kBfTicketChoices[g_BfTickets])));
     }
-    SetMenuText("IDS_PORT_HVV_V_TEAM", Wide(std::to_string(g_PerSide) + " VS " + std::to_string(g_PerSide)));
+    SetMenuText("IDS_PORT_HVV_V_TEAM", std::to_wstring(g_PerSide) + PortText(L" VS ", L" CONTRE ") +
+        std::to_wstring(g_PerSide));
     SetMenuText("IDS_PORT_HVV_V_LIVES", Wide(std::to_string(kLivesChoices[g_LivesChoice])));
     SetMenuText("IDS_PORT_HVV_V_HEALTH", Wide(std::to_string(kHealthChoices[g_HealthChoice])));
     const std::string map = MapChoice();
     const CustomMap* custom = map.empty() ? nullptr : FindCustomMap(map);
-    SetMenuText("IDS_PORT_HVV_V_MAP", Wide(custom ? custom->name : "DEVELOPER MAP"));
+    SetMenuText("IDS_PORT_HVV_V_MAP", custom ? Wide(custom->name) : PortText(L"DEVELOPER MAP", L"CARTE DE DÉVELOPPEMENT"));
     for (int row = 0; row < 2 * kMaxPerSide; ++row) {
         const int slot = SlotOfRow(row);
         const std::string id = "IDS_PORT_HVV_SLOT" + std::to_string(row);
@@ -686,8 +702,9 @@ void UpdateTexts()
             continue;
         }
         const int side = slot / kMaxPerSide, place = slot % kMaxPerSide;
-        SetMenuText(id.c_str(), Wide((side ? "VILLAIN " : "HERO ") + std::to_string(place + 1) + "   " +
-            HvvDisplayName(g_Lineup[slot]) + (slot == 0 ? "  (YOU)" : "")));
+        SetMenuText(id.c_str(), (side ? PortText(L"VILLAIN ", L"MÉCHANT ") : PortText(L"HERO ", L"HÉROS ")) +
+            std::to_wstring(place + 1) + L"   " + Wide(HvvDisplayName(g_Lineup[slot])) +
+            (slot == 0 ? PortText(L"  (YOU)", L"  (VOUS)") : L""));
     }
 }
 
@@ -707,14 +724,14 @@ int RowOf(uint8_t* handler, const std::vector<ScreenRow>& rows)
 // the profile's subtitles setting, profile +0x2A, for a row made from Subtitles) with a vtable of the port's own: its
 // draw (slot 3) shows the row's value as its On text, its events (slot 4) change the value (left/right, A), B goes
 // back as any item does (0x2C62D0); slot 10 makes another, slots 27/28 (defaults, apply) do nothing.
-constexpr uint32_t kMakeOnOff = 0x002D9690;
-constexpr uint32_t kOnOffVtable = 0x005D7000;
-constexpr uint32_t kMakeButton = 0x002D93F0; // SettingsScreenButton
-constexpr uint32_t kButtonVtable = 0x005D6E10;
+static GAME_VA(kMakeOnOff, 0x002D9690);
+static GAME_VA(kOnOffVtable, 0x005D7000);
+static GAME_VA(kMakeButton, 0x002D93F0); // SettingsScreenButton
+static GAME_VA(kButtonVtable, 0x005D6E10);
 constexpr int kVtableSlots = 32;
-constexpr uint32_t kItemEvent = 0x002C62D0;
-constexpr uint32_t kProfiles = 0x007E8F24;
-constexpr uint32_t kCurrentProfile = 0x0024CC50;
+static GAME_VA(kItemEvent, 0x002C62D0);
+static GAME_VA(kProfiles, 0x007E8F24);
+static GAME_VA(kCurrentProfile, 0x0024CC50);
 using DrawFn = char(__fastcall*)(uint8_t*, void*, uint32_t);
 using ItemEventFn = char(__fastcall*)(uint8_t*, void*, int, int);
 uint32_t g_ValueVtable[kVtableSlots], g_ButtonVtable[kVtableSlots];
@@ -943,12 +960,14 @@ uint32_t MatchTexts(uint32_t key)
 
 void InstallScreens()
 {
-    SetMenuText("IDS_PORT_HVV_RESTART", L"Restart HvV");
-    SetMenuText("IDS_PORT_HVV_QUIT", L"Quit HvV");
-    SetMenuText("IDS_PORT_BF_RESTART", L"Restart Battle");
-    SetMenuText("IDS_PORT_BF_QUIT", L"Quit Battle");
-    SetMenuText("IDS_PORT_HVV_RESTART_MESSAGE", L"Are you sure you want to restart the match? Its score will be lost.");
-    SetMenuText("IDS_PORT_HVV_QUIT_MESSAGE", L"Are you sure you want to quit the match? Its score will be lost.");
+    SetMenuText("IDS_PORT_HVV_RESTART", PortText(L"Restart HvV", L"Recommencer le match"));
+    SetMenuText("IDS_PORT_HVV_QUIT", PortText(L"Quit HvV", L"Quitter le match"));
+    SetMenuText("IDS_PORT_BF_RESTART", PortText(L"Restart Battle", L"Recommencer la bataille"));
+    SetMenuText("IDS_PORT_BF_QUIT", PortText(L"Quit Battle", L"Quitter la bataille"));
+    SetMenuText("IDS_PORT_HVV_RESTART_MESSAGE", PortText(L"Are you sure you want to restart the match? Its score will be lost.",
+        L"Voulez-vous vraiment recommencer le match ? Son score sera perdu."));
+    SetMenuText("IDS_PORT_HVV_QUIT_MESSAGE", PortText(L"Are you sure you want to quit the match? Its score will be lost.",
+        L"Voulez-vous vraiment quitter le match ? Son score sera perdu."));
     SetMenuTextRedirect(&MatchTexts);
     std::memcpy(g_ValueVtable, reinterpret_cast<const void*>(uintptr_t(kOnOffVtable)), sizeof g_ValueVtable);
     g_OnOffDraw = reinterpret_cast<DrawFn>(uintptr_t(g_ValueVtable[3]));
@@ -964,21 +983,21 @@ void InstallScreens()
     g_ButtonDraw = reinterpret_cast<DrawFn>(uintptr_t(g_ButtonVtable[3]));
     g_ButtonVtable[3] = uint32_t(reinterpret_cast<uintptr_t>(&ButtonDraw));
     g_ButtonVtable[10] = uint32_t(reinterpret_cast<uintptr_t>(&MakeButtonSlot));
-    SetMenuText("IDS_PORT_HVV_TITLE", L"Heroes vs Villains");
-    SetMenuText("IDS_PORT_HVV_LINEUP_TITLE", L"Line-up");
-    SetMenuText("IDS_PORT_HVV_TEAM", L"Team Size");
-    SetMenuText("IDS_PORT_HVV_LIVES", L"Lives");
-    SetMenuText("IDS_PORT_HVV_HEALTH", L"Health");
-    SetMenuText("IDS_PORT_HVV_INTRO", L"Intro");
-    SetMenuText("IDS_PORT_HVV_MAP", L"Map");
-    SetMenuText("IDS_PORT_HVV_LINEUP", L"Line-up");
-    SetMenuText("IDS_PORT_HVV_START", L"Start");
+    SetMenuText("IDS_PORT_HVV_TITLE", PortText(L"Heroes vs Villains", L"Héros contre méchants"));
+    SetMenuText("IDS_PORT_HVV_LINEUP_TITLE", PortText(L"Line-up", L"Composition"));
+    SetMenuText("IDS_PORT_HVV_TEAM", PortText(L"Team Size", L"Taille des équipes"));
+    SetMenuText("IDS_PORT_HVV_LIVES", PortText(L"Lives", L"Vies"));
+    SetMenuText("IDS_PORT_HVV_HEALTH", PortText(L"Health", L"Santé"));
+    SetMenuText("IDS_PORT_HVV_INTRO", PortText(L"Intro", L"Intro"));
+    SetMenuText("IDS_PORT_HVV_MAP", PortText(L"Map", L"Carte"));
+    SetMenuText("IDS_PORT_HVV_LINEUP", PortText(L"Line-up", L"Composition"));
+    SetMenuText("IDS_PORT_HVV_START", PortText(L"Start", L"Commencer"));
     SetMenuText("IDS_PORT_BF_TITLE", L"Battlefront");
-    SetMenuText("IDS_PORT_BF_MAP", L"Map");
-    SetMenuText("IDS_PORT_BF_SIDE", L"Side");
-    SetMenuText("IDS_PORT_BF_TROOPS", L"Troopers");
-    SetMenuText("IDS_PORT_BF_TICKETS", L"Tickets");
-    SetMenuText("IDS_PORT_BF_HEROES", L"Heroes");
+    SetMenuText("IDS_PORT_BF_MAP", PortText(L"Map", L"Carte"));
+    SetMenuText("IDS_PORT_BF_SIDE", PortText(L"Side", L"Camp"));
+    SetMenuText("IDS_PORT_BF_TROOPS", PortText(L"Troopers", L"Soldats"));
+    SetMenuText("IDS_PORT_BF_TICKETS", PortText(L"Tickets", L"Renforts"));
+    SetMenuText("IDS_PORT_BF_HEROES", PortText(L"Heroes", L"Héros"));
     // the line-up's defaults, once (kept across the game's restarts, as the rules)
     if (g_Lineup[0].empty()) {
         // Versus fighters only (the select screen offers no others); a custom villain fourth when there is one
@@ -1051,9 +1070,9 @@ void __fastcall SelectFrameHook(uint8_t* screen, void*, uint32_t arg)
 // --- Screen changes (for scripted menu tests' screen marks) ---------------------------------------------------------
 // The front end changes screens through its transition object (0x2D1B80, thiscall (const TString* name): the name's
 // pooled text is latched) and switches a screen's children (0xD4070, thiscall (const key*): the name's hash).
-constexpr uint32_t kTransition = 0x002D1B80;
+static GAME_VA(kTransition, 0x002D1B80);
 constexpr uint8_t kTransitionBytes[] = { 0x33, 0xC0, 0x56, 0x8B, 0x74, 0x24, 0x08 }; // xor eax, eax; push esi; mov esi, [esp+8]
-constexpr uint32_t kChildSwitch = 0x000D4070;
+static GAME_VA(kChildSwitch, 0x000D4070);
 constexpr uint8_t kChildSwitchBytes[] = { 0x56, 0x8B, 0xF1, 0x8B, 0x46, 0x2C }; // push esi; mov esi, ecx; mov eax, [esi+0x2C]
 using ScreenFn = uint32_t(__fastcall*)(void*, void*, const uint32_t*);
 ScreenFn g_Transition = nullptr, g_ChildSwitch = nullptr;
@@ -1085,10 +1104,10 @@ uint32_t __fastcall ChildSwitchHook(void* self, void*, const uint32_t* key)
     return g_ChildSwitch(self, nullptr, key);
 }
 
-uint8_t* Trampoline(uint32_t address, const uint8_t* bytes, uint32_t length)
+uint8_t* Trampoline(uint32_t address, uint32_t length)
 {
     uint8_t* stub = AllocStub(length + 5);
-    std::memcpy(stub, bytes, length);
+    std::memcpy(stub, reinterpret_cast<const void*>(uintptr_t(address)), length); // the running release's own bytes
     stub[length] = 0xE9;
     const int32_t back = int32_t(address + length) - int32_t(uintptr_t(stub) + length + 5);
     std::memcpy(stub + length + 1, &back, 4);
@@ -1101,10 +1120,10 @@ void InstallHvvMenu()
 {
     InstallScreens();
     // once (the port's memory outlives the game's reboots); the jumps into every new image
-    static uint8_t* transition = Trampoline(kTransition, kTransitionBytes, sizeof kTransitionBytes);
-    static uint8_t* childSwitch = Trampoline(kChildSwitch, kChildSwitchBytes, sizeof kChildSwitchBytes);
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kTransition)), kTransitionBytes, sizeof kTransitionBytes) == 0 &&
-        std::memcmp(reinterpret_cast<const void*>(uintptr_t(kChildSwitch)), kChildSwitchBytes, sizeof kChildSwitchBytes) == 0) {
+    static uint8_t* transition = Trampoline(kTransition, sizeof kTransitionBytes);
+    static uint8_t* childSwitch = Trampoline(kChildSwitch, sizeof kChildSwitchBytes);
+    if (MatchesCode(kTransition, kTransitionBytes, sizeof kTransitionBytes) &&
+        MatchesCode(kChildSwitch, kChildSwitchBytes, sizeof kChildSwitchBytes)) {
         g_Transition = reinterpret_cast<ScreenFn>(transition);
         g_ChildSwitch = reinterpret_cast<ScreenFn>(childSwitch);
         PatchJump(kTransition, reinterpret_cast<const void*>(&TransitionHook));
@@ -1114,7 +1133,7 @@ void InstallHvvMenu()
     g_PickSlot = -1;
     g_SelectSeen = 0;
     g_SelectScreen = nullptr;
-    SetMenuText(kRowText, L"Heroes vs Villains");
+    SetMenuText(kRowText, PortText(L"Heroes vs Villains", L"Héros contre méchants"));
     SetMenuText(kBfRowText, L"Battlefront");
     RegisterResourcePatch(kMainMenu, &PatchMainMenuResource);
     const uint32_t slot = kSwitchButtonVtable + kEventSlot * 4;
@@ -1124,7 +1143,7 @@ void InstallHvvMenu()
     std::memcpy(call + 1, &rel, 4);
     if (*reinterpret_cast<const uint32_t*>(uintptr_t(slot)) != kSwitchButtonEvent ||
         *reinterpret_cast<const uint32_t*>(uintptr_t(frameSlot)) != kSelectFrame ||
-        std::memcmp(reinterpret_cast<const void*>(uintptr_t(kPlayer1EventCall)), call, 5) != 0) {
+        !MatchesCode(kPlayer1EventCall, call, 5)) {
         LOG_WARN("HvV menu: the menus' code is not as expected; no Heroes vs Villains entry");
         return;
     }

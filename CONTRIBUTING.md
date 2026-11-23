@@ -108,8 +108,17 @@ Read [how it works](docs/architecture.md) first. In short:
 | `docs/` | Player, modder and research documentation |
 
 Every game address lives in `src/game/game.h` or next to the code that patches it, with a comment on
-what is there. The port supports exactly one executable (MD5 `6460ef37862de3af364a0563a0a18c4e`),
-so addresses are constants.
+what is there. Addresses are the North American executable's (MD5 `6460ef37862de3af364a0563a0a18c4e`);
+the port also runs the PAL one (France, Europe), whose addresses are found from them at startup
+([releases](docs/architecture.md#releases)). So:
+
+- declare an address with `GAME_VA(kName, 0x...)` (an array: `uint32_t kNames[] = { ... };
+  GAME_VAS(kNames);`), or write it as `game::Va(0x...)` where it is used. Not in a static initialiser: the
+  release is known only once the game starts;
+- check the game's code with `game::MatchesCode` rather than `memcmp`, and copy the game's own bytes into
+  stubs, not the expected ones;
+- after adding addresses, run `python tools/releases/pal_map.py <North American default.xbe> <PAL default.xbe>`
+  if you have both: it regenerates `src/game/pal_map.inc` and checks every address in the sources.
 
 ### Symbols
 

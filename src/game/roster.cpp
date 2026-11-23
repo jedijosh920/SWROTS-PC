@@ -27,6 +27,7 @@
 #include "game/customchars.h"
 #include "game/game.h"
 #include "game/menus.h"
+#include "game/release.h"
 #include "game/resources.h"
 
 namespace swrots::game {
@@ -391,19 +392,20 @@ void DeclareDarkLook(const ExtraFighter& extra)
 
 // Player 2's full-body picture for the fighter player 1 also chose: mov eax, [edx + eax*4 + 0x24]
 // (9 pictures on); the blocks are g_SlotCount + 1 long with extras.
-constexpr uint32_t kBodyOffsetSite = 0x002D4ECE;
+static GAME_VA(kBodyOffsetSite, 0x002D4ECE);
 constexpr uint8_t kBodyOffsetBytes[] = { 0x8B, 0x44, 0x82, 0x24 };
 
 // The locks the select screen checks inline: cmp edi, 9 / je <unlocked> / (the profile's byte for
 // the slot); jae makes every slot from Random on unlocked, so extras never read the profile. The
 // grid's own drawing (0x2D57A4) checks with esi.
-constexpr uint32_t kInlineLockSites[] = { 0x002D49A8, 0x002D4A4F, 0x002D4B48, 0x002D4BEF, 0x002D4CD4, 0x002D4DEB,
+static uint32_t kInlineLockSites[] = { 0x002D49A8, 0x002D4A4F, 0x002D4B48, 0x002D4BEF, 0x002D4CD4, 0x002D4DEB,
     0x002D4E95, 0x002D4F6C, 0x002D4FAA };
-constexpr uint32_t kGridLockSite = 0x002D57A4;
+GAME_VAS(kInlineLockSites);
+static GAME_VA(kGridLockSite, 0x002D57A4);
 
 // The players' full-body pictures (thiscall (), 0x2D4DB0; +0x70 player 1's, +0x74 player 2's
 // picture item, its texture at +0x1C, 0 for none as for a locked fighter).
-constexpr uint32_t kSetBodies = 0x002D4DB0;
+static GAME_VA(kSetBodies, 0x002D4DB0);
 constexpr uint8_t kSetBodiesPrologue[] = { 0x56, 0x8B, 0xF1, 0x57, 0x8B, 0x7E, 0x2C }; // push esi; mov esi, ecx; push edi; mov edi, [esi+0x2C]
 using SetBodiesFn = void(__fastcall*)(uint8_t* screen, void* edx);
 SetBodiesFn g_OriginalSetBodies = nullptr;
@@ -419,7 +421,7 @@ void __fastcall BodiesHook(uint8_t* screen, void* edx)
 }
 
 // Whether a slot is locked for choosing (thiscall (slot), 0x2D4920): true stops the choice.
-constexpr uint32_t kIsLocked = 0x002D4920;
+static GAME_VA(kIsLocked, 0x002D4920);
 constexpr uint8_t kIsLockedPrologue[] = { 0x8B, 0x0D, 0x24, 0x8F, 0x7E, 0x00 }; // mov ecx, [0x7E8F24]
 using IsLockedFn = bool(__fastcall*)(void* screen, void* edx, int slot);
 IsLockedFn g_OriginalIsLocked = nullptr;
@@ -434,10 +436,11 @@ bool __fastcall IsLockedHook(void* screen, void* edx, int slot)
 // Random (0x2D4CF0): the game counts the unlocked fighters and takes rand() % count (0xA23D0,
 // cdecl) as the slot, which assumes the unlocked ones come first and knows only the nine. At both
 // calls (each player's), a fighter is chosen from the unlocked ones and the extras instead.
-constexpr uint32_t kRandomCalls[] = { 0x002D4CF7, 0x002D4D09 };
-constexpr uint32_t kRandomBelow = 0x000A23D0; // cdecl (n): rand() % n
-constexpr uint32_t kProfileSource = 0x007E8F24; // [..] thiscall 0x24CC50 -> the profile
-constexpr uint32_t kProfile = 0x0024CC50;
+static uint32_t kRandomCalls[] = { 0x002D4CF7, 0x002D4D09 };
+GAME_VAS(kRandomCalls);
+static GAME_VA(kRandomBelow, 0x000A23D0); // cdecl (n): rand() % n
+static GAME_VA(kProfileSource, 0x007E8F24); // [..] thiscall 0x24CC50 -> the profile
+static GAME_VA(kProfile, 0x0024CC50);
 
 int __cdecl RandomFighter(int)
 {
@@ -457,7 +460,7 @@ int __cdecl RandomFighter(int)
 // The arena select screen (0x2D2240, from the two slots) shows the fighters' names, titles and
 // full-body pictures like the select screen, player 2's offset for the same fighter as player 1 at
 // kArenaBodyOffsetSite. Extra fighters show their bust there, stretched (PatchArenaScreen).
-constexpr uint32_t kArenaBodyOffsetSite = 0x002D23D2;
+static GAME_VA(kArenaBodyOffsetSite, 0x002D23D2);
 constexpr uint8_t kArenaBodyOffsetBytes[] = { 0x8B, 0x74, 0xB5, 0x24 }; // mov esi, [ebp + esi*4 + 0x24]
 
 // --- The duel's tables ----------------------------------------------------------------------------
@@ -477,7 +480,7 @@ const char* g_DuelClasses[kDuelSlotCount + 1] = {};
 float g_SaberColours[kDuelSlotCount * 2 * 3] = {};
 
 struct TableSite {
-    uint32_t address;
+    uint32_t address; // North American (Va: the running release's)
     uint8_t bytes[9];
     uint32_t length;
     uint32_t displacementAt;
@@ -493,9 +496,9 @@ constexpr TableSite kDuelClassSites[] = { // the table, but the last: the table 
 };
 
 // The duel's fighter setup (thiscall (), 0x27D980).
-constexpr uint32_t kDuelSetup = 0x0027D980;
+static GAME_VA(kDuelSetup, 0x0027D980);
 constexpr uint8_t kDuelSetupPrologue[] = { 0x83, 0xEC, 0x60, 0x53, 0x55, 0x56, 0x8B, 0xE9 }; // sub esp, 0x60; push ebx/ebp/esi; mov ebp, ecx
-constexpr uint32_t kLaunchSettings = 0x007F33FC;
+static GAME_VA(kLaunchSettings, 0x007F33FC);
 using DuelSetupFn = void(__fastcall*)(void* manager, void* edx);
 DuelSetupFn g_OriginalDuelSetup = nullptr;
 
@@ -553,8 +556,9 @@ void BuildDuelClasses()
 // The fighter a player chose: the fighter creation (0x27B7D0, ebx the duel slot) keeps a slot's fighter for the
 // player whose chosen name equals the fighter's class name (vfunc +0x40), compared at 0x27B8CD and 0x27B983. A
 // custom character's fighter is its base class (customchars.h), so the slot's own class name stands in for it.
-constexpr uint32_t kChosenCompareSites[] = { 0x0027B8CD, 0x0027B983 };
-constexpr uint32_t kCompareNames = 0x002233F0; // cdecl (a, b) -> 0 when equal
+static uint32_t kChosenCompareSites[] = { 0x0027B8CD, 0x0027B983 };
+GAME_VAS(kChosenCompareSites);
+static GAME_VA(kCompareNames, 0x002233F0); // cdecl (a, b) -> 0 when equal
 
 int __cdecl CompareChosen(const char* a, const char* b, int slot)
 {
@@ -590,14 +594,14 @@ __declspec(naked) void CompareChosenStub()
 
 // The fighter creation gives a fighter its slot's saber colour (0x27B872: mov [edi + 0xF20], ecx, when the slot has a
 // colour): only a Jedi has that field (IsA the IJedi type 0x249950, vfunc +4); a clone's object ends before it.
-constexpr uint32_t kFighterSaberStore = 0x0027B872;
+static GAME_VA(kFighterSaberStore, 0x0027B872);
 constexpr uint8_t kFighterSaberStoreBytes[] = { 0x89, 0x8F, 0x20, 0x0F, 0x00, 0x00 };
 
 void __stdcall FighterSaberStore(uint8_t* fighter, const float* colour)
 {
     const auto isA = reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint32_t)>(
         (*reinterpret_cast<void* const* const*>(fighter))[1]);
-    if (isA(fighter, nullptr, 0x00249950))
+    if (isA(fighter, nullptr, Va(0x00249950)))
         *reinterpret_cast<const float**>(fighter + 0xF20) = colour;
 }
 
@@ -630,15 +634,15 @@ constexpr TableSite kSaberSites[] = { // displacement: the table + 8, + 4, + 0, 
     { 0x0027B855, { 0xF3, 0x0F, 0x58, 0x04, 0x8D, 0x98, 0x0C, 0x65, 0x00 }, 9, 5 },
     { 0x0027B865, { 0x8D, 0x0C, 0x8D, 0x98, 0x0C, 0x65, 0x00 }, 7, 3 },
 };
-constexpr uint32_t kSaberColours = 0x00650C98;
+static GAME_VA(kSaberColours, 0x00650C98);
 
 // A slot's name and title (stdcall (TString* out, slot), 0x2C6610 and 0x2C65E0): the text for the
 // text ID in a table of ten (0x7F2F2C, 0x7F2F54: the fighters and Random).
-constexpr uint32_t kSlotName = 0x002C6610;
-constexpr uint32_t kSlotTitle = 0x002C65E0;
-constexpr uint32_t kSlotNames = 0x007F2F2C;
-constexpr uint32_t kSlotTitles = 0x007F2F54;
-constexpr uint32_t kTStringFromText = 0x00222FA0; // cdecl (TString* out, const char*)
+static GAME_VA(kSlotName, 0x002C6610);
+static GAME_VA(kSlotTitle, 0x002C65E0);
+static GAME_VA(kSlotNames, 0x007F2F2C);
+static GAME_VA(kSlotTitles, 0x007F2F54);
+static GAME_VA(kTStringFromText, 0x00222FA0); // cdecl (TString* out, const char*)
 
 void* SlotText(void* out, const void* textId)
 {
@@ -674,15 +678,16 @@ void* __stdcall SlotTitleHook(void* out, int slot)
 
 bool Matches(uint32_t address, const uint8_t* bytes, size_t length)
 {
-    return std::memcmp(reinterpret_cast<const void*>(uintptr_t(address)), bytes, length) == 0;
+    return MatchesCode(address, bytes, length);
 }
 
 // Hooks a function whose first `length` bytes are position-independent instructions: they are
-// copied to a stub that continues after them, which is returned (the original function).
-void* Detour(uint32_t address, const uint8_t* prologue, uint32_t length, const void* hook)
+// copied to a stub that continues after them, which is returned (the original function). The bytes are
+// the game's own, in the running release (they are checked against the North American code first).
+void* Detour(uint32_t address, uint32_t length, const void* hook)
 {
     uint8_t* stub = AllocStub(length + 5);
-    std::memcpy(stub, prologue, length);
+    std::memcpy(stub, reinterpret_cast<const void*>(uintptr_t(address)), length);
     stub[length] = 0xE9;
     int32_t back = int32_t(address + length) - int32_t(uintptr_t(stub) + length + 5);
     std::memcpy(stub + length + 1, &back, 4);
@@ -693,7 +698,7 @@ void* Detour(uint32_t address, const uint8_t* prologue, uint32_t length, const v
 void PatchDisplacement(const TableSite& site, const void* table)
 {
     uint32_t value = uint32_t(reinterpret_cast<uintptr_t>(table));
-    PatchBytes(site.address + site.displacementAt, &value, 4);
+    PatchBytes(Va(site.address) + site.displacementAt, &value, 4);
 }
 
 // This start's extras: Yoda, then each custom character (customchars.h) whose select pictures are there
@@ -705,9 +710,16 @@ const char* Keep(const std::string& text)
     return g_ExtraStrings.back().c_str();
 }
 
-std::wstring Wide(const std::string& text)
+std::wstring Wide(const std::string& text) // UTF-8 (fighters' names can have accents)
 {
-    return std::wstring(text.begin(), text.end());
+    if (text.empty())
+        return {};
+    const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), int(text.size()), nullptr, 0);
+    if (length <= 0)
+        return std::wstring(text.begin(), text.end());
+    std::wstring wide(size_t(length), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.data(), int(text.size()), wide.data(), length);
+    return wide;
 }
 
 // A custom character's select pictures: the menus' sets name pictures the shared PAK has (a picture under mods\ that
@@ -792,8 +804,8 @@ void BuildExtras()
 // size; +0x20/+0x24 the item's y/x offsets), whose record, found in its set ([[item+8]+0x2C]: +8 count, +0xC records),
 // names the slot. During that draw only, the record holds the extra's own texture. An extra without its own full body
 // shows its bust in the arena screen (the stand-in entry), scaled into the full body's frame.
-constexpr uint32_t kTextureItemVtable = 0x005D3F78;
-constexpr uint32_t kTextureItemDraw = 0x002C7790;
+static GAME_VA(kTextureItemVtable, 0x005D3F78);
+static GAME_VA(kTextureItemDraw, 0x002C7790);
 void* g_Pictures[kMaxExtras][4];
 bool g_PicturesTried[kMaxExtras][4];
 
@@ -914,8 +926,8 @@ void __fastcall TextureItemDrawHook(uint8_t* item, void*, void* context)
 // kStripCells at a time, scrolled with the cursor that moved last; the cursor of a fighter out of view is hidden.
 constexpr int kStripCells = 11;
 constexpr float kCellStep = 51.0f;  // the game's (0x5D6960)
-constexpr uint32_t kTextureList = 0x0001F820; // thiscall (list {?, count, data}, set +4): the set's picture records
-constexpr uint32_t kDrawPicture = 0x0025A9C0; // cdecl (context, picture record, const float* corner, const float* other)
+static GAME_VA(kTextureList, 0x0001F820); // thiscall (list {?, count, data}, set +4): the set's picture records
+static GAME_VA(kDrawPicture, 0x0025A9C0); // cdecl (context, picture record, const float* corner, const float* other)
 constexpr uint32_t kEngineFree = 0x54;
 int g_StripFirst = 0;
 // The arrows at the strip's ends while fighters are out of view that way: the arena screen's rounds arrow
@@ -942,7 +954,7 @@ void DrawStripArrow(uint32_t context, uint8_t* record, float x, float y, float s
         for (int i = 0; i < 4; ++i)
             uv[i * 2] = 1.0f - keptUv[i * 2];
     const float corner[2] = { x, y }, other[2] = { x + size, y + size };
-    reinterpret_cast<void(__cdecl*)(uint32_t, void*, const float*, const float*)>(uintptr_t(0x0025A9C0))(
+    reinterpret_cast<void(__cdecl*)(uint32_t, void*, const float*, const float*)>(uintptr_t(Va(0x0025A9C0)))(
         context, record, corner, other);
     texture = kept;
     std::memcpy(uv, keptUv, sizeof keptUv);
@@ -1120,22 +1132,22 @@ void InstallRoster()
         Matches(kDuelSetup, kDuelSetupPrologue, sizeof(kDuelSetupPrologue)) &&
         Matches(kSlotName, textLookup, sizeof(textLookup)) && Matches(kSlotTitle, textLookup, sizeof(textLookup)) &&
         Matches(kGridLockSite, gridLockCheck, sizeof(gridLockCheck)) &&
-        Matches(kSelectClassSite.address, kSelectClassSite.bytes, kSelectClassSite.length);
+        Matches(Va(kSelectClassSite.address), kSelectClassSite.bytes, kSelectClassSite.length);
     for (uint32_t site : kInlineLockSites)
         ok = ok && Matches(site, lockCheck, sizeof(lockCheck));
     for (uint32_t site : kRandomCalls) {
         int32_t target = int32_t(kRandomBelow) - int32_t(site + 5);
         ok = ok && *reinterpret_cast<const uint8_t*>(uintptr_t(site)) == 0xE8 &&
-            std::memcmp(reinterpret_cast<const void*>(uintptr_t(site + 1)), &target, 4) == 0;
+            MatchesCode(site + 1, &target, 4);
     }
     for (const TableSite& site : kDuelClassSites)
-        ok = ok && Matches(site.address, site.bytes, site.length);
+        ok = ok && Matches(Va(site.address), site.bytes, site.length);
     for (const TableSite& site : kSaberSites)
-        ok = ok && Matches(site.address, site.bytes, site.length);
+        ok = ok && Matches(Va(site.address), site.bytes, site.length);
     for (uint32_t site : kChosenCompareSites) {
         int32_t target = int32_t(kCompareNames) - int32_t(site + 5);
         ok = ok && *reinterpret_cast<const uint8_t*>(uintptr_t(site)) == 0xE8 &&
-            std::memcmp(reinterpret_cast<const void*>(uintptr_t(site + 1)), &target, 4) == 0;
+            MatchesCode(site + 1, &target, 4);
     }
     if (!ok) {
         LOG_WARN("Roster: the versus screens' code is not as expected; no extra fighters");
@@ -1155,9 +1167,9 @@ void InstallRoster()
         PatchBytes(site + 1, &target, 4);
     }
     g_OriginalSetBodies = reinterpret_cast<SetBodiesFn>(
-        Detour(kSetBodies, kSetBodiesPrologue, sizeof(kSetBodiesPrologue), reinterpret_cast<const void*>(&BodiesHook)));
+        Detour(kSetBodies, sizeof(kSetBodiesPrologue), reinterpret_cast<const void*>(&BodiesHook)));
     g_OriginalIsLocked = reinterpret_cast<IsLockedFn>(
-        Detour(kIsLocked, kIsLockedPrologue, sizeof(kIsLockedPrologue), reinterpret_cast<const void*>(&IsLockedHook)));
+        Detour(kIsLocked, sizeof(kIsLockedPrologue), reinterpret_cast<const void*>(&IsLockedHook)));
     PatchJump(kSlotName, reinterpret_cast<const void*>(&SlotNameHook));
     PatchJump(kSlotTitle, reinterpret_cast<const void*>(&SlotTitleHook));
     // Asked for by their source names; the PAK has the compiled .xbl_xml.
@@ -1174,11 +1186,10 @@ void InstallRoster()
             &g_DuelClasses[0] : &g_DuelClasses[1]);
     for (uint32_t site : kChosenCompareSites)
         PatchCall(site, reinterpret_cast<const void*>(&CompareChosenStub), 5);
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kFighterSaberStore)), kFighterSaberStoreBytes,
-            sizeof kFighterSaberStoreBytes) == 0)
+    if (MatchesCode(kFighterSaberStore, kFighterSaberStoreBytes, sizeof kFighterSaberStoreBytes))
         PatchCall(kFighterSaberStore, reinterpret_cast<const void*>(&FighterSaberStoreStub), sizeof kFighterSaberStoreBytes);
     g_OriginalDuelSetup = reinterpret_cast<DuelSetupFn>(
-        Detour(kDuelSetup, kDuelSetupPrologue, sizeof(kDuelSetupPrologue), reinterpret_cast<const void*>(&DuelSetupHook)));
+        Detour(kDuelSetup, sizeof(kDuelSetupPrologue), reinterpret_cast<const void*>(&DuelSetupHook)));
     std::memcpy(g_SaberColours, reinterpret_cast<const void*>(uintptr_t(kSaberColours)), kFighterCount * 2 * 3 * sizeof(float));
     PatchDisplacement(kSaberSites[0], &g_SaberColours[2]);
     PatchDisplacement(kSaberSites[1], &g_SaberColours[1]);

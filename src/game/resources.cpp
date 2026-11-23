@@ -41,6 +41,7 @@
 #include "debug/console.h"
 #include "game/game.h"
 #include "game/pak.h"
+#include "game/release.h"
 
 namespace swrots::game {
 
@@ -89,13 +90,13 @@ using FileMemoryCtorFn = EngineObject*(__fastcall*)(void* mem, void* edx);
 using FileMemoryOpenFn = bool(__fastcall*)(EngineObject* file, void* edx, const void* data, uint32_t size);
 using ImageLoadFn = void(__fastcall*)(EngineObject* loader, void* edx, void* image, uint32_t size);
 
-const auto BuildPath = reinterpret_cast<BuildPathFn>(uintptr_t(kEnginePathBuild));
-const auto PathString = reinterpret_cast<PathStringFn>(uintptr_t(kEnginePathString));
-const auto StrCopy = reinterpret_cast<StrCopyFn>(uintptr_t(kEngineStrCopy));
-const auto FileSize = reinterpret_cast<FileSizeFn>(uintptr_t(kEngineFileSize));
-const auto StdFileCtor = reinterpret_cast<StdFileCtorFn>(uintptr_t(kStdFileCtor));
-const auto PackReaderCtor = reinterpret_cast<PackReaderCtorFn>(uintptr_t(kPackReaderCtor));
-const auto FileMemoryCtor = reinterpret_cast<FileMemoryCtorFn>(uintptr_t(kFileMemoryCtor));
+const GameFunction<BuildPathFn> BuildPath{ kEnginePathBuild };
+const GameFunction<PathStringFn> PathString{ kEnginePathString };
+const GameFunction<StrCopyFn> StrCopy{ kEngineStrCopy };
+const GameFunction<FileSizeFn> FileSize{ kEngineFileSize };
+const GameFunction<StdFileCtorFn> StdFileCtor{ kStdFileCtor };
+const GameFunction<PackReaderCtorFn> PackReaderCtor{ kPackReaderCtor };
+const GameFunction<FileMemoryCtorFn> FileMemoryCtor{ kFileMemoryCtor };
 
 // Global engine services table (alloc at +0x50, StdFile gate at +0x38).
 uint8_t* Services() { return *reinterpret_cast<uint8_t**>(uintptr_t(kEngineServices)); }
@@ -744,8 +745,8 @@ EngineObject* OpenManualCopy(const char* full, const std::string& wanted, const 
 // no longer streaming (+0x1D0 is 0) and that reader is gone, but +4 still points at it: a character
 // spawned then crashed there. Without a stream there is nothing to put back. Entry:
 //   push esi / mov esi, ecx / mov eax, [esi + 4]   (6 bytes)
-constexpr uint32_t kPackerEndManual = 0x00051E40;
-constexpr uint32_t kPackerEndManualContinue = 0x00051E46;
+static GAME_VA(kPackerEndManual, 0x00051E40);
+static GAME_VA(kPackerEndManualContinue, 0x00051E46);
 constexpr uint8_t kPackerEndManualBytes[] = { 0x56, 0x8B, 0xF1, 0x8B, 0x46, 0x04 };
 
 __declspec(naked) void PackerEndManualGuard()
@@ -834,13 +835,13 @@ using IsDeclaredFn = bool(__fastcall*)(uint8_t* scene, void* edx, const EnginePa
 using PathFromTextFn = void*(__fastcall*)(void* path, void* edx, const char* text, int kind);
 
 SceneLoadFn g_OriginalSceneLoad = nullptr;
-const auto SceneIsDeclared = reinterpret_cast<IsDeclaredFn>(uintptr_t(kSceneIsDeclared));
-const auto SceneAddString = reinterpret_cast<AddStringFn>(uintptr_t(kSceneAddString));
-const auto NodeSetPath = reinterpret_cast<NodeSetPathFn>(uintptr_t(kNodeSetPath));
-const auto ResourceMapFind = reinterpret_cast<MapFindFn>(uintptr_t(kResourceMapFind));
-const auto ResourceMapInsert = reinterpret_cast<MapInsertFn>(uintptr_t(kResourceMapInsert));
-const auto PathKey = reinterpret_cast<PathKeyFn>(uintptr_t(kEnginePathKey));
-const auto PathFromText = reinterpret_cast<PathFromTextFn>(uintptr_t(kEnginePathFromText));
+const GameFunction<IsDeclaredFn> SceneIsDeclared{ kSceneIsDeclared };
+const GameFunction<AddStringFn> SceneAddString{ kSceneAddString };
+const GameFunction<NodeSetPathFn> NodeSetPath{ kNodeSetPath };
+const GameFunction<MapFindFn> ResourceMapFind{ kResourceMapFind };
+const GameFunction<MapInsertFn> ResourceMapInsert{ kResourceMapInsert };
+const GameFunction<PathKeyFn> PathKey{ kEnginePathKey };
+const GameFunction<PathFromTextFn> PathFromText{ kEnginePathFromText };
 
 constexpr int kFolderHeadroom = 256;
 std::mutex g_DeclareLock;
@@ -1190,8 +1191,8 @@ AnimationLookupFn g_OriginalAnimationLookup = nullptr;
 // reads one entry per name asked for. The list is laid out again in the names' order, each missing
 // name taking its nearest neighbour's animation (the names are sorted, so a close relative). An entry
 // carries its animation's name at +4.
-constexpr uint32_t kEngineArrayResize = 0x00021B70; // thiscall TArray (int count, const T* fill)
-constexpr uint32_t kBindingLookupReturn = 0x0006890D;  // the binding rebuild's lookup call returns here
+static GAME_VA(kEngineArrayResize, 0x00021B70); // thiscall TArray (int count, const T* fill)
+static GAME_VA(kBindingLookupReturn, 0x0006890D);  // the binding rebuild's lookup call returns here
 
 void AlignFoundAnimations(const EngineArray* names, EngineArray* found, const EngineArray* missing, int from)
 {
@@ -1640,8 +1641,7 @@ void InstallResourceHooks(const std::wstring& gameData, const std::wstring& mods
     g_OriginalLoadEventTable = reinterpret_cast<LoadEventTableFn>(eventStub);
     PatchJump(kLoadEventTable, reinterpret_cast<const void*>(&LoadEventTableHook));
     PatchJump(kPackerOpenManual, reinterpret_cast<const void*>(&OpenManualHook));
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kPackerEndManual)), kPackerEndManualBytes,
-            sizeof(kPackerEndManualBytes)) == 0) {
+    if (MatchesCode(kPackerEndManual, kPackerEndManualBytes, sizeof(kPackerEndManualBytes))) {
         PatchJump(kPackerEndManual, reinterpret_cast<const void*>(&PackerEndManualGuard));
         PatchNop(kPackerEndManual + 5, sizeof(kPackerEndManualBytes) - 5);
     } else {

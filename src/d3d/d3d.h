@@ -16,19 +16,20 @@
 #include <cstdint>
 
 #include "d3d/xd3d.h"
+#include "game/release.h"
 
 namespace swrots::d3d {
 
 // Addresses of XDK D3D globals in the retail XBE.
 namespace xbox_globals {
-inline constexpr uint32_t kDevicePtr = 0x0050FE68;          // D3D__pDevice
-inline constexpr uint32_t kDeviceObject = 0x0050FE70;       // the static CDevice instance
+inline GAME_VA(kDevicePtr, 0x0050FE68);          // D3D__pDevice
+inline GAME_VA(kDeviceObject, 0x0050FE70);       // the static CDevice instance
 inline constexpr uint32_t kDeviceObjectSize = 0x24A0;
-inline constexpr uint32_t kVertexConstants = 0x0050EDB0;    // shadow of the 192 vertex shader constants
-inline constexpr uint32_t kRenderState = 0x0050FBD0;        // D3D__RenderState[RS_COUNT]
-inline constexpr uint32_t kTextureState = 0x0050F9D0;       // D3D__TextureState[4][32] (deferred part)
-inline constexpr uint32_t kDirtyFlags = 0x0050F9C8;         // D3D__DirtyFlags
-inline constexpr uint32_t kIndexData = 0x0050F9C4;          // D3D__IndexData (current index buffer data)
+inline GAME_VA(kVertexConstants, 0x0050EDB0);    // shadow of the 192 vertex shader constants
+inline GAME_VA(kRenderState, 0x0050FBD0);        // D3D__RenderState[RS_COUNT]
+inline GAME_VA(kTextureState, 0x0050F9D0);       // D3D__TextureState[4][32] (deferred part)
+inline GAME_VA(kDirtyFlags, 0x0050F9C8);         // D3D__DirtyFlags
+inline GAME_VA(kIndexData, 0x0050F9C4);          // D3D__IndexData (current index buffer data)
 } // namespace xbox_globals
 
 inline DWORD* XboxRenderStates() { return reinterpret_cast<DWORD*>(uintptr_t(xbox_globals::kRenderState)); }

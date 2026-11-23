@@ -15,6 +15,7 @@
 #include "game/characters.h"
 #include "game/customchars.h"
 #include "game/game.h"
+#include "game/release.h"
 #include "game/resources.h"
 #include "game/roster.h"
 
@@ -70,8 +71,8 @@ void ApplyDuelists()
 //   mov edx, [ecx * 4 + kDuelistVariants] / mov [edi + 0x1E8], edx   (13 bytes, 0x27B87E)
 // ecx is slot * 2 + player, ebx the slot and edi the fighter; the flags are the caller's (a jne
 // follows).
-constexpr uint32_t kVariantSite = 0x0027B87E;
-constexpr uint32_t kVariantContinue = 0x0027B88B;
+static GAME_VA(kVariantSite, 0x0027B87E);
+static GAME_VA(kVariantContinue, 0x0027B88B);
 constexpr uint8_t kVariantBytes[] = { 0x8B, 0x14, 0x8D, 0xC0, 0xC1, 0x5C, 0x00, 0x89, 0x97, 0xE8, 0x01, 0x00, 0x00 };
 
 int32_t ChosenVariant(int tableIndex, int slot, const uint8_t* fighter)
@@ -123,8 +124,9 @@ __declspec(naked) void FighterVariantStub()
 // duelist whose slot it took. At the site
 //   push ecx / mov ecx, esp / push 0x1D12E0   (8 bytes, 0x27BAAD)
 // ebp holds the name and ebx the slot.
-constexpr uint32_t kCameraNameSite = 0x0027BAAD;
-constexpr uint32_t kCameraNameContinue = 0x0027BAB5;
+static GAME_VA(kCameraNameSite, 0x0027BAAD);
+static GAME_VA(kCameraNameContinue, 0x0027BAB5);
+static GAME_VA(kCameraNamePushed, 0x001D12E0); // the value the site pushes
 constexpr uint8_t kCameraNameBytes[] = { 0x51, 0x8B, 0xCC, 0x68, 0xE0, 0x12, 0x1D, 0x00 };
 
 bool HasCamera(const char* name, const char* kind)
@@ -169,7 +171,7 @@ __declspec(naked) void CameraNameStub()
         popad
         push ecx
         mov ecx, esp
-        push 0x001D12E0
+        push kCameraNamePushed
         push kCameraNameContinue
         ret
     }
@@ -181,14 +183,13 @@ void InstallVersus()
 {
     std::memcpy(g_OriginalDuelists, reinterpret_cast<const void*>(uintptr_t(kDuelistClasses)), sizeof(g_OriginalDuelists));
     ApplyDuelists();
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kVariantSite)), kVariantBytes, sizeof(kVariantBytes)) == 0) {
+    if (MatchesCode(kVariantSite, kVariantBytes, sizeof(kVariantBytes))) {
         PatchJump(kVariantSite, reinterpret_cast<const void*>(&FighterVariantStub));
         PatchNop(kVariantSite + 5, sizeof(kVariantBytes) - 5);
     } else {
         LOG_WARN("Versus: fighter variant site does not match; not patched");
     }
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kCameraNameSite)), kCameraNameBytes,
-            sizeof(kCameraNameBytes)) == 0) {
+    if (MatchesCode(kCameraNameSite, kCameraNameBytes, sizeof(kCameraNameBytes))) {
         PatchJump(kCameraNameSite, reinterpret_cast<const void*>(&CameraNameStub));
         PatchNop(kCameraNameSite + 5, sizeof(kCameraNameBytes) - 5);
     } else {

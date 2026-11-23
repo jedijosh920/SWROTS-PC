@@ -20,6 +20,7 @@
 #include "game/characters.h"
 #include "game/freecam.h"
 #include "game/menus.h"
+#include "game/release.h"
 #include "game/resources.h"
 #include "input/controls.h"
 #include "kernel/kernel.h"
@@ -47,27 +48,27 @@ constexpr int kControlPlayer = 2;
 constexpr int kControlCompanion = 16;
 constexpr uint32_t kTypeNameSlot = 3;            // vfunc: the class's name
 constexpr uint32_t kPlaceSlot = 0x1F4 / 4;       // vfunc, thiscall (const float m[16])
-constexpr uint32_t kBindController = 0x00150580; // thiscall (int controller; -1 none)
+static GAME_VA(kBindController, 0x00150580); // thiscall (int controller; -1 none)
 constexpr uint32_t kCharacterController = 0x43C; // the controller bound to it, -1 none
 // The input manager: per controller port (+0x1D8, 4 of them) an entry whose +0x7C is the character it drives.
 // 0x150580 with -1 writes -1 to the character before the manager's unbind (0x8ADD0) reads it, so the port
 // keeps driving the character: the port's entry is cleared here.
-constexpr uint32_t kInputManager = 0x0068D4F4;
+static GAME_VA(kInputManager, 0x0068D4F4);
 constexpr uint32_t kInputPorts = 0x1D8;
 constexpr uint32_t kPortCharacter = 0x7C;
-constexpr uint32_t kObjectById = 0x000A31F0;     // cdecl (id) -> object or null
+static GAME_VA(kObjectById, 0x000A31F0);     // cdecl (id) -> object or null
 
 // The game manager's players: their number and an instance id per slot (see coop.md).
-constexpr uint32_t kGameManager = 0x007EB964;
+static GAME_VA(kGameManager, 0x007EB964);
 constexpr uint32_t kManagerPlayerCount = 0x1E4;
 constexpr uint32_t kManagerPlayerIds = 0x2A4;
 constexpr int kPlayer2Port = 1;
-constexpr uint32_t kManagerMissionLost = 0x0027A9F0; // thiscall (): a player died
-constexpr uint32_t kManagerLossDelay = 0x0027AB70;   // thiscall ()
+static GAME_VA(kManagerMissionLost, 0x0027A9F0); // thiscall (): a player died
+static GAME_VA(kManagerLossDelay, 0x0027AB70);   // thiscall ()
 
 // ICharacter's health change (0x151500, thiscall (float change, a, b), slot 0x384 of ICharacter; the Jedi's
 // hit 0x269C20 calls it). Its first 9 bytes are moved to a stub.
-constexpr uint32_t kChangeHealth = 0x00151500;
+static GAME_VA(kChangeHealth, 0x00151500);
 constexpr uint8_t kChangeHealthBytes[] = { 0x56, 0x8B, 0xF1, 0x8A, 0x86, 0xD6, 0x05, 0x00, 0x00 };
 
 constexpr ULONGLONG kSettleMs = 1500;      // after a level start, before player 2 joins
@@ -104,7 +105,7 @@ constexpr float kCharacterMiddle = 40.0f; // above the character's feet
 // ICharacter's instant kill (0x152D30, thiscall (a), slot 0xC8; the Jedi's 0x280C30 calls it): falls into
 // the void and kill zones. It sets health 0 and calls Killed, past the health change; it does nothing to an
 // "Invincible?" character. Its first 9 bytes are moved to a stub.
-constexpr uint32_t kInstantKill = 0x00152D30;
+static GAME_VA(kInstantKill, 0x00152D30);
 constexpr uint8_t kInstantKillBytes[] = { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0x83, 0xEC, 0x58 };
 using InstantKillFn = void(__fastcall*)(uint8_t*, void*, uint32_t);
 InstantKillFn g_OriginalInstantKill = nullptr;
@@ -240,8 +241,8 @@ float Distance(uint8_t* a, uint8_t* b)
 // alpha is its +0xB) and are never faded out again; the portrait (HudVitals, 0x5A82B0) is picked once
 // (+0xC gave up, +0xD picked). When player 2 leaves, the group is hidden and the portrait is to be picked
 // again (the group is also the duel opponent's, in missions co-op leaves alone).
-constexpr uint32_t kVitalsFadeVtable = 0x005A80A0;
-constexpr uint32_t kHudVitalsVtable = 0x005A82B0;
+static GAME_VA(kVitalsFadeVtable, 0x005A80A0);
+static GAME_VA(kHudVitalsVtable, 0x005A82B0);
 constexpr uint32_t kVitalsItemSlot = 0x84;
 
 size_t ScanForVtables(uintptr_t base, size_t size, uint8_t** found, size_t room)
@@ -364,13 +365,14 @@ struct CoopRow {
     const char* name;
     const char* textId;
     const wchar_t* text;
+    const wchar_t* french;
 };
 constexpr CoopRow kCoopRows[] = {
-    { "coopon", "IDS_PORT_COOP_ON", L"Co-op" },
-    { "coopboss", "IDS_PORT_COOP_BOSS", L"Player 2 As Boss" },
-    { "coopfriendlyfire", "IDS_PORT_COOP_FRIENDLY_FIRE", L"Friendly Fire" },
-    { "cooprespawn", "IDS_PORT_COOP_RESPAWN", L"Respawn Player 2" },
-    { "coopcamera", "IDS_PORT_COOP_CAMERA", L"Shared Camera" },
+    { "coopon", "IDS_PORT_COOP_ON", L"Co-op", L"Coop" },
+    { "coopboss", "IDS_PORT_COOP_BOSS", L"Player 2 As Boss", L"Joueur 2 en boss" },
+    { "coopfriendlyfire", "IDS_PORT_COOP_FRIENDLY_FIRE", L"Friendly Fire", L"Tir allié" },
+    { "cooprespawn", "IDS_PORT_COOP_RESPAWN", L"Respawn Player 2", L"Réapparition joueur 2" },
+    { "coopcamera", "IDS_PORT_COOP_CAMERA", L"Shared Camera", L"Caméra partagée" },
 };
 constexpr const char* kSettingsRows[] = { "controller", "vibration", "subtitles", "musicvolume", "effectsvolume",
     "dialoguevolume", "difficulty", "restoredefaults" };
@@ -446,12 +448,12 @@ bool GenerateCoopScreen(const std::string& lowerName, std::vector<uint8_t>& data
 // subtitles byte, profile +0x2A, for a row made from Subtitles, whose +0x84 is 1); slot 28 (thiscall (),
 // called when the value changes) writes the setting; slot 27 (back to the default) sets the setting's default;
 // slot 4 (events) goes back without the settings screen's saving; slot 10 makes another one.
-constexpr uint32_t kMakeOnOff = 0x002D9690;
-constexpr uint32_t kOnOffVtable = 0x005D7000;
+static GAME_VA(kMakeOnOff, 0x002D9690);
+static GAME_VA(kOnOffVtable, 0x005D7000);
 constexpr int kOnOffSlots = 32;
 constexpr uint32_t kOnOffValue = 0x23C;
-constexpr uint32_t kProfiles = 0x007E8F24;     // the profile manager
-constexpr uint32_t kCurrentProfile = 0x0024CC50; // thiscall () -> profile or null
+static GAME_VA(kProfiles, 0x007E8F24);     // the profile manager
+static GAME_VA(kCurrentProfile, 0x0024CC50); // thiscall () -> profile or null
 constexpr uint32_t kProfileSubtitles = 0x2A;
 using DrawFn = char(__fastcall*)(uint8_t*, void*, uint32_t);
 uint32_t g_CoopOptionVtable[kOnOffSlots];
@@ -541,7 +543,7 @@ void __fastcall CoopOptionDefault(uint8_t* handler, void*)
 // Back (event 0x26): the settings screen's controls save the game's settings to the profile (or warn that
 // they cannot, without a saved game: 0x2D7DF0); the port's are in settings.ini, so the menu just goes back,
 // as any item does (0x2C62D0).
-constexpr uint32_t kItemEvent = 0x002C62D0;
+static GAME_VA(kItemEvent, 0x002C62D0);
 constexpr int kBack = 0x26;
 using EventFn = char(__fastcall*)(uint8_t*, void*, int, int);
 EventFn g_OnOffEvent = nullptr;
@@ -576,10 +578,10 @@ void InstallCoopMenus()
     g_CoopOptionVtable[10] = uint32_t(reinterpret_cast<uintptr_t>(&MakeCoopOptionSlot));
     g_CoopOptionVtable[27] = uint32_t(reinterpret_cast<uintptr_t>(&CoopOptionDefault));
     g_CoopOptionVtable[28] = uint32_t(reinterpret_cast<uintptr_t>(&CoopOptionApply));
-    SetMenuText("IDS_PORT_COOP_MENU", L"Cooperative Mod");
-    SetMenuText("IDS_PORT_COOP_TITLE", L"Cooperative Mod");
+    SetMenuText("IDS_PORT_COOP_MENU", PortText(L"Cooperative Mod", L"Mode coopératif"));
+    SetMenuText("IDS_PORT_COOP_TITLE", PortText(L"Cooperative Mod", L"Mode coopératif"));
     for (const CoopRow& row : kCoopRows)
-        SetMenuText(row.textId, row.text);
+        SetMenuText(row.textId, PortText(row.text, row.french));
     AddMenuHandler("CoopOption", &MakeCoopOption);
     AddMenuScreen(kCoopScreen);
     RegisterResourceGenerator(&GenerateCoopScreen);
@@ -635,10 +637,10 @@ void __fastcall InstantKillHook(uint8_t* character, void*, uint32_t a)
 // The game's own "a cutscene is playing" (0xA3720: the letterbox is up (0x12E190), or a cinematic or a
 // scripted camera holds the view), asked as the game asks it: only with the letterbox there (it reads it
 // unchecked); without, the other two alone.
-constexpr uint32_t kLetterBox = 0x0069226C;         // the letterbox object, or null
-constexpr uint32_t kInCutscene = 0x000A3720;        // cdecl bool ()
-constexpr uint32_t kCinematicPlaying = 0x00695C88;  // non-null while one plays
-constexpr uint32_t kScriptedCameras = 0x0068DA44;   // count
+static GAME_VA(kLetterBox, 0x0069226C);         // the letterbox object, or null
+static GAME_VA(kInCutscene, 0x000A3720);        // cdecl bool ()
+static GAME_VA(kCinematicPlaying, 0x00695C88);  // non-null while one plays
+static GAME_VA(kScriptedCameras, 0x0068DA44);   // count
 constexpr uint32_t kObjectLive = 0x40000;           // object +0xC: set while it is in the level
 
 bool InCutscene()
@@ -653,7 +655,7 @@ bool InCutscene()
 // Jedi-like characters (IJedi and those built on it): IsA (vfunc +4) with the type's function as its key.
 bool IsJedi(uint8_t* character)
 {
-    constexpr uint32_t kJediType = 0x00249950;
+    const uint32_t kJediType = Va(0x00249950);
     return reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, uint32_t)>(VirtualFunction(character, 1))(
         character, nullptr, kJediType);
 }
@@ -1103,17 +1105,17 @@ void GameOver()
 // (0x17AD20). Under player controls the StateManager takes its other way and a clone only has the rifle
 // butt. For player 2's clone the same calls are made, in the clone's script's turn, while heavy attack (Y)
 // is held: the layer from the press on, a bolt every kShotIntervalMs at the clone's target.
-constexpr uint32_t kCloneStateManager = 0x0035AD70;
+static GAME_VA(kCloneStateManager, 0x0035AD70);
 constexpr uint8_t kCloneStateManagerBytes[] = { 0x56, 0x57, 0x8B, 0x3D, 0xC0, 0x64, 0x69, 0x00 }; // push esi; push edi; mov edi, [0x6964C0]
-constexpr uint32_t kScriptHasTarget = 0x00176FF0;   // cdecl bool (): the current character has a target
-constexpr uint32_t kScriptPlayLayer = 0x00173B40;   // cdecl (animation, ...): an animation layer
-constexpr uint32_t kScriptStopLayer = 0x00173B80;   // cdecl (layer, blend)
-constexpr uint32_t kScriptShotSpread = 0x00176AB0;  // cdecl bool (): no spread
-constexpr uint32_t kCloneFireBolt = 0x003C0090;     // cdecl (instance, script, 0, spread, muzzle data, muzzle)
-constexpr uint32_t kCloneNextMuzzle = 0x001760B0;   // cdecl (muzzle*, count)
-constexpr uint32_t kScriptPlaySound = 0x0017AD20;   // cdecl (sound, near, 1, far, -1, 0)
-constexpr uint32_t kScriptContext = 0x006964C0;     // the script instance running
-constexpr uint32_t kScriptCharacterContext = 0x006943CC; // +0x68: the character it runs for
+static GAME_VA(kScriptHasTarget, 0x00176FF0);   // cdecl bool (): the current character has a target
+static GAME_VA(kScriptPlayLayer, 0x00173B40);   // cdecl (animation, ...): an animation layer
+static GAME_VA(kScriptStopLayer, 0x00173B80);   // cdecl (layer, blend)
+static GAME_VA(kScriptShotSpread, 0x00176AB0);  // cdecl bool (): no spread
+static GAME_VA(kCloneFireBolt, 0x003C0090);     // cdecl (instance, script, 0, spread, muzzle data, muzzle)
+static GAME_VA(kCloneNextMuzzle, 0x001760B0);   // cdecl (muzzle*, count)
+static GAME_VA(kScriptPlaySound, 0x0017AD20);   // cdecl (sound, near, 1, far, -1, 0)
+static GAME_VA(kScriptContext, 0x006964C0);     // the script instance running
+static GAME_VA(kScriptCharacterContext, 0x006943CC); // +0x68: the character it runs for
 constexpr uint32_t kCloneMuzzle = 0x3D8, kCloneMuzzleData = 0x3EC, kCloneFireSound = 0x3E4; // in the instance
 constexpr char kCloneShootingLoop[] = "ctroop_atk_shooting_loop";
 constexpr ULONGLONG kShotIntervalMs = 300;
@@ -1179,14 +1181,14 @@ void __fastcall CloneStateManagerHook(uint8_t* script, void*, uint32_t a, uint32
 // (0x2DB950, stdcall (character, kind, value, part)), whose callback hides the limb and, for a clone,
 // takes away its blaster (the arm is gone). A clone dies of the hit as a rule; player 2, as strong as
 // player 1, lived on armless. Player 2's characters are not told.
-constexpr uint32_t kDismemberNotify = 0x002DB950;
+static GAME_VA(kDismemberNotify, 0x002DB950);
 constexpr uint8_t kDismemberNotifyBytes[] = { 0x8B, 0x0D, 0x98, 0x32, 0x7F, 0x00 }; // mov ecx, [0x7F3298]
 using DismemberNotifyFn = void(__stdcall*)(uint8_t*, uint32_t, uint32_t, void*);
 DismemberNotifyFn g_OriginalDismemberNotify = nullptr;
 
 // The cut itself: the character's dismemberment binding (vtable 0x5D7D24, its character at +4) slot 2
 // (0x2DBEA0, thiscall (part, value)) tells the script, then takes the limb off the body. Skipped whole.
-constexpr uint32_t kDismemberCut = 0x002DBEA0;
+static GAME_VA(kDismemberCut, 0x002DBEA0);
 constexpr uint8_t kDismemberCutBytes[] = { 0x8B, 0x44, 0x24, 0x08, 0x56 }; // mov eax, [esp + 8]; push esi
 using DismemberCutFn = uint32_t(__fastcall*)(uint8_t*, void*, void*, uint32_t);
 DismemberCutFn g_OriginalDismemberCut = nullptr;
@@ -1226,44 +1228,43 @@ void InstallCoop()
     g_CameraShift[0] = g_CameraShift[1] = g_CameraShift[2] = 0;
     input::SetCoopInput(false);
     // The stubs live in the port's memory and survive reboots; the jumps are patched into every new image.
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kChangeHealth)), kChangeHealthBytes, sizeof(kChangeHealthBytes)) != 0 ||
-        std::memcmp(reinterpret_cast<const void*>(uintptr_t(kInstantKill)), kInstantKillBytes, sizeof(kInstantKillBytes)) != 0) {
+    if (!MatchesCode(kChangeHealth, kChangeHealthBytes, sizeof(kChangeHealthBytes)) ||
+        !MatchesCode(kInstantKill, kInstantKillBytes, sizeof(kInstantKillBytes))) {
         LOG_WARN("Co-op: unexpected code at the health change or the instant kill; co-op is off");
         return;
     }
-    auto trampoline = [](uint32_t address, const uint8_t* bytes, uint32_t length) {
+    auto trampoline = [](uint32_t address, uint32_t length) {
         uint8_t* stub = AllocStub(length + 5);
-        std::memcpy(stub, bytes, length);
+        std::memcpy(stub, reinterpret_cast<const void*>(uintptr_t(address)), length); // the running release's bytes
         stub[length] = 0xE9;
         const int32_t rel = int32_t(address + length) - int32_t(uintptr_t(stub) + length + 5);
         std::memcpy(stub + length + 1, &rel, 4);
         return stub;
     };
-    static uint8_t* changeHealthStub = trampoline(kChangeHealth, kChangeHealthBytes, sizeof(kChangeHealthBytes));
-    static uint8_t* instantKillStub = trampoline(kInstantKill, kInstantKillBytes, sizeof(kInstantKillBytes));
+    static uint8_t* changeHealthStub = trampoline(kChangeHealth, sizeof(kChangeHealthBytes));
+    static uint8_t* instantKillStub = trampoline(kInstantKill, sizeof(kInstantKillBytes));
     g_OriginalChangeHealth = reinterpret_cast<ChangeHealthFn>(changeHealthStub);
     g_OriginalInstantKill = reinterpret_cast<InstantKillFn>(instantKillStub);
     PatchJump(kChangeHealth, reinterpret_cast<const void*>(&ChangeHealthHook));
     // The pause screen's Cooperative Mod entry and its screen.
     InstallCoopMenus();
     PatchJump(kInstantKill, reinterpret_cast<const void*>(&InstantKillHook));
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kCloneStateManager)), kCloneStateManagerBytes,
-            sizeof(kCloneStateManagerBytes)) == 0) {
-        static uint8_t* stateManagerStub = trampoline(kCloneStateManager, kCloneStateManagerBytes, sizeof(kCloneStateManagerBytes));
+    if (MatchesCode(kCloneStateManager, kCloneStateManagerBytes, sizeof(kCloneStateManagerBytes))) {
+        static uint8_t* stateManagerStub = trampoline(kCloneStateManager, sizeof(kCloneStateManagerBytes));
         g_OriginalCloneStateManager = reinterpret_cast<StateManagerFn>(stateManagerStub);
         PatchJump(kCloneStateManager, reinterpret_cast<const void*>(&CloneStateManagerHook));
     } else {
         LOG_WARN("Co-op: unexpected code at the clone trooper's script; player 2's clone does not shoot");
     }
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kDismemberNotify)), kDismemberNotifyBytes, sizeof(kDismemberNotifyBytes)) == 0) {
-        static uint8_t* dismemberStub = trampoline(kDismemberNotify, kDismemberNotifyBytes, sizeof(kDismemberNotifyBytes));
+    if (MatchesCode(kDismemberNotify, kDismemberNotifyBytes, sizeof(kDismemberNotifyBytes))) {
+        static uint8_t* dismemberStub = trampoline(kDismemberNotify, sizeof(kDismemberNotifyBytes));
         g_OriginalDismemberNotify = reinterpret_cast<DismemberNotifyFn>(dismemberStub);
         PatchJump(kDismemberNotify, reinterpret_cast<const void*>(&DismemberNotifyHook));
     } else {
         LOG_WARN("Co-op: unexpected code at the dismemberment notice; player 2 can lose limbs");
     }
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kDismemberCut)), kDismemberCutBytes, sizeof(kDismemberCutBytes)) == 0) {
-        static uint8_t* cutStub = trampoline(kDismemberCut, kDismemberCutBytes, sizeof(kDismemberCutBytes));
+    if (MatchesCode(kDismemberCut, kDismemberCutBytes, sizeof(kDismemberCutBytes))) {
+        static uint8_t* cutStub = trampoline(kDismemberCut, sizeof(kDismemberCutBytes));
         g_OriginalDismemberCut = reinterpret_cast<DismemberCutFn>(cutStub);
         PatchJump(kDismemberCut, reinterpret_cast<const void*>(&DismemberCutHook));
     } else {

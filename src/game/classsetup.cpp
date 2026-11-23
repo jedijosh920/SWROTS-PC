@@ -14,12 +14,13 @@
 
 #include "core/log.h"
 #include "core/patch.h"
+#include "game/release.h"
 
 namespace swrots::game {
 
 namespace {
 
-constexpr uint32_t kSetup = 0x006965D8;
+static GAME_VA(kSetup, 0x006965D8);
 constexpr int kMaxAdded = 32;
 
 std::vector<ClassSequenceProvider> g_Providers;
@@ -80,13 +81,13 @@ uint32_t __stdcall PickFunction(uint32_t original)
     return original;
 }
 
-constexpr uint32_t kSetupEndCheck = 0x001F685F;
+static GAME_VA(kSetupEndCheck, 0x001F685F);
 constexpr uint8_t kSetupEndCheckBytes[] = { 0x38, 0x5E, 0x07, 0x0F, 0x85 }; // cmp [esi + 7], bl; jne
-constexpr uint32_t kSetupLoad = 0x001F67A0;
+static GAME_VA(kSetupLoad, 0x001F67A0);
 constexpr uint8_t kSetupLoadBytes[] = { 0x8B, 0x07, 0x8B, 0x4D, 0xE8, 0x8B, 0x3C, 0x01 };
-uint32_t g_SetupEndContinue = 0x001F6868;
-uint32_t g_SetupEndStop = 0x001F6A95;
-uint32_t g_SetupLoadContinue = 0x001F67A8;
+static GAME_VA(g_SetupEndContinue, 0x001F6868);
+static GAME_VA(g_SetupEndStop, 0x001F6A95);
+static GAME_VA(g_SetupLoadContinue, 0x001F67A8);
 
 __declspec(naked) void SetupEndEntry()
 {
@@ -134,8 +135,8 @@ void InstallClassSetup()
     g_SetupClass = nullptr;
     g_AskedThisSetup = false;
     g_Patched = false;
-    if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kSetupEndCheck)), kSetupEndCheckBytes, sizeof kSetupEndCheckBytes) != 0 ||
-        std::memcmp(reinterpret_cast<const void*>(uintptr_t(kSetupLoad)), kSetupLoadBytes, sizeof kSetupLoadBytes) != 0) {
+    if (!MatchesCode(kSetupEndCheck, kSetupEndCheckBytes, sizeof kSetupEndCheckBytes) ||
+        !MatchesCode(kSetupLoad, kSetupLoadBytes, sizeof kSetupLoadBytes)) {
         LOG_WARN("Class setup: the setup driver is not as expected; classes get no added sequences");
         return;
     }

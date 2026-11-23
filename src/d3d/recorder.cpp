@@ -24,6 +24,7 @@
 #include "core/settings.h"
 #include "core/window.h"
 #include "d3d/d3d.h"
+#include "game/release.h"
 
 namespace swrots::d3d {
 
@@ -31,7 +32,8 @@ using namespace xd3d;
 
 static const double kSeconds = 3.0;
 static const int kMaxNotes = 256;
-static const uint32_t kGameCodeBegin = 0x11000, kGameCodeEnd = 0x4EF000;
+static GAME_VA(kGameCodeBegin, 0x00011000);
+static GAME_VA(kGameCodeEnd, 0x004EF000);
 
 static const DWORD kRecordedStates[] = { RS_ZENABLE, RS_ZWRITEENABLE, RS_ZFUNC, RS_ALPHABLENDENABLE, RS_SRCBLEND,
     RS_DESTBLEND, RS_BLENDOP, RS_ALPHATESTENABLE, RS_ALPHAREF, RS_ALPHAFUNC, RS_COLORWRITEENABLE, RS_CULLMODE,

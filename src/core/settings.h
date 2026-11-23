@@ -21,6 +21,8 @@ struct Settings {
     bool bloom = true;        // the game's full-screen bloom (soft glow around bright areas)
     // Game
     int fpsLimit = 30;        // 30 (original) or 60 (experimental)
+    std::string language = "Auto"; // the console language the game sees: Auto (the disc's: French for the French
+                              // release, English otherwise), English, French, German, Italian or Spanish
     int buttonPrompts = -1;   // on-screen buttons: -1 the last device used, 0 the controller's, 1 the keyboard's
     // Co-op: a second player in the story and single-player missions (game/coop.h)
     bool coop = false;        // on: player 2 plays the mission's companion, or a character beside player 1

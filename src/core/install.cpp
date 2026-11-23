@@ -478,11 +478,13 @@ bool ExtractIso(const std::wstring& image, const std::wstring& target, Progress&
         p.error = L"The disc image does not contain the game (no default.xbe).";
         return false;
     }
-    if (Md5Hex(xbeBytes.data(), xbeBytes.size()) != game::kRetailMd5) {
-        p.error = L"This disc image is a different version of the game. Only the North American (USA) "
-                  L"release is supported.";
+    game::Release release;
+    if (!game::FindRelease(Md5Hex(xbeBytes.data(), xbeBytes.size()), &release)) {
+        p.error = std::wstring(L"This disc image is a different version of the game. Supported: ") +
+            game::kSupportedReleases + L".";
         return false;
     }
+    LOG_INFO("Setup: %s release", game::ReleaseName(release));
     uint64_t total = 0;
     for (const IsoFile& f : files)
         if (!f.directory)
@@ -613,9 +615,10 @@ bool EnsureGameData(const std::wstring& exeDir, const std::wstring& gameData, co
             p.error = L"The disc image does not contain the game (no default.xbe).";
             return;
         }
-        if (xbe.Md5Hex() != game::kRetailMd5) {
-            p.error = L"This disc image is a different version of the game. Only the North American (USA) "
-                      L"release is supported.";
+        game::Release release;
+        if (!game::FindRelease(xbe.Md5Hex(), &release)) {
+            p.error = std::wstring(L"This disc image is a different version of the game. Supported: ") +
+                game::kSupportedReleases + L".";
             return;
         }
         p.ok = MoveFileExW(partial.c_str(), gameData.c_str(), 0) != 0;

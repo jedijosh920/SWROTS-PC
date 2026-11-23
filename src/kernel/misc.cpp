@@ -20,6 +20,7 @@
 #include "audio/audio.h"
 #include "core/settings.h"
 #include "core/window.h"
+#include "game/release.h"
 #include "kernel/mm.h"
 #include "kernel/reboot.h"
 #include "kernel/sha1.h"
@@ -186,7 +187,7 @@ NTSTATUS XBAPI ExQueryNonVolatileSetting(ULONG ValueIndex, ULONG* Type, void* Va
 {
     ULONG dword;
     switch (ValueIndex) {
-    case 0x7: dword = 1; break;          // XC_LANGUAGE: English
+    case 0x7: dword = game::ConsoleLanguage(); break; // XC_LANGUAGE
     case 0x8: dword = VideoFlags(); break; // XC_VIDEO
     case 0x9: dword = 0; break;          // XC_AUDIO: stereo
     case 0xA: case 0xB: case 0xC: dword = 0; break; // parental controls off
@@ -210,7 +211,7 @@ NTSTATUS XBAPI ExQueryNonVolatileSetting(ULONG ValueIndex, ULONG* Type, void* Va
         if (ValueLength < size) return xbox::X_STATUS_BUFFER_TOO_SMALL;
         std::memset(Value, 0, size);
         auto* u = static_cast<ULONG*>(Value);
-        u[0x2C / 4] = 1;          // Language
+        u[0x2C / 4] = game::ConsoleLanguage(); // Language
         u[0x30 / 4] = VideoFlags(); // VideoFlags
         return xbox::X_STATUS_SUCCESS;
     }

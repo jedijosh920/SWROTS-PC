@@ -9,6 +9,7 @@
 
 #include "core/log.h"
 #include "core/patch.h"
+#include "game/release.h"
 
 namespace swrots::game {
 
@@ -26,9 +27,9 @@ namespace {
 // port loads for him from other levels. For hits, grapples, throws, force powers and falls these look
 // right on him (better than any of his own few animations would); Anakin's blocks do not: he floats
 // in them. The port maps the blocks to his own block reaction.
-constexpr uint32_t kAddAliases = 0x001F6460; // cdecl (animations, sequences, const char** pairs)
-constexpr uint32_t kYodaVtable = 0x00608C10;
-constexpr uint32_t kYodaAliases = 0x00494190;
+static GAME_VA(kAddAliases, 0x001F6460); // cdecl (animations, sequences, const char** pairs)
+static GAME_VA(kYodaVtable, 0x00608C10);
+static GAME_VA(kYodaAliases, 0x00494190);
 constexpr int kAliasSlot = 6;
 
 struct AliasGroup {

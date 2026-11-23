@@ -12,6 +12,7 @@
 
 #include "core/log.h"
 #include "core/patch.h"
+#include "game/release.h"
 #include "game/resources.h"
 
 namespace swrots::game {
@@ -19,7 +20,7 @@ namespace swrots::game {
 namespace {
 
 // The game's string hash (cdecl (const char*) -> key): item, screen and text id names are keyed by it.
-constexpr uint32_t kStringHash = 0x00222BA0;
+static GAME_VA(kStringHash, 0x00222BA0);
 
 // --- Texts ---
 // The menus look a text id up in the language's string table (0x23B6E0, thiscall (TString* out, const key*),
@@ -27,7 +28,7 @@ constexpr uint32_t kStringHash = 0x00222BA0;
 // its length first. An id of the
 // port's own gets the port's text (a buffer kept for the session, so a menu item keeps showing what is
 // written into it later).
-constexpr uint32_t kTableFind = 0x0023B6E0;
+static GAME_VA(kTableFind, 0x0023B6E0);
 constexpr uint8_t kTableFindBytes[] = { 0x53, 0x8B, 0x5C, 0x24, 0x0C }; // push ebx; mov ebx, [esp + 0xC]
 constexpr size_t kTextCapacity = 96;
 using TableFindFn = void*(__fastcall*)(uint8_t*, void*, uint32_t*, const uint32_t*);
@@ -70,10 +71,10 @@ void* __fastcall TableFindHook(uint8_t* table, void*, uint32_t* out, const uint3
 // The in-game menus' actions are handlers registered by name: the HUD's setup (IVaderHUD 0x2A8600) appends
 // {name, prototype} pairs to its list at +0x268 (0x157300); an item's action string picks the prototype,
 // whose vtable slot 10 makes the item's own.
-constexpr uint32_t kHudSetup = 0x002A8600;
+static GAME_VA(kHudSetup, 0x002A8600);
 constexpr uint8_t kHudSetupBytes[] = { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8, 0x83, 0xEC, 0x0C };
 constexpr uint32_t kHudHandlers = 0x268;
-constexpr uint32_t kAddHandler = 0x00157300; // thiscall (const {name, prototype}*)
+static GAME_VA(kAddHandler, 0x00157300); // thiscall (const {name, prototype}*)
 using HudSetupFn = void(__fastcall*)(uint8_t*, void*);
 HudSetupFn g_OriginalHudSetup = nullptr;
 struct Handler {
@@ -98,7 +99,7 @@ void __fastcall HudSetupHook(uint8_t* hud, void*)
 
 // The shell (the front end) registers its handlers the same way (VaderShell 0x2FA610, the same prologue; its list at
 // +0x268 too).
-constexpr uint32_t kShellSetup = 0x002FA610;
+static GAME_VA(kShellSetup, 0x002FA610);
 HudSetupFn g_OriginalShellSetup = nullptr;
 std::vector<Handler> g_ShellHandlers;
 
@@ -117,8 +118,10 @@ void __fastcall ShellSetupHook(uint8_t* shell, void*)
 }
 
 // The On/Off control's two texts: the ids it pushes (at 0x2D8EAB, 0x2D8EFF) are read from the port's buffers.
-constexpr uint32_t kOnTextPush = 0x002D8EAB, kOffTextPush = 0x002D8EFF;
-constexpr uint32_t kOnText = 0x005D6F08, kOffText = 0x005D6EF8;
+static GAME_VA(kOnTextPush, 0x002D8EAB);
+static GAME_VA(kOffTextPush, 0x002D8EFF);
+static GAME_VA(kOnText, 0x005D6F08);
+static GAME_VA(kOffText, 0x005D6EF8);
 char g_OnText[64] = "IDS_SHELL_ON", g_OffText[64] = "IDS_SHELL_OFF";
 
 // --- Screens ---
@@ -168,15 +171,15 @@ void PatchShellList(std::vector<uint8_t>& data)
 // A change of the shell's screen: its transition object ([shell] +0xDD0; the shell [0x7F637C], up while its +0xC has
 // 0x40000) latches the screen's name (0x2D1B80, thiscall (const TString*); the name from text by 0x222FA0, cdecl
 // (TString* out, const char*)), as the fighters' select goes to the arena's (0x2D4D85).
-constexpr uint32_t kShell = 0x007F637C;
+static GAME_VA(kShell, 0x007F637C);
 constexpr uint32_t kShellTransition = 0xDD0;
-constexpr uint32_t kTransitionTo = 0x002D1B80;
-constexpr uint32_t kTextToString = 0x00222FA0;
+static GAME_VA(kTransitionTo, 0x002D1B80);
+static GAME_VA(kTextToString, 0x00222FA0);
 
-uint8_t* Trampoline(uint32_t address, const uint8_t* bytes, uint32_t length)
+uint8_t* Trampoline(uint32_t address, uint32_t length)
 {
     uint8_t* stub = AllocStub(length + 5);
-    std::memcpy(stub, bytes, length);
+    std::memcpy(stub, reinterpret_cast<const void*>(uintptr_t(address)), length); // the running release's own bytes
     stub[length] = 0xE9;
     const int32_t rel = int32_t(address + length) - int32_t(uintptr_t(stub) + length + 5);
     std::memcpy(stub + length + 1, &rel, 4);
@@ -275,7 +278,7 @@ void SetOnOffTexts(const char* on, const char* off)
 void InstallMenus()
 {
     const auto matches = [](uint32_t address, const uint8_t* bytes, size_t length) {
-        return std::memcmp(reinterpret_cast<const void*>(uintptr_t(address)), bytes, length) == 0;
+        return MatchesCode(address, bytes, length);
     };
     if (!matches(kTableFind, kTableFindBytes, sizeof(kTableFindBytes)) ||
         !matches(kHudSetup, kHudSetupBytes, sizeof(kHudSetupBytes))) {
@@ -283,9 +286,9 @@ void InstallMenus()
         return;
     }
     // The stubs live in the port's memory and survive reboots; the jumps are patched into every new image.
-    static uint8_t* tableStub = Trampoline(kTableFind, kTableFindBytes, sizeof(kTableFindBytes));
-    static uint8_t* hudStub = Trampoline(kHudSetup, kHudSetupBytes, sizeof(kHudSetupBytes));
-    static uint8_t* shellStub = Trampoline(kShellSetup, kHudSetupBytes, sizeof(kHudSetupBytes));
+    static uint8_t* tableStub = Trampoline(kTableFind, sizeof(kTableFindBytes));
+    static uint8_t* hudStub = Trampoline(kHudSetup, sizeof(kHudSetupBytes));
+    static uint8_t* shellStub = Trampoline(kShellSetup, sizeof(kHudSetupBytes));
     g_OriginalTableFind = reinterpret_cast<TableFindFn>(tableStub);
     g_OriginalHudSetup = reinterpret_cast<HudSetupFn>(hudStub);
     PatchJump(kTableFind, reinterpret_cast<const void*>(&TableFindHook));

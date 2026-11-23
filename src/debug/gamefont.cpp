@@ -117,10 +117,50 @@ bool Load()
     return true;
 }
 
-const Glyph* GlyphOf(char c)
+// A Latin-1 character's capital without its accent (É -> E), for a sheet without the accented one.
+unsigned Unaccented(unsigned c)
 {
-    const unsigned char u = static_cast<unsigned char>(toupper(static_cast<unsigned char>(c)));
-    return g_Glyphs[u].present ? &g_Glyphs[u] : nullptr;
+    static const char kBase[] = "AAAAAAACEEEEIIIIDNOOOOOxOUUUUYPsaaaaaaaceeeeiiiidnooooo/ouuuuypy";
+    return c >= 0xC0 && c <= 0xFF ? unsigned(static_cast<unsigned char>(kBase[c - 0xC0])) : c;
+}
+
+const Glyph* GlyphOf(unsigned c)
+{
+    if (c > 0xFF)
+        return nullptr;
+    if (c >= 0xE0 && c <= 0xFE && c != 0xF7)
+        c -= 0x20; // Latin-1 capital
+    else if (c < 0x80)
+        c = unsigned(toupper(int(c)));
+    if (g_Glyphs[c].present)
+        return &g_Glyphs[c];
+    const unsigned base = unsigned(toupper(int(Unaccented(c))));
+    return base != c && g_Glyphs[base].present ? &g_Glyphs[base] : nullptr;
+}
+
+// The characters of UTF-8 text (fighters' names can have accents), as code points.
+std::vector<unsigned> CodePoints(const std::string& text)
+{
+    std::vector<unsigned> out;
+    for (size_t i = 0; i < text.size();) {
+        const unsigned char b = static_cast<unsigned char>(text[i]);
+        const int extra = b < 0x80 ? 0 : (b & 0xE0) == 0xC0 ? 1 : (b & 0xF0) == 0xE0 ? 2 : (b & 0xF8) == 0xF0 ? 3 : -1;
+        if (extra < 0 || i + extra >= text.size() + (extra ? 0 : 1)) {
+            out.push_back(b); // not UTF-8: the byte as Latin-1
+            ++i;
+            continue;
+        }
+        unsigned c = extra ? b & (0x3F >> extra) : b;
+        bool ok = true;
+        for (int k = 1; k <= extra; ++k) {
+            const unsigned char n = static_cast<unsigned char>(text[i + k]);
+            ok = ok && (n & 0xC0) == 0x80;
+            c = (c << 6) | (n & 0x3F);
+        }
+        out.push_back(ok ? c : b);
+        i += ok ? extra + 1 : 1;
+    }
+    return out;
 }
 
 constexpr float kGap = 2.0f; // between letters, in sheet pixels
@@ -135,7 +175,7 @@ float GameFontWidth(float height, const std::string& text)
         return 0;
     const float scale = height / g_LineHeight;
     float width = 0;
-    for (char c : text) {
+    for (unsigned c : CodePoints(text)) {
         const Glyph* g = GlyphOf(c);
         const Glyph* space = GlyphOf(' ');
         width += ((g ? g->x1 - g->x0 : space ? space->x1 - space->x0 : g_LineHeight / 3) + kGap) * scale;
@@ -154,7 +194,7 @@ bool GameFontText(ImDrawList* draw, const ImVec2& at, float height, unsigned col
         const float offset = pass == 0 ? std::max(1.0f, height / 16) : 0;
         const ImU32 tint = pass == 0 ? IM_COL32(0, 0, 0, (colour >> 24) * 170 / 255) : colour;
         float x = at.x + offset;
-        for (char c : text) {
+        for (unsigned c : CodePoints(text)) {
             const Glyph* g = GlyphOf(c);
             if (!g) {
                 const Glyph* space = GlyphOf(' ');
