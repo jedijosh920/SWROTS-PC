@@ -22,7 +22,8 @@ Bloom=1             ; the game's full-screen bloom; 0 turns it off
 FpsLimit=30         ; 30 like the original; 60 is experimental
 Language=Auto       ; the language the game is told the console uses: Auto (French with the French disc, English
                     ; otherwise), English, French, German, Italian, Spanish. Choose one your disc has (the European
-                    ; disc: English, Spanish, Italian)
+                    ; disc: English, Spanish, Italian). The port's own menus (co-op, Heroes vs Villains,
+                    ; Battlefront, custom missions) are in French with French, in English otherwise
 
 [Controls]
 ButtonPrompts=Auto  ; the buttons shown on screen: Auto (the keyboard's keys or the controller's buttons, whichever

@@ -673,17 +673,20 @@ void UpdateTexts()
     {
         const std::string map = BfMapChoice();
         const CustomMap* custom = map.empty() ? nullptr : FindCustomMap(map);
-        SetMenuText("IDS_PORT_BF_V_MAP", Wide(custom ? custom->name : "DEVELOPER MAP"));
-        SetMenuText("IDS_PORT_BF_V_SIDE", g_BfSide == 0 ? L"REPUBLIC (CLONES)" : L"SEPARATISTS (DROIDS)");
-        SetMenuText("IDS_PORT_BF_V_TROOPS", Wide(std::to_string(kBfTroopChoices[g_BfTroops]) + " A SIDE"));
+        SetMenuText("IDS_PORT_BF_V_MAP", custom ? Wide(custom->name) : PortText(L"DEVELOPER MAP", L"CARTE DE DÉVELOPPEMENT"));
+        SetMenuText("IDS_PORT_BF_V_SIDE", g_BfSide == 0 ? PortText(L"REPUBLIC (CLONES)", L"RÉPUBLIQUE (CLONES)") :
+            PortText(L"SEPARATISTS (DROIDS)", L"SÉPARATISTES (DROÏDES)"));
+        SetMenuText("IDS_PORT_BF_V_TROOPS", std::to_wstring(kBfTroopChoices[g_BfTroops]) +
+            PortText(L" A SIDE", L" PAR CAMP"));
         SetMenuText("IDS_PORT_BF_V_TICKETS", Wide(std::to_string(kBfTicketChoices[g_BfTickets])));
     }
-    SetMenuText("IDS_PORT_HVV_V_TEAM", Wide(std::to_string(g_PerSide) + " VS " + std::to_string(g_PerSide)));
+    SetMenuText("IDS_PORT_HVV_V_TEAM", std::to_wstring(g_PerSide) + PortText(L" VS ", L" CONTRE ") +
+        std::to_wstring(g_PerSide));
     SetMenuText("IDS_PORT_HVV_V_LIVES", Wide(std::to_string(kLivesChoices[g_LivesChoice])));
     SetMenuText("IDS_PORT_HVV_V_HEALTH", Wide(std::to_string(kHealthChoices[g_HealthChoice])));
     const std::string map = MapChoice();
     const CustomMap* custom = map.empty() ? nullptr : FindCustomMap(map);
-    SetMenuText("IDS_PORT_HVV_V_MAP", Wide(custom ? custom->name : "DEVELOPER MAP"));
+    SetMenuText("IDS_PORT_HVV_V_MAP", custom ? Wide(custom->name) : PortText(L"DEVELOPER MAP", L"CARTE DE DÉVELOPPEMENT"));
     for (int row = 0; row < 2 * kMaxPerSide; ++row) {
         const int slot = SlotOfRow(row);
         const std::string id = "IDS_PORT_HVV_SLOT" + std::to_string(row);
@@ -692,8 +695,9 @@ void UpdateTexts()
             continue;
         }
         const int side = slot / kMaxPerSide, place = slot % kMaxPerSide;
-        SetMenuText(id.c_str(), Wide((side ? "VILLAIN " : "HERO ") + std::to_string(place + 1) + "   " +
-            HvvDisplayName(g_Lineup[slot]) + (slot == 0 ? "  (YOU)" : "")));
+        SetMenuText(id.c_str(), (side ? PortText(L"VILLAIN ", L"MÉCHANT ") : PortText(L"HERO ", L"HÉROS ")) +
+            std::to_wstring(place + 1) + L"   " + Wide(HvvDisplayName(g_Lineup[slot])) +
+            (slot == 0 ? PortText(L"  (YOU)", L"  (VOUS)") : L""));
     }
 }
 
@@ -949,12 +953,14 @@ uint32_t MatchTexts(uint32_t key)
 
 void InstallScreens()
 {
-    SetMenuText("IDS_PORT_HVV_RESTART", L"Restart HvV");
-    SetMenuText("IDS_PORT_HVV_QUIT", L"Quit HvV");
-    SetMenuText("IDS_PORT_BF_RESTART", L"Restart Battle");
-    SetMenuText("IDS_PORT_BF_QUIT", L"Quit Battle");
-    SetMenuText("IDS_PORT_HVV_RESTART_MESSAGE", L"Are you sure you want to restart the match? Its score will be lost.");
-    SetMenuText("IDS_PORT_HVV_QUIT_MESSAGE", L"Are you sure you want to quit the match? Its score will be lost.");
+    SetMenuText("IDS_PORT_HVV_RESTART", PortText(L"Restart HvV", L"Recommencer le match"));
+    SetMenuText("IDS_PORT_HVV_QUIT", PortText(L"Quit HvV", L"Quitter le match"));
+    SetMenuText("IDS_PORT_BF_RESTART", PortText(L"Restart Battle", L"Recommencer la bataille"));
+    SetMenuText("IDS_PORT_BF_QUIT", PortText(L"Quit Battle", L"Quitter la bataille"));
+    SetMenuText("IDS_PORT_HVV_RESTART_MESSAGE", PortText(L"Are you sure you want to restart the match? Its score will be lost.",
+        L"Voulez-vous vraiment recommencer le match ? Son score sera perdu."));
+    SetMenuText("IDS_PORT_HVV_QUIT_MESSAGE", PortText(L"Are you sure you want to quit the match? Its score will be lost.",
+        L"Voulez-vous vraiment quitter le match ? Son score sera perdu."));
     SetMenuTextRedirect(&MatchTexts);
     std::memcpy(g_ValueVtable, reinterpret_cast<const void*>(uintptr_t(kOnOffVtable)), sizeof g_ValueVtable);
     g_OnOffDraw = reinterpret_cast<DrawFn>(uintptr_t(g_ValueVtable[3]));
@@ -970,21 +976,21 @@ void InstallScreens()
     g_ButtonDraw = reinterpret_cast<DrawFn>(uintptr_t(g_ButtonVtable[3]));
     g_ButtonVtable[3] = uint32_t(reinterpret_cast<uintptr_t>(&ButtonDraw));
     g_ButtonVtable[10] = uint32_t(reinterpret_cast<uintptr_t>(&MakeButtonSlot));
-    SetMenuText("IDS_PORT_HVV_TITLE", L"Heroes vs Villains");
-    SetMenuText("IDS_PORT_HVV_LINEUP_TITLE", L"Line-up");
-    SetMenuText("IDS_PORT_HVV_TEAM", L"Team Size");
-    SetMenuText("IDS_PORT_HVV_LIVES", L"Lives");
-    SetMenuText("IDS_PORT_HVV_HEALTH", L"Health");
-    SetMenuText("IDS_PORT_HVV_INTRO", L"Intro");
-    SetMenuText("IDS_PORT_HVV_MAP", L"Map");
-    SetMenuText("IDS_PORT_HVV_LINEUP", L"Line-up");
-    SetMenuText("IDS_PORT_HVV_START", L"Start");
+    SetMenuText("IDS_PORT_HVV_TITLE", PortText(L"Heroes vs Villains", L"Héros contre méchants"));
+    SetMenuText("IDS_PORT_HVV_LINEUP_TITLE", PortText(L"Line-up", L"Composition"));
+    SetMenuText("IDS_PORT_HVV_TEAM", PortText(L"Team Size", L"Taille des équipes"));
+    SetMenuText("IDS_PORT_HVV_LIVES", PortText(L"Lives", L"Vies"));
+    SetMenuText("IDS_PORT_HVV_HEALTH", PortText(L"Health", L"Santé"));
+    SetMenuText("IDS_PORT_HVV_INTRO", PortText(L"Intro", L"Intro"));
+    SetMenuText("IDS_PORT_HVV_MAP", PortText(L"Map", L"Carte"));
+    SetMenuText("IDS_PORT_HVV_LINEUP", PortText(L"Line-up", L"Composition"));
+    SetMenuText("IDS_PORT_HVV_START", PortText(L"Start", L"Commencer"));
     SetMenuText("IDS_PORT_BF_TITLE", L"Battlefront");
-    SetMenuText("IDS_PORT_BF_MAP", L"Map");
-    SetMenuText("IDS_PORT_BF_SIDE", L"Side");
-    SetMenuText("IDS_PORT_BF_TROOPS", L"Troopers");
-    SetMenuText("IDS_PORT_BF_TICKETS", L"Tickets");
-    SetMenuText("IDS_PORT_BF_HEROES", L"Heroes");
+    SetMenuText("IDS_PORT_BF_MAP", PortText(L"Map", L"Carte"));
+    SetMenuText("IDS_PORT_BF_SIDE", PortText(L"Side", L"Camp"));
+    SetMenuText("IDS_PORT_BF_TROOPS", PortText(L"Troopers", L"Soldats"));
+    SetMenuText("IDS_PORT_BF_TICKETS", PortText(L"Tickets", L"Renforts"));
+    SetMenuText("IDS_PORT_BF_HEROES", PortText(L"Heroes", L"Héros"));
     // the line-up's defaults, once (kept across the game's restarts, as the rules)
     if (g_Lineup[0].empty()) {
         // Versus fighters only (the select screen offers no others); a custom villain fourth when there is one
@@ -1120,7 +1126,7 @@ void InstallHvvMenu()
     g_PickSlot = -1;
     g_SelectSeen = 0;
     g_SelectScreen = nullptr;
-    SetMenuText(kRowText, L"Heroes vs Villains");
+    SetMenuText(kRowText, PortText(L"Heroes vs Villains", L"Héros contre méchants"));
     SetMenuText(kBfRowText, L"Battlefront");
     RegisterResourcePatch(kMainMenu, &PatchMainMenuResource);
     const uint32_t slot = kSwitchButtonVtable + kEventSlot * 4;

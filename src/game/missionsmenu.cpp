@@ -516,8 +516,8 @@ void InstallMissionsMenu()
     g_Hooked = false;
     g_Custom = false;
     g_Listed = 0;
-    SetMenuText(kRowText, L"Custom Missions");
-    SetMenuText(kTitleText, L"Select Custom Mission");
+    SetMenuText(kRowText, PortText(L"Custom Missions", L"Missions personnalisées"));
+    SetMenuText(kTitleText, PortText(L"Select Custom Mission", L"Choisir une mission personnalisée"));
     SetMenuText(kDescriptionText, L"");
     SetMenuText(kPlayerText, L"");
     SetMenuText(kLocationText, L"");

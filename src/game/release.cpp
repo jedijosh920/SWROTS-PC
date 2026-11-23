@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "core/log.h"
+#include "core/settings.h"
 
 namespace swrots::game {
 
@@ -117,6 +118,23 @@ void SelectRelease(Release release)
         for (size_t i = 0; i < r.count; ++i, ++count)
             r.first[i] = r.end ? Va(r.first[i] - 1) + 1 : Va(r.first[i]);
     LOG_INFO("Release: %zu addresses moved to the PAL executable's", count);
+}
+
+uint32_t ConsoleLanguage()
+{
+    static const struct {
+        const char* name;
+        uint32_t code;
+    } kLanguages[] = { { "English", 1 }, { "German", 3 }, { "French", 4 }, { "Spanish", 5 }, { "Italian", 6 } };
+    for (const auto& l : kLanguages)
+        if (GetSettings().language == l.name)
+            return l.code;
+    return g_Release == Release::France ? 4 : 1;
+}
+
+const wchar_t* PortText(const wchar_t* english, const wchar_t* french)
+{
+    return ConsoleLanguage() == 4 ? french : english;
 }
 
 uint32_t Va(uint32_t northAmerica)

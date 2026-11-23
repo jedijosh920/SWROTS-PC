@@ -35,6 +35,12 @@ Release CurrentRelease();
 bool ReleaseKnown();
 bool IsPal();
 const char* ReleaseName(Release release);
+// The language the game is told the console uses (XC_LANGUAGE: 1 English, 3 German, 4 French, 5 Spanish,
+// 6 Italian): [Game] Language in settings.ini, or the disc's (French for the French release, else English).
+uint32_t ConsoleLanguage();
+// The port's own texts (its menus) in the game's language: French when the game runs in French, else English.
+const wchar_t* PortText(const wchar_t* english, const wchar_t* french);
+
 // For messages: the supported releases.
 extern const wchar_t* const kSupportedReleases;
 

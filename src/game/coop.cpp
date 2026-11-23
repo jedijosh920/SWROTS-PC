@@ -365,13 +365,14 @@ struct CoopRow {
     const char* name;
     const char* textId;
     const wchar_t* text;
+    const wchar_t* french;
 };
 constexpr CoopRow kCoopRows[] = {
-    { "coopon", "IDS_PORT_COOP_ON", L"Co-op" },
-    { "coopboss", "IDS_PORT_COOP_BOSS", L"Player 2 As Boss" },
-    { "coopfriendlyfire", "IDS_PORT_COOP_FRIENDLY_FIRE", L"Friendly Fire" },
-    { "cooprespawn", "IDS_PORT_COOP_RESPAWN", L"Respawn Player 2" },
-    { "coopcamera", "IDS_PORT_COOP_CAMERA", L"Shared Camera" },
+    { "coopon", "IDS_PORT_COOP_ON", L"Co-op", L"Coop" },
+    { "coopboss", "IDS_PORT_COOP_BOSS", L"Player 2 As Boss", L"Joueur 2 en boss" },
+    { "coopfriendlyfire", "IDS_PORT_COOP_FRIENDLY_FIRE", L"Friendly Fire", L"Tir allié" },
+    { "cooprespawn", "IDS_PORT_COOP_RESPAWN", L"Respawn Player 2", L"Réapparition joueur 2" },
+    { "coopcamera", "IDS_PORT_COOP_CAMERA", L"Shared Camera", L"Caméra partagée" },
 };
 constexpr const char* kSettingsRows[] = { "controller", "vibration", "subtitles", "musicvolume", "effectsvolume",
     "dialoguevolume", "difficulty", "restoredefaults" };
@@ -577,10 +578,10 @@ void InstallCoopMenus()
     g_CoopOptionVtable[10] = uint32_t(reinterpret_cast<uintptr_t>(&MakeCoopOptionSlot));
     g_CoopOptionVtable[27] = uint32_t(reinterpret_cast<uintptr_t>(&CoopOptionDefault));
     g_CoopOptionVtable[28] = uint32_t(reinterpret_cast<uintptr_t>(&CoopOptionApply));
-    SetMenuText("IDS_PORT_COOP_MENU", L"Cooperative Mod");
-    SetMenuText("IDS_PORT_COOP_TITLE", L"Cooperative Mod");
+    SetMenuText("IDS_PORT_COOP_MENU", PortText(L"Cooperative Mod", L"Mode coopératif"));
+    SetMenuText("IDS_PORT_COOP_TITLE", PortText(L"Cooperative Mod", L"Mode coopératif"));
     for (const CoopRow& row : kCoopRows)
-        SetMenuText(row.textId, row.text);
+        SetMenuText(row.textId, PortText(row.text, row.french));
     AddMenuHandler("CoopOption", &MakeCoopOption);
     AddMenuScreen(kCoopScreen);
     RegisterResourceGenerator(&GenerateCoopScreen);
