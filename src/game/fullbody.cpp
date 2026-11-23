@@ -984,14 +984,14 @@ const Recipe& YodaRecipe(int player)
                 { Edit::Hang, { "ec_cape_FL_01_g", "ec_cape_FR_01_g", "ec_cape_BL_01_g", "ec_cape_BR_01_g",
                     "ec_cape_FL_02_g", "ec_cape_FR_02_g", "ec_cape_BL_02_g", "ec_cape_BR_02_g" },
                     nullptr, nullptr, {}, {}, 0.45, 0.6, 0 },
-                // the right leg folded, its heel at his seat; the left one stretched out to the right, the top of its
-                // foot toward the camera
+                // the right leg folded, its heel at his seat; the left one out to the right, bent at the knee, the shin
+                // down and back, the top of its foot toward the camera
                 { Edit::Point, { "hip_L_g" }, "knee_L_g", "hip_L_g", { 1, -0.6, 0 }, {}, 0, 0, 0 },
-                { Edit::Point, { "knee_L_g" }, "ankle_L_g", "knee_L_g", { 1, -0.6, 0 }, {}, 0, 0, 0 },
-                { Edit::Point, { "ankle_L_g" }, "toe_L_g", "ankle_L_g", { 1, -0.6, 0 }, {}, 0, 0, 0 },
+                { Edit::Point, { "knee_L_g" }, "ankle_L_g", "knee_L_g", { 0.3, -1, -0.5 }, {}, 0, 0, 0 },
+                { Edit::Point, { "ankle_L_g" }, "toe_L_g", "ankle_L_g", { 0.3, -1, -0.5 }, {}, 0, 0, 0 },
                 { Edit::Point, { "hip_R_g" }, "knee_R_g", "hip_R_g", { -0.4, -0.7, 0.6 }, {}, 0, 0, 0 },
                 { Edit::Point, { "knee_R_g" }, "ankle_R_g", "root_pelvis_g", { -1, -1, -3 }, {}, 0, 0, 0 },
-                { Edit::Turn, { "ankle_L_g" }, nullptr, nullptr, { 0.252, 0.420, 0.872 }, { -0.006, -0.010, 1.000 }, 0, 0, 0 },
+                { Edit::Turn, { "ankle_L_g" }, nullptr, nullptr, { 0.845, -0.014, 0.535 }, { 0.017, -0.443, 0.896 }, 0, 0, 0 },
                 { Edit::Point, { "shoulder_R_g" }, "wrist_R_g", "spine2_g", { -5, -1, 8 }, {}, 0, 0, 0 },
                 // the forearm toward the camera (not down to the floor)
                 { Edit::Point, { "elbow_R_g" }, "wrist_R_g", "elbow_R_g", { 0, -0.15, 1 }, {}, 0, 0, 0 },
