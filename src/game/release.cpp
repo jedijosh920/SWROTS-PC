@@ -132,10 +132,11 @@ uint32_t ConsoleLanguage()
     return g_Release == Release::France ? 4 : 1;
 }
 
-const wchar_t* PortText(const wchar_t* english, const wchar_t* french)
-{
-    return ConsoleLanguage() == 4 ? french : english;
-}
+bool PortInFrench() { return ConsoleLanguage() == 4; }
+
+const wchar_t* PortText(const wchar_t* english, const wchar_t* french) { return PortInFrench() ? french : english; }
+
+const char* PortText(const char* english, const char* french) { return PortInFrench() ? french : english; }
 
 uint32_t Va(uint32_t northAmerica)
 {

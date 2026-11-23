@@ -244,11 +244,14 @@ struct Notice {
 struct DisplayName {
     const char* className;
     const char* name;
+    const char* french; // UTF-8; null: the same
 };
-constexpr DisplayName kNames[] = { { "IAnakin", "ANAKIN SKYWALKER" }, { "IObiwan", "OBI-WAN KENOBI" },
-    { "IOldObiwan", "OBI-WAN KENOBI" }, { "IYoda", "YODA" }, { "IMace", "MACE WINDU" },
-    { "ICinDrallig", "CIN DRALLIG" }, { "IVader", "DARTH VADER" }, { "IDooku", "COUNT DOOKU" },
-    { "IGrievous", "GENERAL GRIEVOUS" }, { "ISerra", "SERRA KETO" }, { "IPalpatine", "DARTH SIDIOUS" } };
+constexpr DisplayName kNames[] = { { "IAnakin", "ANAKIN SKYWALKER", nullptr },
+    { "IObiwan", "OBI-WAN KENOBI", nullptr }, { "IOldObiwan", "OBI-WAN KENOBI", nullptr }, { "IYoda", "YODA", nullptr },
+    { "IMace", "MACE WINDU", nullptr }, { "ICinDrallig", "CIN DRALLIG", nullptr },
+    { "IVader", "DARTH VADER", "DARK VADOR" }, { "IDooku", "COUNT DOOKU", "COMTE DOOKU" },
+    { "IGrievous", "GENERAL GRIEVOUS", "GÉNÉRAL GRIEVOUS" }, { "ISerra", "SERRA KETO", nullptr },
+    { "IPalpatine", "DARTH SIDIOUS", "DARK SIDIOUS" } };
 
 // Just above a fighter's head, from its feet (the humans' bodies are 73-75 units tall).
 float MarkerHeight(const std::string& className)
@@ -269,11 +272,11 @@ std::string DisplayNameOf(const std::string& className)
         return custom->name;
     for (const DisplayName& n : kNames)
         if (_stricmp(n.className, className.c_str()) == 0)
-            return n.name;
+            return n.french ? PortText(n.name, n.french) : n.name;
     if (_stricmp(className.c_str(), "ICloneTrooper") == 0) // Battlefront's troopers
-        return "CLONE TROOPER";
+        return PortText("CLONE TROOPER", "SOLDAT CLONE");
     if (_stricmp(className.c_str(), "IBattleDroid") == 0)
-        return "BATTLE DROID";
+        return PortText("BATTLE DROID", "DROÏDE DE COMBAT");
     std::string name = className.size() > 1 && className[0] == 'I' ? className.substr(1) : className;
     for (char& c : name)
         c = char(toupper(static_cast<unsigned char>(c)));

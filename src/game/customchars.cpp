@@ -1402,8 +1402,8 @@ void AddDroidCommander()
     CustomCharacter c;
     c.builtIn = true;
     c.className = "IDroidCommander";
-    c.name = "DROID COMMANDER";
-    c.title = "SEPARATIST DROID";
+    c.name = PortText("DROID COMMANDER", "COMMANDANT DROÏDE"); // UTF-8
+    c.title = PortText("SEPARATIST DROID", "DROÏDE SÉPARATISTE");
     c.base = "IBattleDroid";
     c.costume = "hordeBattleDroidCaptain";
     c.mesh = "battledroid\\hordeBattleDroid";
@@ -1446,8 +1446,8 @@ void AddBuiltInCharacters()
     CustomCharacter c;
     c.builtIn = true;
     c.className = "ICody";
-    c.name = "COMMANDER CODY";
-    c.title = "CLONE COMMANDER";
+    c.name = PortText("COMMANDER CODY", "COMMANDANT CODY"); // UTF-8
+    c.title = PortText("CLONE COMMANDER", "COMMANDANT CLONE");
     c.base = "ICloneTrooper";
     c.costume = "Cody";
     c.mesh = "clonetrooper\\hordeTrooper_cody"; // the 212th's body with his helmet's rangefinder (cody.cpp)

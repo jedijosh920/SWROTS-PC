@@ -710,9 +710,16 @@ const char* Keep(const std::string& text)
     return g_ExtraStrings.back().c_str();
 }
 
-std::wstring Wide(const std::string& text)
+std::wstring Wide(const std::string& text) // UTF-8 (fighters' names can have accents)
 {
-    return std::wstring(text.begin(), text.end());
+    if (text.empty())
+        return {};
+    const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), int(text.size()), nullptr, 0);
+    if (length <= 0)
+        return std::wstring(text.begin(), text.end());
+    std::wstring wide(size_t(length), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.data(), int(text.size()), wide.data(), length);
+    return wide;
 }
 
 // A custom character's select pictures: the menus' sets name pictures the shared PAK has (a picture under mods\ that

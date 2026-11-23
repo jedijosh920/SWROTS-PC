@@ -623,9 +623,16 @@ int SlotOfRow(int row)
     return row < 2 * g_PerSide ? kMaxPerSide + row - g_PerSide : -1;
 }
 
-std::wstring Wide(const std::string& text)
+std::wstring Wide(const std::string& text) // UTF-8 (fighters' names can have accents)
 {
-    return std::wstring(text.begin(), text.end());
+    if (text.empty())
+        return {};
+    const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), int(text.size()), nullptr, 0);
+    if (length <= 0)
+        return std::wstring(text.begin(), text.end());
+    std::wstring wide(size_t(length), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.data(), int(text.size()), wide.data(), length);
+    return wide;
 }
 
 // Battlefront's choices: its map (the dev map's floor, then the custom maps with command posts), side, troopers a
