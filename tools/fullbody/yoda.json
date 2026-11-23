@@ -1,0 +1,273 @@
+{
+ "mode": "final",
+ "out": "out/yoda",
+ "work": "work",
+ "importer": "io_import_swe3_msh.py",
+ "chars": [
+  {
+   "tag": "yoda_v1",
+   "mesh": "yoda/yoda",
+   "duel": false,
+   "hilts": [
+    [
+     "yoda/lsaberyoda",
+     "wrist_R_g"
+    ]
+   ],
+   "saber": [
+    0.15,
+    1.0,
+    0.1
+   ],
+   "blade": [
+    2.964,
+    22.0
+   ],
+   "clips": [
+    "yoda/anim/yoda_nav_stalkf.bnm"
+   ],
+   "turn": 30,
+   "candidates": [
+    [
+     "yoda/anim/yoda_nav_stalkf.bnm",
+     0.8
+    ],
+    [
+     "yoda/anim/yoda_nav_stalkf.bnm",
+     0.75
+    ],
+    [
+     "yoda/anim/yoda_nav_stalkf.bnm",
+     0.85
+    ]
+   ],
+   "turns": [
+    0
+   ],
+   "edits": [
+    {
+     "edit": "turn",
+     "bone": "root_g",
+     "from": [
+      0,
+      1,
+      0
+     ],
+     "to": [
+      0,
+      0.766,
+      0.643
+     ]
+    },
+    {
+     "edit": "turn",
+     "bone": "neck_g",
+     "from": [
+      0,
+      0.766,
+      0.643
+     ],
+     "to": [
+      0,
+      1,
+      0
+     ]
+    },
+    {
+     "edit": "hang",
+     "bones": [
+      "ec_cape_FL_01_g",
+      "ec_cape_FR_01_g",
+      "ec_cape_BL_01_g",
+      "ec_cape_BR_01_g",
+      "ec_cape_FL_02_g",
+      "ec_cape_FR_02_g",
+      "ec_cape_BL_02_g",
+      "ec_cape_BR_02_g"
+     ],
+     "out": 0.45,
+     "back": 0.6
+    },
+    {
+     "edit": "point",
+     "bone": "hip_L_g",
+     "child": "knee_L_g",
+     "from": "hip_L_g",
+     "at": [
+      1.0,
+      -0.6,
+      0.0
+     ]
+    },
+    {
+     "edit": "point",
+     "bone": "knee_L_g",
+     "child": "ankle_L_g",
+     "from": "knee_L_g",
+     "at": [
+      0.3,
+      -1.0,
+      -0.5
+     ]
+    },
+    {
+     "edit": "point",
+     "bone": "ankle_L_g",
+     "child": "toe_L_g",
+     "from": "ankle_L_g",
+     "at": [
+      0.3,
+      -1.0,
+      -0.5
+     ]
+    },
+    {
+     "edit": "point",
+     "bone": "hip_R_g",
+     "child": "knee_R_g",
+     "from": "hip_R_g",
+     "at": [
+      -0.4,
+      -0.7,
+      0.6
+     ]
+    },
+    {
+     "edit": "point",
+     "bone": "knee_R_g",
+     "child": "ankle_R_g",
+     "from": "root_pelvis_g",
+     "at": [
+      -1.0,
+      -1.0,
+      -3.0
+     ]
+    },
+    {
+     "edit": "turn",
+     "bone": "ankle_L_g",
+     "from": [
+      0.845,
+      -0.014,
+      0.535
+     ],
+     "to": [
+      0.017,
+      -0.443,
+      0.896
+     ]
+    },
+    {
+     "edit": "point",
+     "bone": "shoulder_R_g",
+     "child": "wrist_R_g",
+     "from": "spine2_g",
+     "at": [
+      -5.0,
+      -1.0,
+      8.0
+     ]
+    },
+    {
+     "edit": "point",
+     "bone": "elbow_R_g",
+     "child": "wrist_R_g",
+     "from": "elbow_R_g",
+     "at": [
+      0.0,
+      -0.15,
+      1.0
+     ]
+    },
+    {
+     "edit": "aim",
+     "bone": "wrist_R_g",
+     "dir": [
+      1.0,
+      0.05,
+      0.6
+     ]
+    }
+   ],
+   "center": "body",
+   "frame_units": 125.0,
+   "feet": 0.3
+  },
+  {
+   "tag": "yoda_v2",
+   "mesh": "yoda/yoda",
+   "duel": false,
+   "hilts": [
+    [
+     "yoda/lsaberyoda",
+     "wrist_R_g"
+    ]
+   ],
+   "saber": [
+    1,
+    0.05,
+    0.05
+   ],
+   "blade": [
+    2.964,
+    22.0
+   ],
+   "clips": [
+    "yoda/anim/yoda_nav_run_out.bnm"
+   ],
+   "turn": -30,
+   "candidates": [
+    [
+     "yoda/anim/yoda_nav_run_out.bnm",
+     0.2
+    ],
+    [
+     "yoda/anim/yoda_nav_run_out.bnm",
+     0.15
+    ],
+    [
+     "yoda/anim/yoda_nav_run_out.bnm",
+     0.25
+    ]
+   ],
+   "turns": [
+    10,
+    5,
+    15,
+    20
+   ],
+   "edits": [
+    {
+     "edit": "point",
+     "bone": "shoulder_R_g",
+     "child": "wrist_R_g",
+     "from": "spine2_g",
+     "at": [
+      -3.0,
+      -3.0,
+      6.0
+     ]
+    },
+    {
+     "edit": "aim",
+     "bone": "wrist_R_g",
+     "dir": [
+      -0.2,
+      1.0,
+      0.1
+     ]
+    },
+    {
+     "edit": "grip",
+     "bone": "shoulder_L_g",
+     "child": "middle1_L_g",
+     "along": -2.0
+    }
+   ],
+   "center": "body",
+   "frame_units": 125.0,
+   "feet": 0.19,
+   "dark": 0.45
+  }
+ ]
+}

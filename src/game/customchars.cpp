@@ -26,9 +26,12 @@
 #include "game/devmap.h"
 #include "game/eventtree.h"
 #include "game/game.h"
+#include "game/hvv.h"
 #include "game/menus.h"
 #include "kernel/kernel.h"
 #include "game/resources.h"
+#include "game/yodaintro.h"
+#include "game/yodalines.h"
 
 namespace swrots::game {
 
@@ -418,6 +421,10 @@ struct VoiceLine {
     std::wstring text;    // its subtitle
 };
 std::vector<VoiceLine> g_VoiceLines;
+
+// Yoda's lines in a duel (yodalines.h) whose voices were added to the generic dialogue archive (AddYodaLines): the
+// generic dialogue database gets their entries (PatchYodaDialogue).
+std::vector<std::string> g_YodaLines;
 
 uint32_t __cdecl SpeakerNameFor(uint8_t* character, uint32_t text)
 {
@@ -865,11 +872,112 @@ struct OwnIntro {
     float speed = 1.0f;
     bool outro = false;
     uint16_t handle = 0;
+    // the event its line is asked with, and in what context: by default "TNT" (intro) or "KIL" (outro) in "Versus"
+    const char* event = nullptr;
+    const char* context = "Versus";
+    bool silent = false; // no line at all
+    // its sabers off as it starts (and away until `saberShownAfterMs`, if not -1), lit (the blade grown in
+    // `saberGrow` s) `saberOnAfterMs` later: -1 to leave them
+    int saberOnAfterMs = -1;
+    int saberShownAfterMs = -1;
+    float saberGrow = 0.2f;
 };
 constexpr int kMaxOwnIntros = 8;
 OwnIntro g_OwnIntros[kMaxOwnIntros];
 constexpr uint32_t kSetup = 0x006965D8;
 const char kDuelMapTag[] = "DuelMap";
+
+// The sabers an intro put out (or away), and when it brings them back and lights them (LightSabers). A saber
+// (character +0x1080, 0x20 apart, 4 slots) is on while its +0x801 is set; 0x286080 lights it and 0x2860E0 puts it out
+// (thiscall (float: the blade's growth in s, 0 at once and silent)), as the cutscene event CinEvent_ToggleSaber and
+// the duelists' intros (through 0x389E70 / 0x389EE0) do. Its vfuncs +0xB0 and +0xB4 take it away (hilt and blade) and
+// bring it back, as the scripts' 0x2BC5E0 / 0x2BC640 (Grievous's second pair of arms) do.
+struct SabersOff {
+    uint8_t* character;
+    uint32_t id;
+    unsigned slots;
+    uint64_t showAt; // 0: not away, or back
+    uint64_t lightAt;
+    float grow;
+};
+std::vector<SabersOff> g_SabersOff;
+constexpr uint32_t kSaberOn = 0x00286080, kSaberOff = 0x002860E0;
+constexpr uint32_t kSaberHide = 0xB0 / 4, kSaberShow = 0xB4 / 4;
+
+uint8_t* SaberIn(uint8_t* character, int slot)
+{
+    return *reinterpret_cast<uint8_t**>(character + 0x1080 + slot * 0x20);
+}
+
+void SaberCall(uint8_t* saber, uint32_t slot)
+{
+    reinterpret_cast<void(__fastcall*)(uint8_t*, void*)>((*reinterpret_cast<void* const* const*>(saber))[slot])(saber, nullptr);
+}
+
+void SaberBlade(uint8_t* saber, bool on, float grow)
+{
+    reinterpret_cast<void(__fastcall*)(uint8_t*, void*, float)>(uintptr_t(on ? kSaberOn : kSaberOff))(saber, nullptr, grow);
+}
+
+void PutSabersOut(uint8_t* character, int showAfterMs, int lightAfterMs, float grow)
+{
+    __try {
+        unsigned slots = 0;
+        for (int i = 0; i < 4; ++i)
+            if (uint8_t* saber = SaberIn(character, i); saber && saber[0x801]) {
+                SaberBlade(saber, false, 0.0f);
+                if (showAfterMs >= 0)
+                    SaberCall(saber, kSaberHide);
+                slots |= 1u << i;
+            }
+        if (slots) {
+            const uint64_t now = GameTime();
+            g_SabersOff.push_back({ character, *reinterpret_cast<uint32_t*>(character + 4), slots,
+                showAfterMs >= 0 ? now + uint64_t(showAfterMs) : 0, now + uint64_t(lightAfterMs), grow });
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+bool IsLiveObject(uint8_t* object);
+
+// brings them back and lights them when their time comes (game time: a pause holds it), whether the intro still plays
+// or not
+void LightSabers()
+{
+    const uint64_t now = GameTime();
+    for (size_t k = 0; k < g_SabersOff.size();) {
+        SabersOff& off = g_SabersOff[k];
+        const bool show = off.showAt && now >= off.showAt, light = now >= off.lightAt;
+        if (!show && !light) {
+            ++k;
+            continue;
+        }
+        bool live = false;
+        __try {
+            live = IsLiveObject(off.character) && *reinterpret_cast<uint32_t*>(off.character + 4) == off.id;
+            for (int i = 0; live && i < 4; ++i) {
+                uint8_t* saber = SaberIn(off.character, i);
+                if (!saber || !(off.slots >> i & 1))
+                    continue;
+                if (show) {
+                    SaberCall(saber, kSaberShow);
+                    if (saber[0x801]) // back as it was, unlit until its time
+                        SaberBlade(saber, false, 0.0f);
+                }
+                if (light && !saber[0x801])
+                    SaberBlade(saber, true, off.grow);
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            live = false;
+        }
+        off.showAt = 0;
+        if (light || !live)
+            g_SabersOff.erase(g_SabersOff.begin() + ptrdiff_t(k));
+        else
+            ++k;
+    }
+}
 
 template <int K> bool __fastcall OwnIntroFn(uint8_t* self, void*, uint32_t, uint32_t)
 {
@@ -888,14 +996,20 @@ template <int K> bool __fastcall OwnIntroFn(uint8_t* self, void*, uint32_t, uint
     // its line as it starts (0x1F6310: the event the Jedi Brute's twirl turns its spinning saber on at; 0x1F62D0's
     // came as the intro ended)
     if (reinterpret_cast<bool(__fastcall*)(uint8_t*, void*)>(uintptr_t(0x001F6310))(setup, nullptr)) {
-        const char* event = own.outro ? "KIL" : "TNT";
+        const char* event = own.event ? own.event : own.outro ? "KIL" : "TNT";
         LOG_INFO("Custom characters: %s plays", own.name.c_str());
-        if (!own.line.empty()) {
+        if (own.saberOnAfterMs >= 0) {
+            uint8_t* scripts = *reinterpret_cast<uint8_t**>(uintptr_t(0x006943CC));
+            if (uint8_t* character = scripts ? *reinterpret_cast<uint8_t**>(scripts + 0x68) : nullptr)
+                PutSabersOut(character, own.saberShownAfterMs, own.saberOnAfterMs, own.saberGrow);
+        }
+        if (!own.line.empty() && !own.silent) {
             uint8_t* scripts = *reinterpret_cast<uint8_t**>(uintptr_t(0x006943CC));
             if (uint8_t* character = scripts ? *reinterpret_cast<uint8_t**>(scripts + 0x68) : nullptr)
                 ForceNextLine(character, event, own.line.c_str());
         }
-        reinterpret_cast<int(__cdecl*)(const char*, const char*, int, int, int)>(uintptr_t(kSayEvent))(event, "Versus", 1, 0, 0);
+        if (!own.silent)
+            reinterpret_cast<int(__cdecl*)(const char*, const char*, int, int, int)>(uintptr_t(kSayEvent))(event, own.context, 1, 0, 0);
     }
     return reinterpret_cast<bool(__fastcall*)(uint8_t*, void*, const char*, uint32_t)>(uintptr_t(0x001F6C00))(
         setup, nullptr, reinterpret_cast<const char*>(uintptr_t(0x0059C07C)), 0x7E00 + K);
@@ -920,6 +1034,21 @@ int __cdecl IntroSequences(const char* shortName, ClassSequenceFn* fns, int max)
         return 0;
     int count = 0, owns = 0;
     bool added[std::size(kDuelists)][2] = {};
+    // Yoda (a Versus fighter of the port's, roster.cpp): his intro cut from his bonus mission's cutscene
+    // (yodaintro.h), when it can be made, without a line (the game has no duel intro lines for him; his lines are said
+    // in the fight, see yodalines.h)
+    if (_stricmp(shortName, "Yoda") == 0 && count < max && MakeGeneratedResource(yodaintro::kClipFile)) {
+        OwnIntro& own = g_OwnIntros[owns];
+        own = OwnIntro{};
+        own.name = "Yoda_Intro";
+        own.animation = yodaintro::kClipName;
+        own.silent = true;
+        own.saberShownAfterMs = int(yodaintro::kSaberCaughtAfterMs); // on his belt until he pulls it to his hand
+        own.saberOnAfterMs = int(yodaintro::kSaberOnAfterMs);
+        own.saberGrow = yodaintro::kSaberGrow;
+        fns[count++] = kOwnIntroFns[size_t(owns++)];
+        LOG_INFO("Custom characters: IYoda's duel intro is %s", own.animation.c_str());
+    }
     for (const CustomCharacter& c : g_Customs) {
         if ((c.intro < 0 && c.introAnimation.empty() && c.outroAnimation.empty()) || c.base.size() < 2 ||
             _stricmp(c.base.c_str() + 1, shortName) != 0)
@@ -929,6 +1058,7 @@ int __cdecl IntroSequences(const char* shortName, ClassSequenceFn* fns, int max)
             if (animation.empty() || owns >= kMaxOwnIntros || count >= max)
                 continue;
             OwnIntro& own = g_OwnIntros[owns];
+            own = OwnIntro{};
             own.name = IntroPrefix(c) + (outro ? "_Outro" : "_Intro");
             own.animation = animation;
             own.speed = outro ? c.outroSpeed : c.introSpeed;
@@ -1038,6 +1168,8 @@ void CustomCharactersFrame()
     if (g_Forced.id && GetTickCount64() >= g_Forced.until) // a forced line's time is up: its entry's own line back
         EndForcedLine();
     PruneMade(); // those taken away (a match's fighters after a respawn) out
+    if (!g_SabersOff.empty())
+        LightSabers();
     __try {
         for (uint8_t* c : g_Made) {
             if (!IsLiveObject(c))
@@ -1508,6 +1640,143 @@ bool ReadWhole(const std::wstring& path, std::vector<uint8_t>& data)
     return ok;
 }
 
+// Yoda's duel lines (yodalines.h) that only his bonus mission's dialogue archive has (Dialogue\u113_dialogue.rpx, the
+// archive's layout below): their data copied to cache\voice\ (written again only when it differs, the archive being
+// rebuilt when a line's file changes) and added to the custom lines, their subtitles from the mission's strings
+// (gameinfo\strings\u113_dialogue.str: "[YDA060]text" lines).
+void AddYodaLines(const std::wstring& gameData, const std::wstring& cache)
+{
+    g_YodaLines.clear();
+    std::vector<uint8_t> archive, strings;
+    if (cache.empty() || !ReadWhole(gameData + L"\\Dialogue\\u113_dialogue.rpx", archive) || archive.size() < 0x20 ||
+        !ReadWhole(gameData + L"\\gameinfo\\strings\\u113_dialogue.str", strings))
+        return;
+    uint32_t count;
+    std::memcpy(&count, archive.data() + 4, 4);
+    const std::string text(strings.begin(), strings.end());
+    const std::wstring folder = cache + L"\\voice";
+    for (const yodalines::Line& l : yodalines::kLines) {
+        std::string id = l.id;
+        for (char& ch : id)
+            ch = char(tolower(static_cast<unsigned char>(ch)));
+        std::vector<uint8_t> line;
+        for (uint32_t i = 0; i < count && 0x20 + (i + 1) * 0x2C <= archive.size(); ++i) {
+            const uint8_t* r = archive.data() + 0x20 + i * 0x2C;
+            uint32_t offset, size;
+            std::memcpy(&offset, r + 0x20, 4);
+            std::memcpy(&size, r + 0x24, 4);
+            if (strnlen(reinterpret_cast<const char*>(r), 0x20) == id.size() && std::memcmp(r, id.data(), id.size()) == 0 &&
+                offset < archive.size() && size <= archive.size() - offset)
+                line.assign(archive.begin() + offset, archive.begin() + offset + size);
+        }
+        const std::string key = std::string("[") + l.id + "]";
+        const size_t at = text.find(key);
+        if (line.empty() || at == std::string::npos) {
+            LOG_WARN("Custom characters: Yoda's line %s is not in his mission's dialogue", l.id);
+            continue;
+        }
+        const size_t from = at + key.size(), to = text.find_first_of("\r\n", from);
+        std::wstring subtitle;
+        for (char ch : text.substr(from, to == std::string::npos ? std::string::npos : to - from))
+            subtitle += wchar_t(static_cast<unsigned char>(ch)); // Latin-1
+        const std::wstring file = folder + L"\\yoda_" + std::wstring(id.begin(), id.end()) + L".adpcm";
+        std::vector<uint8_t> old;
+        if (!(ReadWhole(file, old) && old == line)) {
+            CreateDirectoryW(folder.c_str(), nullptr);
+            HANDLE f = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+            DWORD written = 0;
+            const bool ok = f != INVALID_HANDLE_VALUE && WriteFile(f, line.data(), DWORD(line.size()), &written, nullptr) &&
+                written == line.size();
+            if (f != INVALID_HANDLE_VALUE)
+                CloseHandle(f);
+            if (!ok) {
+                LOG_WARN("Custom characters: Yoda's line %s could not be written to the cache", l.id);
+                continue;
+            }
+        }
+        g_VoiceLines.push_back({ l.id, file, subtitle });
+        g_YodaLines.push_back(l.id);
+    }
+}
+
+// The generic dialogue database with Yoda's duel lines' entries (those whose voices were added).
+void PatchYodaDialogue(std::vector<uint8_t>& data)
+{
+    if (g_YodaLines.empty())
+        return;
+    std::string report;
+    std::vector<uint8_t> patched = yodalines::AddEntries(data, g_YodaLines, report);
+    if (patched.empty()) {
+        LOG_WARN("Custom characters: Yoda's duel lines not added to the dialogue: %s", report.c_str());
+        return;
+    }
+    data = std::move(patched);
+    LOG_INFO("Custom characters: Yoda's duel lines: %s", report.c_str());
+}
+
+// Yoda's intro clip and duel cameras (yodaintro.h), made when the duel asks for them.
+// The engine rebuilds a body's animation binding (meshes\chars\yoda\yoda.ban) when the level asks for an animation
+// the disc's lacks (his intro), keeps it in cache\disc\ and reads it from there afterwards, whatever the animation
+// has become since: what it says of an older intro clip (the tracks it had, the one his saber follows) stays. When the
+// clip is no longer the one the kept bindings were made with (cache\yoda_intro.stamp: its hash), his bodies' kept
+// bindings go, to be rebuilt.
+void ForgetStaleYodaBindings(const std::wstring& cache)
+{
+    if (cache.empty())
+        return;
+    std::string report;
+    const std::vector<uint8_t> clip = yodaintro::MakeIntroClip(&ReadDiscData, report);
+    if (clip.empty())
+        return;
+    uint64_t hash = 0xCBF29CE484222325ull;
+    for (uint8_t b : clip)
+        hash = (hash ^ b) * 0x100000001B3ull;
+    char stamp[32];
+    snprintf(stamp, sizeof stamp, "%016llx", static_cast<unsigned long long>(hash));
+    const std::wstring stampFile = cache + L"\\yoda_intro.stamp";
+    char kept[32] = {};
+    HANDLE in = CreateFileW(stampFile.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (in != INVALID_HANDLE_VALUE) {
+        DWORD got = 0;
+        ReadFile(in, kept, sizeof kept - 1, &got, nullptr);
+        CloseHandle(in);
+        if (std::strcmp(kept, stamp) == 0)
+            return;
+    }
+    const std::wstring folder = cache + L"\\disc\\meshes\\chars\\yoda";
+    WIN32_FIND_DATAW found;
+    HANDLE find = FindFirstFileW((folder + L"\\*.ban").c_str(), &found);
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && DeleteFileW((folder + L"\\" + found.cFileName).c_str()))
+                LOG_INFO("Custom characters: %ls dropped (Yoda's intro changed: rebuilt by the engine)", found.cFileName);
+        } while (FindNextFileW(find, &found));
+        FindClose(find);
+    }
+    HANDLE file = CreateFileW(stampFile.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file != INVALID_HANDLE_VALUE) {
+        DWORD written = 0;
+        WriteFile(file, stamp, DWORD(std::strlen(stamp)), &written, nullptr);
+        CloseHandle(file);
+    }
+}
+
+bool YodaIntroGenerator(const std::string& lowerName, std::vector<uint8_t>& data)
+{
+    std::string report;
+    if (lowerName == yodaintro::kClipFile)
+        data = yodaintro::MakeIntroClip(&ReadDiscData, report);
+    else if (lowerName == yodaintro::kCameraFile)
+        data = yodaintro::MakeIntroCamera(&ReadDiscData, report);
+    else if (lowerName == yodaintro::kOutroCameraFile)
+        data = yodaintro::MakeOutroCamera(&ReadDiscData, report);
+    else
+        return false;
+    if (data.empty())
+        LOG_WARN("Custom characters: %s not made: %s", lowerName.c_str(), report.c_str());
+    return !data.empty();
+}
+
 // The game's generic dialogue archive (Dialogue\gen_dialogue.rpx, mounted in every level) with the custom lines
 // added, served in its place for this start. The archive: u32 1, u32 count, 0x18 bytes, then `count` 0x2C-byte
 // records {name[0x20] (lower case, sorted), u32 offset, u32 size, u32 (the same in all)}, free room up to the first
@@ -1622,6 +1891,11 @@ void BuildVoiceArchive(const std::wstring& mods, const std::wstring& gameData, c
 
 } // namespace
 
+void ForgetStaleBindings(const std::wstring& cache)
+{
+    ForgetStaleYodaBindings(cache);
+}
+
 bool CharacterQuiet(const uint8_t* character)
 {
     return character && IsQuietCharacter(character);
@@ -1669,6 +1943,9 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
     g_PictureCopies.clear();
     AddBuiltInCharacters();
     RegisterResourceGenerator(&CopyPicture);
+    RegisterResourceGenerator(&YodaIntroGenerator);
+    AddYodaLines(gameData, cache);
+    RegisterResourcePatch("dialogue\\gen_dialogue.ddb", &PatchYodaDialogue);
     BuildVoiceArchive(mods, gameData, cache);
     if (g_Customs.empty())
         return;
@@ -1816,8 +2093,7 @@ void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameD
         g_OriginalJediSetup = reinterpret_cast<JediSetupFn>(jediStub);
         PatchJump(kJediSetup, reinterpret_cast<const void*>(&JediSetupHook));
     }
-    if (std::any_of(g_Customs.begin(), g_Customs.end(),
-            [](const CustomCharacter& c) { return c.intro >= 0 || !c.introAnimation.empty() || !c.outroAnimation.empty(); })) {
+    { // Yoda's intro always (IntroSequences), the custom characters' when they have one
         if (std::memcmp(reinterpret_cast<const void*>(uintptr_t(kIntroName)), kIntroNameBytes, sizeof kIntroNameBytes) == 0) {
             AddClassSequences(&IntroSequences);
             PatchJump(kIntroName, reinterpret_cast<const void*>(&IntroNameEntry));

@@ -80,6 +80,9 @@ struct CustomCharacter {
 // class lookup.
 // `gameData` and `cache`: for a custom character's own voice lines (the dialogue archive served with them added).
 void InstallCustomCharacters(const std::wstring& mods, const std::wstring& gameData, const std::wstring& cache);
+// Drops the bindings the engine rebuilt for a body (cache\disc\) with an animation the port makes that has changed
+// since (Yoda's intro); after InstallResourceHooks (it reads the disc's PAKs).
+void ForgetStaleBindings(const std::wstring& cache);
 
 // The custom characters (this start's), and one by class name (case-insensitive), or null.
 const std::vector<CustomCharacter>& CustomCharacters();

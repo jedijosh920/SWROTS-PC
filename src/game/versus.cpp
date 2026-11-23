@@ -132,7 +132,8 @@ bool HasCamera(const char* name, const char* kind)
     std::string path = std::string("cinematics\\") + kind + "camera\\" + name + "_" + kind + "_cam.cin";
     for (char& c : path)
         c = char(tolower(static_cast<unsigned char>(c)));
-    return DiscHasResource(path);
+    // or one the port makes (Yoda's, yodaintro.h)
+    return DiscHasResource(path) || MakeGeneratedResource(path);
 }
 
 const char* __stdcall CameraName(const char* name, int slot)
