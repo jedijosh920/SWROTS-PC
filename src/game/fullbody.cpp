@@ -984,7 +984,9 @@ const Recipe& YodaRecipe(int player)
                 { Edit::Hang, { "ec_cape_FL_01_g", "ec_cape_FR_01_g", "ec_cape_BL_01_g", "ec_cape_BR_01_g",
                     "ec_cape_FL_02_g", "ec_cape_FR_02_g", "ec_cape_BL_02_g", "ec_cape_BR_02_g" },
                     nullptr, nullptr, {}, {}, 0.45, 0.6, 0 },
-                { Edit::Point, { "shoulder_R_g" }, "wrist_R_g", "spine2_g", { -5, 4, 8 }, {}, 0, 0, 0 },
+                { Edit::Point, { "shoulder_R_g" }, "wrist_R_g", "spine2_g", { -5, -1, 8 }, {}, 0, 0, 0 },
+                // the forearm toward the camera (not down to the floor)
+                { Edit::Point, { "elbow_R_g" }, "wrist_R_g", "elbow_R_g", { 0, -0.15, 1 }, {}, 0, 0, 0 },
                 { Edit::Aim, { "wrist_R_g" }, nullptr, nullptr, { 1, 0.05, 0.6 }, {}, 0, 0, 0 },
             } },
         // player 2 (Sith Yoda): on guard, the blade upright in both hands

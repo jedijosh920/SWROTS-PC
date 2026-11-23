@@ -95,8 +95,19 @@
      "from": "spine2_g",
      "at": [
       -5.0,
-      4.0,
+      -1.0,
       8.0
+     ]
+    },
+    {
+     "edit": "point",
+     "bone": "elbow_R_g",
+     "child": "wrist_R_g",
+     "from": "elbow_R_g",
+     "at": [
+      0.0,
+      -0.15,
+      1.0
      ]
     },
     {
