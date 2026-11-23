@@ -90,6 +90,75 @@
     },
     {
      "edit": "point",
+     "bone": "hip_L_g",
+     "child": "knee_L_g",
+     "from": "hip_L_g",
+     "at": [
+      1.0,
+      -0.6,
+      0.0
+     ]
+    },
+    {
+     "edit": "point",
+     "bone": "knee_L_g",
+     "child": "ankle_L_g",
+     "from": "knee_L_g",
+     "at": [
+      1.0,
+      -0.6,
+      0.0
+     ]
+    },
+    {
+     "edit": "point",
+     "bone": "ankle_L_g",
+     "child": "toe_L_g",
+     "from": "ankle_L_g",
+     "at": [
+      1.0,
+      -0.6,
+      0.0
+     ]
+    },
+    {
+     "edit": "point",
+     "bone": "hip_R_g",
+     "child": "knee_R_g",
+     "from": "hip_R_g",
+     "at": [
+      -0.4,
+      -0.7,
+      0.6
+     ]
+    },
+    {
+     "edit": "point",
+     "bone": "knee_R_g",
+     "child": "ankle_R_g",
+     "from": "root_pelvis_g",
+     "at": [
+      -1.0,
+      -1.0,
+      -3.0
+     ]
+    },
+    {
+     "edit": "turn",
+     "bone": "ankle_L_g",
+     "from": [
+      0.252,
+      0.42,
+      0.872
+     ],
+     "to": [
+      -0.006,
+      -0.01,
+      1.0
+     ]
+    },
+    {
+     "edit": "point",
      "bone": "shoulder_R_g",
      "child": "wrist_R_g",
      "from": "spine2_g",
